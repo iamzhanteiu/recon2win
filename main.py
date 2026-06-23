@@ -13,7 +13,7 @@ import argparse
 import json
 import sys
 import time
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -106,7 +106,7 @@ def main() -> int:
 
     # Capture scan timing + tool versions up-front so the final report has
     # accurate metadata even if a later stage crashes.
-    scan_start = datetime.utcnow()
+    scan_start = datetime.now(timezone.utc)
     tool_versions = report_mod.capture_tool_versions()
 
     results: list[dict] = []
@@ -221,7 +221,7 @@ def main() -> int:
     results.append(summary)
 
     # ---- 10. generate the final report (HTML + MD + JSON) ----
-    scan_end = datetime.utcnow()
+    scan_end = datetime.now(timezone.utc)
     cfg_text = ""
     try:
         cfg_text = cfg_path.read_text(encoding="utf-8")

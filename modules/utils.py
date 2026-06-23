@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import json
 import re
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable, List, Optional
 
@@ -126,4 +126,5 @@ def make_result(
 
 
 def now_iso() -> str:
-    return datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")
+    # timezone-aware UTC, ISO 8601 with trailing 'Z' for portability.
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")

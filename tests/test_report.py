@@ -12,7 +12,7 @@ report module:
   * includes config snapshot, tool versions, and stage classifications
 """
 import json
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
@@ -669,8 +669,8 @@ def test_write_handles_zero_outputs(tmp_path: Path):
     """build_report() must not raise on an empty output directory."""
     info = build_report(
         tmp_path, "example.com", {},
-        scan_start=datetime.utcnow(),
-        scan_end=datetime.utcnow(),
+        scan_start=datetime.now(timezone.utc),
+        scan_end=datetime.now(timezone.utc),
     )
     assert Path(info["html"]).exists()
     # counts all zero
