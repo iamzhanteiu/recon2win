@@ -111,7 +111,8 @@ def _build_cmd(
     cmd = [
         "dirsearch",
         "-l", str(alive_file),
-        "--format", "plain",
+        # Modern dirsearch (>=1.0) infers format from the output file
+        # extension; --format was removed. Our raw_out is .txt → plain.
         "-o", str(raw_out),
         "-t", str(threads),
     ]

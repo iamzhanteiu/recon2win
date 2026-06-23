@@ -82,13 +82,15 @@ def crawl(
         (raw / "katana_urls.txt").write_text("")
         outputs.append(raw / "katana_urls.txt")
 
-    # 4.1.b — urlfinder
+    # 4.1.b — urlfinder (projectdiscovery/urlfinder — flags: -d for input,
+    # -o for output, -silent for URL-only stdout). Earlier versions used -i;
+    # projectdiscovery's tool has always used -d / -list.
     if cd_cfg.get("urlfinder", {}).get("enabled", True):
         out = raw / "urlfinder_urls.txt"
         if runner.tool_available("urlfinder"):
             to = int(cd_cfg.get("urlfinder", {}).get("timeout", 1800))
             r = runner.run(
-                ["urlfinder", "-i", str(alive_file), "-o", str(out), "-silent"],
+                ["urlfinder", "-d", str(alive_file), "-o", str(out), "-silent"],
                 stage="content_discovery_urlfinder", output_dir=output_dir, timeout=to,
             )
             if not r["success"] and not r["missing_binary"]:

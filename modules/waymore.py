@@ -6,6 +6,7 @@ waymore writes a single text file of URLs. We post-filter by:
 """
 from __future__ import annotations
 
+import os
 import re
 from pathlib import Path
 from urllib.parse import urlparse
@@ -85,8 +86,11 @@ def collect(
     w_cfg = cfg.get("waymore", {})
     timeout = int(w_cfg.get("timeout", 1800))
 
-    cmd = ["waymore", "-i", domain, "-mode", "U", "-oU", str(raw_out), "-nocolor"]
-    r = runner.run(cmd, stage=stage, output_dir=output_dir, timeout=timeout)
+    # waymore ≥3.0 dropped `-nocolor`; use `NO_COLOR=1` env to suppress
+    # ANSI escapes (PEP-0001 / no-color.org convention — read by most tools).
+    cmd = ["waymore", "-i", domain, "-mode", "U", "-oU", str(raw_out)]
+    r = runner.run(cmd, stage=stage, output_dir=output_dir, timeout=timeout,
+                   env={**os.environ, "NO_COLOR": "1"})
     if not r["success"] and not r["missing_binary"]:
         # waymore can be flaky, but we still want to keep its partial output
         print(f"[{stage}] waymore exited non-zero: {r['stderr'][:200]}")
