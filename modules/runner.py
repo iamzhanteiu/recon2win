@@ -11,7 +11,7 @@ instead of raising — the caller decides whether the stage is optional.
 """
 from __future__ import annotations
 
-import shutil
+import os
 import subprocess
 import time
 from pathlib import Path
@@ -21,8 +21,31 @@ from .utils import ensure_dir, safe_append
 
 
 def which(binary: str) -> Optional[str]:
-    """Return absolute path to *binary* or None if not on PATH."""
-    return shutil.which(binary)
+    """Return absolute path to *binary* on ``$PATH`` (case-insensitive), or None.
+
+    ``shutil.which`` is case-sensitive on POSIX, so it misses binaries
+    installed with mixed-case names (e.g. ``xnLinkFinder`` from
+    ``pip install xnLinkFinder``) when callers look them up lower-cased.
+    We walk ``$PATH`` manually and match by name + suffix ignoring case.
+    On Windows we also accept ``.exe``/``.bat``/``.cmd`` suffixes.
+    """
+    if not binary:
+        return None
+    target = binary.lower()
+    suffixes = ("", ".exe", ".bat", ".cmd") if os.name == "nt" else ("",)
+    for dir_path in os.environ.get("PATH", "").split(os.pathsep):
+        if not dir_path:
+            continue
+        try:
+            entries = os.listdir(dir_path)
+        except (OSError, PermissionError):
+            continue
+        for entry in entries:
+            entry_lower = entry.lower()
+            for suffix in suffixes:
+                if entry_lower == target + suffix:
+                    return os.path.join(dir_path, entry)
+    return None
 
 
 def tool_available(binary: str) -> bool:

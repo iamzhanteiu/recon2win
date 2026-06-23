@@ -24,7 +24,6 @@ from __future__ import annotations
 
 import json
 import re
-import shutil
 import subprocess
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -251,7 +250,10 @@ def capture_tool_versions(timeout: int = 10) -> dict[str, str]:
     """Return ``{tool: "first line of -version output"}`` for installed tools."""
     out: dict[str, str] = {}
     for binary, cmd in VERSION_CMDS:
-        if not shutil.which(cmd[0]):
+        # Use the runner's case-insensitive which() so mixed-case binaries
+        # like ``xnLinkFinder`` (lookup: ``xnlinkfinder``) are still found.
+        from .runner import which
+        if not which(cmd[0]):
             continue
         try:
             r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
