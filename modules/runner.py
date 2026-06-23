@@ -133,12 +133,24 @@ def run(
 
     _log_command(cmd_log, cmd, stage)
 
-    cmd_str = " ".join(str(c) for c in cmd)
+    # Resolve cmd[0] to the actual on-disk path. ``which()`` is
+    # case-insensitive, so callers can look up ``xnlinkfinder`` and still
+    # get back ``/.../bin/xnLinkFinder`` (camelCase on disk). Without
+    # this rewrite, ``subprocess`` does its own PATH lookup using the
+    # lowercase name and fails with FileNotFoundError on case-sensitive
+    # filesystems (Linux/macOS).
+    resolved = list(cmd)
+    if cmd:
+        path = which(cmd[0])
+        if path:
+            resolved[0] = path
+
+    cmd_str = " ".join(str(c) for c in resolved)
     _echo(stage, f"$ {cmd_str}")
     start = time.time()
     try:
         proc = subprocess.run(
-            list(cmd),
+            resolved,
             capture_output=True,
             text=True,
             timeout=timeout,
