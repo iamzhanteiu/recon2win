@@ -148,13 +148,18 @@ TOOLS: dict[str, dict] = {
     },
     "xnlinkfinder": {
         "label": "xnLinkFinder",
-        "category": "go",
+        # xnLinkFinder is a Python project (pip / pipx), not a Go project.
+        # The Go module path does not contain a Go package, so
+        # `go install github.com/xnl-h4ck3r/xnLinkFinder@latest` always
+        # fails with: "module ... found, but does not contain package ...".
+        # Install via pip instead; on Windows the binary lands in
+        # %USERPROFILE%\AppData\Local\Programs\Python\<ver>\Scripts.
+        "category": "python",
         "version_args": [["-h"]],
         "install": {
-            "Darwin": ["go", "install", "-v",
-                      "github.com/xnl-h4ck3r/xnLinkFinder@latest"],
-            "Linux": ["go", "install", "-v",
-                      "github.com/xnl-h4ck3r/xnLinkFinder@latest"],
+            "Darwin":  ["pip3", "install", "xnLinkFinder"],
+            "Linux":   ["pip3", "install", "xnLinkFinder"],
+            "Windows": ["pip", "install", "xnLinkFinder"],
         },
     },
     # Python-based recon tools
@@ -229,14 +234,43 @@ def _bold(t: str, enabled: bool) -> str:   return _c("1", t, enabled=enabled)
 # ----------------------------------------------------------------------
 # Pure helpers — no subprocess, no I/O. Unit-testable.
 # ----------------------------------------------------------------------
+def _resolve_on_path(binary: str) -> Optional[str]:
+    """Case-insensitive lookup of *binary* on ``$PATH``.
+
+    ``shutil.which`` is case-sensitive on POSIX, so ``which("xnlinkfinder")``
+    fails when the binary on disk is ``xnLinkFinder`` (e.g. installed via
+    ``go install github.com/xnl-h4ck3r/xnLinkFinder@latest``). This helper
+    walks ``$PATH`` manually and returns the first entry whose name matches
+    ``binary`` ignoring case. On Windows it also accepts ``.exe``/``.bat``/
+    ``.cmd`` suffixes.
+    """
+    if not binary:
+        return None
+    target = binary.lower()
+    suffixes = ("", ".exe", ".bat", ".cmd") if os.name == "nt" else ("",)
+    for dir_path in os.environ.get("PATH", "").split(os.pathsep):
+        if not dir_path:
+            continue
+        try:
+            entries = os.listdir(dir_path)
+        except (OSError, PermissionError):
+            continue
+        for entry in entries:
+            entry_lower = entry.lower()
+            for suffix in suffixes:
+                if entry_lower == target + suffix:
+                    return os.path.join(dir_path, entry)
+    return None
+
+
 def is_tool_available(binary: str) -> bool:
-    """True iff *binary* is on PATH (delegates to shutil.which)."""
-    return shutil.which(binary) is not None
+    """True iff *binary* is on ``$PATH`` (case-insensitive)."""
+    return _resolve_on_path(binary) is not None
 
 
 def which(binary: str) -> Optional[str]:
-    """Return absolute path to *binary* or None."""
-    return shutil.which(binary)
+    """Return absolute path to *binary* on ``$PATH`` (case-insensitive) or None."""
+    return _resolve_on_path(binary)
 
 
 def expected_wordlist_paths() -> list[str]:

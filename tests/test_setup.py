@@ -4,6 +4,7 @@ The destructive helpers (install_missing_tools, download_wordlists) are
 not exercised here — they hit the network and the user's package
 manager. We only test the pure helpers and the structured-summary builder.
 """
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -39,6 +40,57 @@ def test_is_tool_available_true_for_python3():
 def test_is_tool_available_false_for_nonsense():
     assert is_tool_available("definitely-not-a-binary-xyz123") is False
     assert which("definitely-not-a-binary-xyz123") is None
+
+
+def test_is_tool_available_case_insensitive(tmp_path: Path, monkeypatch):
+    """A binary stored with mixed case on disk is still found via the
+    lower-case lookup name. This guards the case where the upstream tool
+    ships a camelCase binary (e.g. ``xnLinkFinder`` from
+    ``go install github.com/xnl-h4ck3r/xnLinkFinder@latest``) but our
+    catalogue key is lowercase.
+    """
+    fake_bin_dir = tmp_path / "bin"
+    fake_bin_dir.mkdir()
+    # exact name on disk: xnLinkFinder (camelCase) — different from lookup
+    (fake_bin_dir / "xnLinkFinder").write_text("#!/bin/sh\necho ok\n")
+    (fake_bin_dir / "xnLinkFinder").chmod(0o755)
+
+    monkeypatch.setenv("PATH", str(fake_bin_dir))
+
+    assert is_tool_available("xnlinkfinder") is True
+    resolved = which("xnlinkfinder")
+    assert resolved is not None
+    # returned path uses the actual on-disk casing
+    assert Path(resolved).name == "xnLinkFinder"
+
+
+def test_is_tool_available_uppercase_on_disk(tmp_path: Path, monkeypatch):
+    """Reverse case: catalog key is lowercase, binary is ALL CAPS on disk."""
+    fake_bin_dir = tmp_path / "bin"
+    fake_bin_dir.mkdir()
+    (fake_bin_dir / "PYTHON3").write_text("#!/bin/sh\necho ok\n")
+    (fake_bin_dir / "PYTHON3").chmod(0o755)
+
+    monkeypatch.setenv("PATH", str(fake_bin_dir))
+
+    assert is_tool_available("python3") is True
+    assert Path(which("python3")).name == "PYTHON3"
+
+
+def test_is_tool_available_case_insensitive_with_suffix(tmp_path: Path, monkeypatch):
+    """On Windows the on-disk entry has a ``.exe`` suffix; the lookup must
+    still resolve when the catalogue key omits the suffix.
+    """
+    if os.name != "nt":
+        pytest.skip("Windows .exe suffix only relevant on Windows")
+    fake_bin_dir = tmp_path / "bin"
+    fake_bin_dir.mkdir()
+    (fake_bin_dir / "xnLinkFinder.exe").write_text("@echo off\r\n")
+
+    monkeypatch.setenv("PATH", str(fake_bin_dir))
+
+    assert is_tool_available("xnlinkfinder") is True
+    assert Path(which("xnlinkfinder")).name == "xnLinkFinder.exe"
 
 
 # ----------------------------------------------------------------------
