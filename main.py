@@ -86,15 +86,7 @@ def main() -> int:
     p.add_argument("--skip-waymore", action="store_true")
     p.add_argument("--skip-arjun", action="store_true")
     p.add_argument("--skip-xnlinkfinder", action="store_true")
-    p.add_argument("-v", "--verbose", action="store_true",
-                   help="Echo every external command + its exit code, "
-                        "duration, stderr, and the first 20 lines of stdout")
     args = p.parse_args()
-
-    # Toggle the runner's verbose mode once at startup. Every stage that
-    # goes through modules.runner.run() will then echo its commands.
-    from modules import runner as runner_mod
-    runner_mod.set_verbose(args.verbose)
 
     # ---- 0. validate input + create structure ----
     try:
