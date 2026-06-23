@@ -208,7 +208,7 @@ def dynamic_scan(
         )
     return _run(
         parameterized_urls_file, "dynamic", cfg, output_dir,
-        severity=n_cfg.get("severity", ["critical", "high", "medium", "low"]),
+        severity=n_cfg.get("severity", ["critical", "high", "medium", "low","info"]),
         tags=n_cfg.get("tags"),
         timeout=int(n_cfg.get("timeout", 7200)),
         skip=skip,
