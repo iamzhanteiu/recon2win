@@ -74,17 +74,29 @@ def scan(
 
     timeout = int(cfg.get("xnlinkfinder", {}).get("timeout", 1200))
 
+    # xnLinkFinder accepts a single URL, a file of URLs, a directory,
+    # or Burp/ZAP/HAR exports via -i. We pass the JS URL file directly
+    # so xnLinkFinder can dedupe and process them in one process. The
+    # earlier code spawned one process per URL which was both slow and
+    # produced invalid stage names containing `::` and `/` chars that
+    # break log-file paths on every OS.
+    #
+    # `-o cli` writes results to stdout (so our in-memory parser can
+    # split URLs vs endpoints). `-d 1` follows 1 link deep. `-sf` is
+    # the scope filter — we derive it from the first JS URL's host so
+    # out-of-scope links (CDNs, third-party trackers) are excluded.
+    js_lines = read_lines(js_urls_file)
+    cmd = ["xnlinkfinder", "-i", str(js_urls_file), "-o", "cli", "-d", "1"]
+    if js_lines:
+        cmd.extend(["-sf", domain_only(js_lines[0])])
+
+    r = runner.run(cmd, stage=stage, output_dir=output_dir, timeout=timeout)
+
     endpoints: list[str] = []
     urls: list[str] = []
-    for js_url in read_lines(js_urls_file):
-        r = runner.run(
-            ["xnlinkfinder", "-i", js_url, "-sp", "-d", "1", "-sf", domain_only(js_url)],
-            stage=f"xnlinkfinder::{js_url[:60]}",
-            output_dir=output_dir, timeout=timeout,
-        )
-        if not r["success"] and not r["missing_binary"]:
-            print(f"[{stage}] {js_url} failed: {r['stderr'][:200]}")
-            continue
+    if not r["success"] and not r["missing_binary"]:
+        print(f"[{stage}] failed: {(r['stderr'] or '')[:300]}")
+    else:
         for ln in (r["stdout"] or "").splitlines():
             kind = _classify(ln)
             if kind == "url":
