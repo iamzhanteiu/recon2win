@@ -9,9 +9,10 @@ This script helps you get a fresh machine ready to run the framework. It:
   2. Optionally installs missing tools via the platform's package manager
      (``brew`` on macOS, ``apt`` on Linux, ``go install`` for Go tools,
      ``pip3`` for Python tools).
-  3. Clones ``danielmiessler/SecLists`` into ``~/wordlists/SecLists`` so
-     every ``dirsearch.wordlists`` path in ``config.yml`` resolves out of
-     the box.
+  3. Clones ``danielmiessler/SecLists`` into ``<repo>/wordlists/SecLists``
+     (i.e. the ``wordlists/`` folder right next to this script) so every
+     ``dirsearch.wordlists`` path in ``config.yml`` resolves out of the
+     box. Override with ``--wordlists-dir PATH`` to clone elsewhere.
   4. Creates the ``outputs/`` directory used by every run.
   5. Prints a summary so you can see at a glance what is ready and what is
      missing.
@@ -209,6 +210,12 @@ SECLISTS_PATHS = [
     "Discovery/Web-Content/Service-Specific",
 ]
 SECLISTS_REPO = "https://github.com/danielmiessler/SecLists.git"
+
+
+# Default wordlist clone target — lives INSIDE the repo (next to this script)
+# so the framework can be self-contained: no system-wide paths, no symlinks,
+# no permission issues. Override via ``--wordlists-dir``.
+DEFAULT_WORDLISTS_DIR = Path(__file__).resolve().parent / "wordlists"
 
 
 # ----------------------------------------------------------------------
@@ -412,17 +419,28 @@ def download_wordlists(
     skip_confirm: bool = False,
     color: bool = True,
 ) -> bool:
-    """Clone SecLists into ``target_dir`` (default ``~/wordlists/SecLists``)."""
-    target_dir = Path(target_dir).expanduser()
+    """Clone SecLists into ``target_dir / "SecLists"``.
 
-    if seclists_already_present(target_dir):
-        print(_green(f"[+] SecLists already present at {target_dir}", color))
+    The argument is the *parent* directory; the repo always lands in a
+    ``SecLists/`` subfolder regardless of whether the parent exists yet
+    or already contains unrelated files. This matches what ``config.yml``
+    and the README promise (paths like
+    ``~/wordlists/SecLists/Discovery/Web-Content/...``).
+    """
+    target_dir = Path(target_dir).expanduser()
+    clone_dest = target_dir / "SecLists"
+
+    # Already cloned? Skip without touching anything.
+    if seclists_already_present(clone_dest):
+        print(_green(f"[+] SecLists already present at {clone_dest}", color))
         return True
 
-    if target_dir.exists() and any(target_dir.iterdir()) and not skip_confirm:
+    # The *SecLists* folder specifically (not the parent) is what we care
+    # about. The parent may legitimately contain other wordlists.
+    if clone_dest.exists() and any(clone_dest.iterdir()) and not skip_confirm:
         try:
             resp = input(_cyan(
-                f"[?] {target_dir} exists and is non-empty — clone into it? [y/N] ",
+                f"[?] {clone_dest} exists and is non-empty — clone into it? [y/N] ",
                 color,
             ))
         except EOFError:
@@ -431,11 +449,11 @@ def download_wordlists(
             print(_yellow("    ! skipped wordlist download", color))
             return False
 
-    target_dir.parent.mkdir(parents=True, exist_ok=True)
-    print(_cyan(f"[+] Cloning SecLists into {target_dir} (this may take a minute)…", color))
-    rc, _out, err = _run(["git", "clone", "--depth", "1", SECLISTS_REPO, str(target_dir)])
+    clone_dest.parent.mkdir(parents=True, exist_ok=True)
+    print(_cyan(f"[+] Cloning SecLists into {clone_dest} (this may take a minute)…", color))
+    rc, _out, err = _run(["git", "clone", "--depth", "1", SECLISTS_REPO, str(clone_dest)])
     if rc == 0:
-        print(_green(f"    ✓ SecLists cloned to {target_dir}", color))
+        print(_green(f"    ✓ SecLists cloned to {clone_dest}", color))
         return True
     print(_red(f"    ✗ git clone failed: {err.strip()[:300]}", color))
     return False
@@ -542,8 +560,8 @@ def main() -> int:
                    help="clone SecLists into --wordlists-dir")
     p.add_argument("--all", action="store_true",
                    help="equivalent to --install --wordlists")
-    p.add_argument("--wordlists-dir", default="~/wordlists",
-                   help="where to clone SecLists (default: ~/wordlists)")
+    p.add_argument("--wordlists-dir", default=str(DEFAULT_WORDLISTS_DIR),
+                   help=f"where to clone SecLists (default: {DEFAULT_WORDLISTS_DIR})")
     p.add_argument("--no-color", action="store_true",
                    help="disable ANSI color output")
     p.add_argument("-y", "--yes", action="store_true",

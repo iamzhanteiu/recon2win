@@ -38,6 +38,14 @@ dist/
 outputs/
 !outputs/.gitkeep
 
+# SecLists / wordlists clone target — populated by `setup.py --wordlists`.
+# Lives inside the repo by default; treated as build artifact.
+# Only the cloned SecLists content is ignored — the parent `wordlists/`
+# folder itself is tracked (via `.gitkeep`) so the layout is visible
+# even before setup.py runs.
+wordlists/SecLists/
+wordlists/**/SecLists/
+
 # Tool state
 .nuclei-templates/
 .kali-tools-state/

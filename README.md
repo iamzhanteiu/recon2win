@@ -53,8 +53,9 @@ python3 main.py -d example.com --config config.yml
 2. **Optionally installs** missing tools via the platform's package manager
    (`brew` on macOS, `apt` on Linux, `go install` for Go tools, `pip3` for
    Python tools).
-3. **Clones SecLists** into `~/wordlists/SecLists` so every path the
-   framework expects is present out of the box.
+3. **Clones SecLists** into `./wordlists/SecLists/` (i.e. inside the
+   repo, next to `setup.py`) so every path the framework expects is
+   present out of the box. Override with `--wordlists-dir PATH`.
 4. **Verifies** the expected wordlists are present.
 5. Creates `outputs/`.
 6. Prints a structured summary.
@@ -191,23 +192,34 @@ The dirsearch stage now accepts one or more wordlist paths via
 `~` is expanded. Non-existent paths are skipped with a warning so a
 missing SecLists checkout does not break the stage.
 
-Default paths in `config.yml`:
+Default paths in `config.yml` (relative to the repo root, which is the
+directory you run `python3 main.py` from):
 
 ```yaml
 dirsearch:
   wordlists:
-    - ~/wordlists/SecLists/Discovery/Web-Content/raft-small-directories.txt
-    - ~/wordlists/SecLists/Discovery/Web-Content/uri-from-top-55-most-popular-apps.txt
-    - ~/wordlists/SecLists/Discovery/Web-Content/Service-Specific
+    - wordlists/SecLists/Discovery/Web-Content/raft-small-directories.txt
+    - wordlists/SecLists/Discovery/Web-Content/uri-from-top-55-most-popular-apps.txt
+    - wordlists/SecLists/Discovery/Web-Content/Service-Specific
   combine: false   # set true to also fuzz each word with each extension (noisy)
   extensions: []   # explicit list — empty = use curated sensitive-ext set
 ```
 
 ### Installing SecLists
 
+`python3 setup.py --wordlists` clones SecLists into
+`./wordlists/SecLists/` (i.e. inside the repo) so the default paths
+above resolve out of the box. The `wordlists/` folder is git-ignored —
+it's a build artifact, not source.
+
+Manual clone (if you skipped `setup.py`):
+
 ```bash
-git clone --depth 1 https://github.com/danielmiessler/SecLists.git ~/wordlists/SecLists
+git clone --depth 1 https://github.com/danielmiessler/SecLists.git wordlists/SecLists
 ```
+
+To use a different location, pass `--wordlists-dir PATH` to `setup.py`
+and edit the paths in `config.yml` to match.
 
 The `Service-Specific` directory contains ~50 small wordlists
 (`apache.txt`, `nginx.txt`, `spring-boot.txt`, `swagger.txt`, etc.) and is

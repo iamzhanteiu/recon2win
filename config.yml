@@ -52,13 +52,19 @@ dirsearch:
   # `~` is expanded. Non-existent paths are skipped with a warning so a
   # missing SecLists checkout does not break the whole stage.
   #
-  # Suggested clone:
-  #   git clone --depth 1 https://github.com/danielmiessler/SecLists.git ~/wordlists/SecLists
+  # Paths are resolved relative to the repo root (i.e. the directory you
+  # ran `python3 main.py` from — typically the folder that contains
+  # main.py / config.yml). ``setup.py --all -y`` clones SecLists into
+  # ``<repo>/wordlists/SecLists`` by default, which matches the paths
+  # below out of the box.
+  #
+  # Manual clone (if you skipped setup.py):
+  #   git clone --depth 1 https://github.com/danielmiessler/SecLists.git wordlists/SecLists
   # ------------------------------------------------------------------
   wordlists:
-    - ~/wordlists/SecLists/Discovery/Web-Content/raft-small-directories.txt
-    - ~/wordlists/SecLists/Discovery/Web-Content/uri-from-top-55-most-popular-apps.txt
-    - ~/wordlists/SecLists/Discovery/Web-Content/Service-Specific
+    - wordlists/SecLists/Discovery/Web-Content/raft-small-directories.txt
+    - wordlists/SecLists/Discovery/Web-Content/uri-from-top-55-most-popular-apps.txt
+    - wordlists/SecLists/Discovery/Web-Content/Service-Specific
   # If true AND wordlists are present, dirsearch also tries each word
   # with each extension (extremely noisy — leave false unless you know
   # what you are doing).
