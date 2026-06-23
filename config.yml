@@ -1,0 +1,127 @@
+# ============================================================
+#  recon-agent default configuration
+# ============================================================
+
+# ---------- Global ----------
+output_root: outputs           # root folder under which <domain>/ is created
+
+# ---------- Subdomain collection ----------
+subdomain:
+  tools:
+    - subfinder
+    - amass
+    - chaos
+  # Chaos requires an API key from ProjectDiscovery Cloud.
+  # Leave empty if you do not have one.
+  chaos_api_key: ""
+  timeout: 900
+
+# ---------- DNS resolution ----------
+dnsx:
+  # dnsx flags: -l list -json -resp -silent -r resolver
+  threads: 100
+  retries: 3
+  timeout: 600
+
+# ---------- HTTPX alive check ----------
+httpx:
+  threads: 50
+  timeout: 600
+  follow_redirects: true
+
+# ---------- Content discovery ----------
+content_discovery:
+  katana:
+    enabled: true
+    depth: 3
+    timeout: 1800
+  urlfinder:
+    enabled: true
+    timeout: 1800
+
+# ---------- Dirsearch ----------
+dirsearch:
+  enabled: true
+  threads: 30
+  timeout: 3600
+  recursive: true
+  # ------------------------------------------------------------------
+  # Wordlists (SecLists) — dirsearch will receive one `-w` per file.
+  # Paths may point to a single .txt file OR to a directory (directories
+  # are recursively expanded to every .txt inside, sorted).
+  # `~` is expanded. Non-existent paths are skipped with a warning so a
+  # missing SecLists checkout does not break the whole stage.
+  #
+  # Suggested clone:
+  #   git clone --depth 1 https://github.com/danielmiessler/SecLists.git ~/wordlists/SecLists
+  # ------------------------------------------------------------------
+  wordlists:
+    - ~/wordlists/SecLists/Discovery/Web-Content/raft-small-directories.txt
+    - ~/wordlists/SecLists/Discovery/Web-Content/uri-from-top-55-most-popular-apps.txt
+    - ~/wordlists/SecLists/Discovery/Web-Content/Service-Specific
+  # If true AND wordlists are present, dirsearch also tries each word
+  # with each extension (extremely noisy — leave false unless you know
+  # what you are doing).
+  combine: false
+  # Explicit extensions override the curated list in modules/sensitive_ext.py.
+  # Leave empty/null to use the curated sensitive-extension set as a fallback
+  # when no wordlists are configured.
+  extensions: []
+
+# ---------- Waymore ----------
+waymore:
+  enabled: true
+  timeout: 1800
+
+# ---------- xnLinkFinder ----------
+xnlinkfinder:
+  enabled: true
+  timeout: 1200
+
+# ---------- Arjun ----------
+arjun:
+  enabled: true
+  threads: 5
+  rate_limit: 60          # requests per minute
+  timeout: 3600
+
+# ---------- Nuclei ----------
+nuclei:
+  default:
+    enabled: true
+    severity:
+      - critical
+      - high
+      - medium
+      - low
+      - info
+    timeout: 7200
+  dynamic:
+    enabled: true
+    tags:
+      - fuzz
+      - fuzzing
+      - sqli
+      - xss
+      - lfi
+      - rce
+      - ssrf
+      - ssti
+      - idor
+    severity:
+      - critical
+      - high
+      - medium
+      - low
+    timeout: 7200
+  rate_limit: 100
+  bulk_size: 25
+  concurrency: 25
+
+# ---------- Telegram ----------
+telegram:
+  enabled: false
+  bot_token: "8859623526:AAFqqNF8tLoELotR1BMwKRAe6jPuFP7tckM"           # create a bot via @BotFather
+  chat_id: "1190354232"             # numeric chat id (can be a group)
+  notify_high_critical: true
+  notify_summary: true
