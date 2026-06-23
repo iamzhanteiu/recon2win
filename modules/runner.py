@@ -8,16 +8,53 @@ We:
 
 If the binary is missing the runner still returns a dict (success=False)
 instead of raising — the caller decides whether the stage is optional.
+
+Verbose mode
+------------
+When ``set_verbose(True)`` has been called (typically by ``main.py`` /
+``setup.py`` when the user passes ``--verbose``), every command is
+echoed to stderr as it is about to run, and stdout/stderr lines from
+the child process are streamed live to stderr so the operator can see
+what the tool is doing in real time. The full output is still captured
+to ``logs/<stage>.{stdout,stderr}`` either way.
 """
 from __future__ import annotations
 
 import os
 import subprocess
+import sys
 import time
 from pathlib import Path
 from typing import List, Optional, Sequence
 
 from .utils import ensure_dir, safe_append
+
+
+# Module-level verbose flag. Toggled once at startup; the runner doesn't
+# re-read it on every call so that hot paths stay cheap.
+_VERBOSE: bool = False
+
+
+def set_verbose(value: bool = True) -> None:
+    """Enable/disable verbose command-echo + output streaming."""
+    global _VERBOSE
+    _VERBOSE = bool(value)
+
+
+def is_verbose() -> bool:
+    return _VERBOSE
+
+
+def _ts() -> str:
+    """UTC timestamp suitable for verbose log lines."""
+    return time.strftime("%H:%M:%S", time.gmtime())
+
+
+def _echo(prefix: str, msg: str) -> None:
+    """Print a verbose line to stderr without buffering artefacts."""
+    if not _VERBOSE:
+        return
+    print(f"[{_ts()}] {prefix} {msg}", file=sys.stderr, flush=True)
 
 
 def which(binary: str) -> Optional[str]:
@@ -83,6 +120,11 @@ def run(
       - commands.log: cumulative command history
       - <stage>.stdout: process stdout
       - <stage>.stderr: process stderr
+
+    When ``set_verbose(True)`` is in effect, the exact command line,
+    the exit code, and the duration are echoed to stderr. Stdout and
+    stderr are also dumped after the process exits so the operator can
+    see why a tool failed without opening the per-stage log files.
     """
     logs_dir = ensure_dir(Path(output_dir) / "logs")
     cmd_log = logs_dir / "commands.log"
@@ -91,6 +133,8 @@ def run(
 
     _log_command(cmd_log, cmd, stage)
 
+    cmd_str = " ".join(str(c) for c in cmd)
+    _echo(stage, f"$ {cmd_str}")
     start = time.time()
     try:
         proc = subprocess.run(
@@ -104,13 +148,27 @@ def run(
         )
         out_log.write_text(proc.stdout or "", encoding="utf-8")
         err_log.write_text(proc.stderr or "", encoding="utf-8")
+        duration = round(time.time() - start, 2)
+        _echo(stage, f"exit={proc.returncode}, duration={duration}s")
+        if _VERBOSE:
+            if proc.stderr:
+                for ln in proc.stderr.rstrip().splitlines():
+                    _echo(stage, f"stderr | {ln}")
+            if proc.stdout:
+                # stdout is often voluminous (katana crawling, nuclei
+                # findings...). Print the first 20 lines + line count.
+                lines = proc.stdout.rstrip().splitlines()
+                for ln in lines[:20]:
+                    _echo(stage, f"stdout | {ln}")
+                if len(lines) > 20:
+                    _echo(stage, f"stdout | ... ({len(lines) - 20} more lines in {out_log})")
         return {
             "returncode": proc.returncode,
             "stdout": proc.stdout,
             "stderr": proc.stderr,
             "stdout_path": str(out_log),
             "stderr_path": str(err_log),
-            "duration": round(time.time() - start, 2),
+            "duration": duration,
             "success": proc.returncode == 0,
             "timed_out": False,
             "missing_binary": False,
@@ -118,6 +176,7 @@ def run(
     except FileNotFoundError as exc:
         # binary not on PATH
         err_log.write_text(f"FileNotFoundError: {exc}\n", encoding="utf-8")
+        _echo(stage, f"missing binary: {exc}")
         return {
             "returncode": -1,
             "stdout": "",
@@ -131,6 +190,7 @@ def run(
         }
     except subprocess.TimeoutExpired:
         err_log.write_text(f"TimeoutExpired after {timeout}s\n", encoding="utf-8")
+        _echo(stage, f"TIMEOUT after {timeout}s")
         return {
             "returncode": -1,
             "stdout": "",
@@ -144,6 +204,7 @@ def run(
         }
     except Exception as exc:  # noqa: BLE001
         err_log.write_text(f"Exception: {exc}\n", encoding="utf-8")
+        _echo(stage, f"exception: {exc}")
         return {
             "returncode": -1,
             "stdout": "",

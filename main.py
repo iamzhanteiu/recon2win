@@ -57,6 +57,13 @@ def _run_stage(name: str, fn, *args, **kwargs) -> dict:
     print(f"    -> {res['status']} (count={res['count']}, {dt}s)", flush=True)
     if res.get("error"):
         print(f"    ! {res['error']}", flush=True)
+    # In dry-run, every stage that built a planned command attaches it
+    # to ``extra['planned_cmd']`` (see modules/dirsearch.py and friends).
+    # Print it so the operator can sanity-check the argv without grepping
+    # through Python.
+    planned = (res.get("extra") or {}).get("planned_cmd")
+    if planned:
+        print(f"    $ {' '.join(str(c) for c in planned)}", flush=True)
     return res
 
 
@@ -79,7 +86,15 @@ def main() -> int:
     p.add_argument("--skip-waymore", action="store_true")
     p.add_argument("--skip-arjun", action="store_true")
     p.add_argument("--skip-xnlinkfinder", action="store_true")
+    p.add_argument("-v", "--verbose", action="store_true",
+                   help="Echo every external command + its exit code, "
+                        "duration, stderr, and the first 20 lines of stdout")
     args = p.parse_args()
+
+    # Toggle the runner's verbose mode once at startup. Every stage that
+    # goes through modules.runner.run() will then echo its commands.
+    from modules import runner as runner_mod
+    runner_mod.set_verbose(args.verbose)
 
     # ---- 0. validate input + create structure ----
     try:

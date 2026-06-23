@@ -33,6 +33,16 @@ from __future__ import annotations
 
 import argparse
 import os
+import sys
+import time
+from pathlib import Path as _Path
+
+# Ensure the project root is on sys.path so `from modules import runner`
+# works whether `python3 setup.py` is invoked from this directory or any
+# other working directory.
+_PROJECT_ROOT = _Path(__file__).resolve().parent
+if str(_PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(_PROJECT_ROOT))
 import platform
 import shutil
 import subprocess
@@ -304,15 +314,47 @@ def select_install_command(binary: str, system: Optional[str] = None) -> Optiona
 
 
 def _run(cmd: list[str], *, timeout: int = 600) -> tuple[int, str, str]:
-    """Run a subprocess; return (rc, stdout, stderr). Never raises."""
+    """Run a subprocess; return (rc, stdout, stderr). Never raises.
+
+    When ``set_verbose(True)`` has been called (via ``--verbose``), the
+    command, its exit code, duration, and stderr are echoed to stderr
+    so the operator can see exactly which install / clone step is in
+    flight (apt-get, go install, pip3 install, git clone, …).
+    """
+    # Local verbose flag — checked at call time so toggling at runtime
+    # (e.g. mid-setup) takes effect.
+    verbose = False
+    try:
+        from modules import runner as _r
+        verbose = _r.is_verbose()
+    except ImportError:
+        pass
+
+    cmd_str = " ".join(str(c) for c in cmd)
+    if verbose:
+        print(f"[setup] $ {cmd_str}", file=sys.stderr, flush=True)
+    start = time.time()
     try:
         proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+        dt = round(time.time() - start, 2)
+        if verbose:
+            print(f"[setup] exit={proc.returncode}, duration={dt}s",
+                  file=sys.stderr, flush=True)
+            if proc.stderr:
+                for ln in proc.stderr.rstrip().splitlines()[-20:]:
+                    print(f"[setup] stderr | {ln}", file=sys.stderr, flush=True)
         return proc.returncode, proc.stdout, proc.stderr
     except FileNotFoundError as e:
+        if verbose:
+            print(f"[setup] missing binary: {e}", file=sys.stderr, flush=True)
         return 127, "", f"command not found: {e}"
     except subprocess.TimeoutExpired:
+        if verbose:
+            print(f"[setup] TIMEOUT after {timeout}s", file=sys.stderr, flush=True)
         return 124, "", f"timeout after {timeout}s"
     except Exception as exc:  # noqa: BLE001
+        if verbose:
+            print(f"[setup] exception: {exc}", file=sys.stderr, flush=True)
         return 1, "", str(exc)
 
 
@@ -566,7 +608,15 @@ def main() -> int:
                    help="disable ANSI color output")
     p.add_argument("-y", "--yes", action="store_true",
                    help="skip confirmation prompts")
+    p.add_argument("-v", "--verbose", action="store_true",
+                   help="echo every external command before running it "
+                        "(apt, go install, pip3 install, git clone, …)")
     args = p.parse_args()
+
+    # Propagate --verbose to the runner module so download_wordlists (via
+    # _run) and any future tool-using helpers also echo their commands.
+    from modules import runner as _runner
+    _runner.set_verbose(args.verbose)
 
     if args.all:
         args.install = True
