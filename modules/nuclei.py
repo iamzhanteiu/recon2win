@@ -113,30 +113,54 @@ def _run(
             error=(r["stderr"] or "")[:300],
         )
 
-    # parse jsonl output
+    # parse output — handle both JSONL (one object per line) AND a
+    # single JSON array (some nuclei v3.x builds write the whole
+    # findings as one array instead of one object per line). Skip any
+    # non-dict entries defensively (a stray ``[1,2,3]`` line shouldn't
+    # blow up the whole stage).
     findings: list[dict] = []
     sev_count: dict[str, int] = {s: 0 for s in SEV_ORDER}
     if json_out.exists():
-        for ln in json_out.read_text(errors="ignore").splitlines():
-            ln = ln.strip()
-            if not ln:
-                continue
+        raw = json_out.read_text(errors="ignore").strip()
+        if raw.startswith("["):
+            # Single JSON array — parse as one document, then iterate.
             try:
-                obj = json.loads(ln)
+                data = json.loads(raw)
             except json.JSONDecodeError:
-                continue
-            findings.append(obj)
+                data = []
+            if isinstance(data, list):
+                for obj in data:
+                    if isinstance(obj, dict):
+                        findings.append(obj)
+        else:
+            # JSONL — one object per line.
+            for ln in raw.splitlines():
+                ln = ln.strip()
+                if not ln:
+                    continue
+                try:
+                    obj = json.loads(ln)
+                except json.JSONDecodeError:
+                    continue
+                if isinstance(obj, dict):
+                    findings.append(obj)
+        # Aggregate severity counts once we have the parsed findings.
+        for obj in findings:
             sev = ((obj.get("info") or {}).get("severity") or "info").lower()
             sev_count[sev] = sev_count.get(sev, 0) + 1
 
-    matched = [f.get("matched-at") or f.get("host", "") for f in findings]
+    matched = [
+        f.get("matched-at") or f.get("host", "")
+        for f in findings if isinstance(f, dict)
+    ]
     write_lines(txt_out, [m for m in matched if m])
     write_json(json_out, {"findings": findings, "severity_count": sev_count})
 
     # immediate notification for High/Critical
     tg_cfg = cfg.get("telegram") or {}
     for f in findings:
-        notify_finding(f, stage=stage, cfg=tg_cfg, severity_threshold="high")
+        if isinstance(f, dict):
+            notify_finding(f, stage=stage, cfg=tg_cfg, severity_threshold="high")
 
     result = make_result(
         stage, "success", input_path=input_file,

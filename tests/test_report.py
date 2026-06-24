@@ -220,6 +220,104 @@ def test_parse_nuclei_summary_handles_missing(tmp_path: Path):
     assert sev == {}
 
 
+# ----------------------------------------------------------------------
+# Nuclei output parser — defensive against non-JSONL formats
+# ----------------------------------------------------------------------
+def test_nuclei_run_handles_json_array_output(tmp_path: Path, monkeypatch):
+    """Some nuclei v3.x builds write the entire findings as a single
+    JSON array (``[{...}, {...}]``) instead of JSONL. The parser must
+    handle BOTH formats without crashing — and must NOT append the
+    list itself into ``findings`` (which would later raise
+    ``'list' object has no attribute 'get'``)."""
+    import json as _json
+    from modules import nuclei as nuclei_mod
+
+    fdir = tmp_path / "findings" / "default"
+    fdir.mkdir(parents=True)
+    json_out = fdir / "nuclei.json"
+
+    # nuclei writes a single JSON array with two findings.
+    findings_doc = [
+        {"template-id": "tech-detect",
+         "info": {"name": "Nginx", "severity": "info"},
+         "matched-at": "https://a"},
+        {"template-id": "exposed-env",
+         "info": {"name": ".env", "severity": "high"},
+         "matched-at": "https://b/.env"},
+    ]
+    json_out.write_text(_json.dumps(findings_doc))
+    txt_out = fdir / "nuclei.txt"
+
+    def fake_run(cmd, **kw):
+        return {"returncode": 0, "stdout": "", "stderr": "",
+                "missing_binary": False, "timed_out": False, "success": True,
+                "stdout_path": "", "stderr_path": "", "log_path": "",
+                "duration": 1.0}
+    monkeypatch.setattr("modules.runner.run", fake_run)
+    monkeypatch.setattr("modules.runner.tool_available", lambda b: True)
+    monkeypatch.setattr("modules.runner.which", lambda b: f"/usr/bin/{b}")
+
+    alive = tmp_path / "alive.txt"
+    alive.write_text("https://a.example.com\n")
+    res = nuclei_mod.default_scan(
+        alive, tmp_path,
+        cfg={"nuclei": {"default": {"enabled": True, "severity": ["info"]}}},
+        resume=False, dry_run=False, skip=False,
+    )
+    # Both findings extracted despite JSON-array format.
+    assert res["status"] == "success"
+    assert res["count"] == 2
+    # txt_out has the matched URLs.
+    txt_content = txt_out.read_text()
+    assert "https://a" in txt_content
+    assert "https://b/.env" in txt_content
+
+
+def test_nuclei_run_skips_non_dict_jsonl_lines(tmp_path: Path, monkeypatch):
+    """If a JSONL line is a list (``[1, 2, 3]``) or primitive (rare,
+    but possible from a third-party templating), the parser must
+    skip it rather than append it to findings (which would crash
+    later in ``f.get('matched-at')``)."""
+    from modules import nuclei as nuclei_mod
+
+    fdir = tmp_path / "findings" / "default"
+    fdir.mkdir(parents=True)
+    json_out = fdir / "nuclei.json"
+    # Mix of valid finding, stray list, blank line, stray int, valid finding.
+    json_out.write_text(
+        '{"template-id": "t1", "info": {"severity": "info"}, "matched-at": "https://a"}\n'
+        '[1, 2, 3]\n'
+        '\n'
+        '42\n'
+        '{"template-id": "t2", "info": {"severity": "high"}, "matched-at": "https://b"}\n'
+    )
+
+    def fake_run(cmd, **kw):
+        return {"returncode": 0, "stdout": "", "stderr": "",
+                "missing_binary": False, "timed_out": False,
+                "success": True, "stdout_path": "", "stderr_path": "",
+                "log_path": "", "duration": 1.0}
+    monkeypatch.setattr("modules.runner.run", fake_run)
+    monkeypatch.setattr("modules.runner.tool_available", lambda b: True)
+    monkeypatch.setattr("modules.runner.which", lambda b: f"/usr/bin/{b}")
+
+    alive = tmp_path / "alive.txt"
+    alive.write_text("https://a.example.com\n")
+    res = nuclei_mod.default_scan(
+        alive, tmp_path,
+        cfg={"nuclei": {"default": {"enabled": True}}},
+        resume=False, dry_run=False, skip=False,
+    )
+    # Only the two valid dict findings were extracted; the stray list
+    # and integer didn't pollute the findings list.
+    assert res["status"] == "success"
+    assert res["count"] == 2
+    extra = res.get("extra") or {}
+    sev = extra.get("severity_count") or {}
+    assert sev.get("info") == 1
+    assert sev.get("high") == 1
+
+
 def test_parse_httpx_jsonl_dedupes_corrupt_lines(tmp_path: Path):
     p = tmp_path / "h.jsonl"
     p.write_text(
