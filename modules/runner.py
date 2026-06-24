@@ -18,6 +18,7 @@ timestamp, stage name, full argv). Tail it live with::
 from __future__ import annotations
 
 import os
+import shutil
 import subprocess
 import sys
 import time
@@ -109,24 +110,43 @@ def run(
 
     _log_command(cmd_log, cmd, stage)
 
-    # Resolve cmd[0] to the actual on-disk path. ``which()`` is
-    # case-insensitive, so callers can look up ``xnlinkfinder`` and still
-    # get back ``/.../bin/xnLinkFinder`` (camelCase on disk). Without
-    # this rewrite, ``subprocess`` does its own PATH lookup using the
-    # lowercase name and fails with FileNotFoundError on case-sensitive
-    # filesystems (Linux/macOS).
+    # Resolve cmd[0] to the actual on-disk path. Two cases:
+    #   1. Common — the bare name matches a binary on PATH exactly.
+    #      We use ``shutil.which()`` (case-sensitive) and keep the
+    #      bare name so the operator sees ``$ dirsearch -l ...`` in the
+    #      echo, not ``$ /usr/local/bin/dirsearch -l ...``. Even if
+    #      ``/usr/local/bin/dirsearch`` is a broken symlink or stale
+    #      installation, ``shutil.which`` returns the *first* PATH
+    #      match — which is the one subprocess.run will also find.
+    #   2. Case-mismatch (xnLinkFinder is camelCase on disk but our
+    #      command is ``xnlinkfinder``). ``shutil.which`` returns None
+    #      on case-sensitive filesystems, so we fall back to our own
+    #      case-insensitive ``which()`` to find ``xnLinkFinder``.
+    # In both cases the resolved path is what we hand to subprocess.run;
+    # the original ``cmd`` is what we show in the echo (preserves the
+    # user's intent and avoids leaking system paths into log files).
     resolved = list(cmd)
     if cmd:
-        path = which(cmd[0])
-        if path:
-            resolved[0] = path
+        bare_match = shutil.which(cmd[0])
+        if bare_match:
+            # Keep the bare name — subprocess.run will look it up on
+            # PATH the same way shutil.which did, so the result is
+            # identical. The echo stays clean.
+            resolved[0] = cmd[0]
+        else:
+            path = which(cmd[0])
+            if path:
+                # Case-insensitive match — must use the resolved path
+                # otherwise subprocess.run gets the wrong name.
+                resolved[0] = path
 
-    cmd_str = " ".join(str(c) for c in resolved)
     # Single line on stderr — what command is being run, nothing else.
     # Colored via console.cmd_echo() so parallel-stage output stays
     # scannable. Stays on stderr so it shows up immediately while the
     # process is starting (stdout would be buffered).
-    print(console.cmd_echo(stage, resolved), file=sys.stderr, flush=True)
+    # We echo the *original* cmd (not resolved) so the operator sees
+    # ``$ dirsearch -l ...`` instead of ``$ /usr/local/bin/dirsearch -l ...``.
+    print(console.cmd_echo(stage, cmd), file=sys.stderr, flush=True)
     start = time.time()
     try:
         proc = subprocess.run(

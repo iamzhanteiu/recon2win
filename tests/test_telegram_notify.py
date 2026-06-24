@@ -1,4 +1,4 @@
-"""Tests for telegram.notify_stage_result().
+"""Tests for telegram.notify_stage_result() and notify_phase_complete().
 
 We mock ``_post`` so no real HTTP traffic is generated, then verify:
   * telegram-disabled / missing config  → no call
@@ -7,12 +7,14 @@ We mock ``_post`` so no real HTTP traffic is generated, then verify:
   * nuclei stage                          → severity breakdown
   * content_discovery                     → URL count + JS count
   * generic stage                         → generic message
+  * per_phase flag (notify_phase_complete)
 """
+from pathlib import Path
 from unittest.mock import patch
 
 import pytest
 
-from modules.telegram import notify_stage_result
+from modules.telegram import notify_phase_complete, notify_stage_result
 
 
 # ----------------------------------------------------------------------
@@ -169,3 +171,135 @@ def test_returns_post_return_value():
     with patch("modules.telegram._post") as post:
         post.return_value = False  # simulate network failure
         assert notify_stage_result("subdomain", result, _cfg()) is False
+
+# ======================================================================
+# notify_phase_complete — per-stage notifications
+# ======================================================================
+from modules.telegram import notify_phase_complete
+
+
+def _cfg_pp(enabled: bool = True, per_phase: bool = True) -> dict:
+    return {
+        "enabled": enabled,
+        "bot_token": "T",
+        "chat_id": "C",
+        "notify_high_critical": True,
+        "per_phase": per_phase,
+    }
+
+
+def test_phase_complete_disabled_when_per_phase_false():
+    """The per_phase flag is OFF by default — operators opt in."""
+    result = {
+        "status": "success", "count": 343,
+        "outputs": ["/tmp/x/sub.txt"],
+    }
+    with patch("modules.telegram._post") as post:
+        assert notify_phase_complete(
+            "subdomain", result, _cfg_pp(per_phase=False), Path("/tmp/x"),
+        ) is False
+        post.assert_not_called()
+
+
+def test_phase_complete_skips_when_count_zero():
+    """Don't spam telegram on empty runs."""
+    result = {"status": "success", "count": 0, "outputs": []}
+    with patch("modules.telegram._post") as post:
+        assert notify_phase_complete(
+            "subdomain", result, _cfg_pp(), Path("/tmp/x"),
+        ) is False
+        post.assert_not_called()
+
+
+def test_phase_complete_skips_when_status_failed():
+    """Failed stages get a milestone summary, not a per-phase spam."""
+    result = {"status": "failed", "count": 0, "outputs": []}
+    with patch("modules.telegram._post") as post:
+        assert notify_phase_complete(
+            "dirsearch", result, _cfg_pp(), Path("/tmp/x"),
+        ) is False
+        post.assert_not_called()
+
+
+def test_phase_complete_skips_when_skipped():
+    result = {"status": "skipped", "count": 0, "error": "no hosts"}
+    with patch("modules.telegram._post") as post:
+        assert notify_phase_complete(
+            "dirsearch", result, _cfg_pp(), Path("/tmp/x"),
+        ) is False
+        post.assert_not_called()
+
+
+def test_phase_complete_includes_count():
+    result = {"status": "success", "count": 343, "outputs": []}
+    with patch("modules.telegram._post") as post:
+        post.return_value = True
+        assert notify_phase_complete(
+            "subdomain", result, _cfg_pp(), Path("/tmp/x"),
+        ) is True
+        msg = post.call_args[0][2]
+        assert "<b>subdomain</b>" in msg
+        assert "<code>343</code>" in msg
+        assert "result(s)" in msg
+
+
+def test_phase_complete_shows_relative_output_paths():
+    result = {
+        "status": "success", "count": 343,
+        "outputs": [
+            "/tmp/x/processed/subdomains.txt",
+            "/tmp/x/raw/subdomain/subfinder.txt",
+            "/tmp/x/raw/subdomain/amass.txt",
+        ],
+    }
+    with patch("modules.telegram._post") as post:
+        post.return_value = True
+        assert notify_phase_complete(
+            "subdomain", result, _cfg_pp(), Path("/tmp/x"),
+        ) is True
+        msg = post.call_args[0][2]
+        # All paths shown relative — no /tmp/x prefix
+        assert "processed/subdomains.txt" in msg
+        assert "raw/subdomain/subfinder.txt" in msg
+        assert "raw/subdomain/amass.txt" in msg
+        # …and the absolute prefix is gone.
+        assert "/tmp/x/" not in msg
+
+
+def test_phase_complete_truncates_long_output_lists():
+    """A stage with 10 outputs only renders the first 5 to keep the
+    message short, then appends an "and N more" line."""
+    outputs = [f"/tmp/x/file_{i}.txt" for i in range(10)]
+    result = {"status": "success", "count": 10, "outputs": outputs}
+    with patch("modules.telegram._post") as post:
+        post.return_value = True
+        assert notify_phase_complete(
+            "subdomain", result, _cfg_pp(), Path("/tmp/x"),
+        ) is True
+        msg = post.call_args[0][2]
+        # First 5 file paths
+        for i in range(5):
+            assert f"file_{i}.txt" in msg
+        # Last 5 truncated
+        assert "file_9.txt" not in msg
+        # Truncation indicator present
+        assert "and 5 more" in msg
+
+
+def test_phase_complete_works_without_output_dir():
+    """If output_dir is None, fall back to absolute paths."""
+    result = {"status": "success", "count": 5, "outputs": ["/tmp/x/a.txt"]}
+    with patch("modules.telegram._post") as post:
+        post.return_value = True
+        assert notify_phase_complete("subdomain", result, _cfg_pp()) is True
+        msg = post.call_args[0][2]
+        assert "/tmp/x/a.txt" in msg
+
+
+def test_phase_complete_skips_when_telegram_disabled():
+    result = {"status": "success", "count": 5, "outputs": ["/tmp/x/a.txt"]}
+    with patch("modules.telegram._post") as post:
+        assert notify_phase_complete(
+            "subdomain", result, _cfg_pp(enabled=False), Path("/tmp/x"),
+        ) is False
+        post.assert_not_called()

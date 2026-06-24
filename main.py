@@ -67,6 +67,25 @@ _STAGE_NOUN: dict[str, str] = {
 # Stage runner with consistent logging
 # ----------------------------------------------------------------------
 def _run_stage(name: str, fn, *args, **kwargs) -> dict:
+    """Run a single stage, render its result, and notify (console + telegram).
+
+    Stage call convention: positional args are typically
+    ``(input_path, output_dir, cfg, ...)``. We pull ``output_dir`` and
+    ``cfg`` out by position so we can:
+      * print where the artefacts were saved (relative paths),
+      * send a per-stage Telegram notification if configured.
+    """
+    # Pull metadata out of the positional args by convention. Most stage
+    # functions receive ``(input_path, output_dir, cfg, ...)``; the
+    # exceptions (e.g. ``_build_final_summary``) have output_dir in
+    # ``extra["output_folder"]`` so we fall back to that.
+    output_dir: Path | None = None
+    cfg: dict = {}
+    if len(args) >= 2 and isinstance(args[1], Path):
+        output_dir = args[1]
+    if len(args) >= 3 and isinstance(args[2], dict):
+        cfg = args[2]
+
     print(console.phase_header(name), flush=True)
     t0 = time.time()
     try:
@@ -91,6 +110,18 @@ def _run_stage(name: str, fn, *args, **kwargs) -> dict:
         # Skip the separate "!" line for skipped stages; the error is
         # already informative (e.g. "no alive hosts to scan").
         print(console.phase_info_line(err), flush=True)
+
+    # Show where the artefacts landed (relative paths, one per line).
+    # The operator can scroll back to see "what did this stage produce?".
+    if output_dir is not None:
+        for line in console.phase_outputs(res, output_dir):
+            print(line, flush=True)
+
+    # Per-stage Telegram notification (opt-in via telegram.per_phase).
+    telegram.notify_phase_complete(
+        name, res, cfg.get("telegram") or {}, output_dir=output_dir,
+    )
+
     # In dry-run, every stage that built a planned command attaches it
     # to ``extra['planned_cmd']`` (see modules/dirsearch.py and friends).
     # Print it so the operator can sanity-check the argv without grepping

@@ -12,6 +12,7 @@ from __future__ import annotations
 import json
 import time
 from html import escape
+from pathlib import Path
 from typing import Optional
 
 import requests
@@ -42,6 +43,16 @@ def _h(text: str) -> str:
     """Escape user-supplied text for Telegram HTML parse mode."""
     # Telegram HTML parser requires escaping &, <, >. Quotes are fine.
     return escape(str(text), quote=False)
+
+
+def _relative(path_str: str, output_dir) -> str:
+    """Return ``path_str`` relative to ``output_dir`` if possible."""
+    if not output_dir:
+        return path_str
+    try:
+        return str(Path(path_str).relative_to(output_dir))
+    except (ValueError, TypeError):
+        return path_str
 
 
 def notify(message: str, cfg: Optional[dict], *, silent: bool = True) -> bool:
@@ -78,6 +89,60 @@ def notify_finding(
         f"target: <code>{_h(matched)}</code>\n"
         f"template: <code>{_h(tmpl)}</code>"
     )
+    return _post(cfg["bot_token"], cfg["chat_id"], msg)
+
+
+def notify_phase_complete(
+    stage: str, result: dict, cfg: Optional[dict], output_dir=None
+) -> bool:
+    """Per-phase completion notification with count + output paths.
+
+    Fires for every stage that finishes — not just nuclei / content
+    discovery like ``notify_stage_result``. Operator opt-in via the
+    ``telegram.per_phase`` config flag (default ``false`` because the
+    default scan produces ~13 messages).
+
+    Rules:
+      * Telegram must be enabled and fully configured.
+      * ``telegram.per_phase`` must be ``true``.
+      * ``status`` must be ``"success"`` — we don't notify on failed/
+        skipped stages (the milestone summary covers those).
+      * ``count`` must be > 0 — empty runs don't get a message.
+
+    The message looks like::
+
+        ✅ <b>subdomain</b> — <code>343</code> result(s)
+          • processed/subdomains.txt
+          • raw/subdomain/subfinder.txt
+          • raw/subdomain/amass.txt
+          • raw/subdomain/chaos.txt
+    """
+    if not _enabled(cfg):
+        return False
+    if not isinstance(result, dict):
+        return False
+    if not cfg.get("per_phase", False):
+        return False
+    if result.get("status") != "success":
+        return False
+    try:
+        count = int(result.get("count", 0) or 0)
+    except (TypeError, ValueError):
+        count = 0
+    if count <= 0:
+        return False
+
+    outputs = result.get("outputs") or []
+    # Render up to 5 paths inline; truncate with "and N more" if more.
+    output_lines: list[str] = []
+    for o in outputs[:5]:
+        output_lines.append(f"  • <code>{_h(_relative(str(o), output_dir))}</code>")
+    if len(outputs) > 5:
+        output_lines.append(f"  • <i>…and {len(outputs) - 5} more</i>")
+
+    msg = f"✅ <b>{_h(stage)}</b> — <code>{count}</code> result(s)"
+    if output_lines:
+        msg += "\n" + "\n".join(output_lines)
     return _post(cfg["bot_token"], cfg["chat_id"], msg)
 
 

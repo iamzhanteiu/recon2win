@@ -262,6 +262,43 @@ def phase_info_line(msg: str) -> str:
     return f"  {c('ℹ', 'cyan', bold=True)} {c(msg, 'cyan')}"
 
 
+def phase_outputs(result: dict, output_dir) -> list[str]:
+    """Return one dim line per output file in the stage result.
+
+    Paths are shown relative to ``output_dir`` so the output stays
+    readable in a 100-column terminal. Output paths that don't fall
+    under ``output_dir`` (rare — e.g. an absolute path passed by a
+    stage) are shown as-is.
+
+    Example::
+
+        → processed/subdomains.txt
+        → raw/subdomain/subfinder.txt
+        → raw/subdomain/amass.txt
+        → raw/subdomain/chaos.txt
+
+    Returns an empty list when the stage has no outputs to report.
+    """
+    from pathlib import Path
+    outputs = (result or {}).get("outputs") or []
+    if not outputs:
+        return []
+    lines: list[str] = []
+    arrow = c("→", "dim")
+    for raw in outputs:
+        try:
+            p = Path(str(raw))
+            try:
+                rel = p.relative_to(output_dir)
+                shown = str(rel)
+            except ValueError:
+                shown = str(p)
+        except Exception:  # noqa: BLE001
+            shown = str(raw)
+        lines.append(f"  {arrow} {c(shown, 'dim')}")
+    return lines
+
+
 def cmd_echo(stage: str, cmd) -> str:
     """``  [stage_name] $ cmd arg1 arg2 ...`` for printing.
 

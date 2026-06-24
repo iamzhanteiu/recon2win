@@ -139,5 +139,9 @@ telegram:
   enabled: false
   bot_token: "8859623526:AAFqqNF8tLoELotR1BMwKRAe6jPuFP7tckM"           # create a bot via @BotFather
   chat_id: "1190354232"             # numeric chat id (can be a group)
-  notify_high_critical: true
-  notify_summary: true
+  notify_high_critical: true        # immediate alert per high/critical nuclei finding
+  notify_summary: true              # milestone summaries at stage-6 and final
+  # Per-phase notification — sends one message per stage with count + output
+  # paths. Off by default (a full scan produces ~13 messages). Turn on for
+  # a "live progress feed" experience; turn off for milestone-only updates.
+  per_phase: false

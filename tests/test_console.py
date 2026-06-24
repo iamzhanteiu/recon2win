@@ -6,6 +6,8 @@ grep-friendly; with colors enabled it must contain ANSI escapes.
 """
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 from modules import console
@@ -218,6 +220,75 @@ def test_error_line_no_color_when_disabled():
     console.set_enabled(False)
     out = console.phase_error_line("oh no")
     assert "\033" not in out
+
+
+# ----------------------------------------------------------------------
+# phase_outputs — one dim line per output file
+# ----------------------------------------------------------------------
+def test_phase_outputs_returns_empty_when_no_outputs():
+    assert console.phase_outputs({}, Path("/tmp/x")) == []
+    assert console.phase_outputs({"outputs": []}, Path("/tmp/x")) == []
+    assert console.phase_outputs(None, Path("/tmp/x")) == []
+
+
+def test_phase_outputs_shows_paths_relative_to_output_dir():
+    result = {
+        "outputs": [
+            "/tmp/x/processed/subdomains.txt",
+            "/tmp/x/raw/subdomain/subfinder.txt",
+        ],
+    }
+    out = console.phase_outputs(result, Path("/tmp/x"))
+    assert len(out) == 2
+    # Both paths shown relative to output_dir (not absolute).
+    assert "processed/subdomains.txt" in out[0]
+    assert "raw/subdomain/subfinder.txt" in out[1]
+    # And the absolute prefix is gone.
+    assert "/tmp/x" not in out[0]
+    assert "/tmp/x" not in out[1]
+
+
+def test_phase_outputs_handles_paths_outside_output_dir():
+    """If a stage passes an absolute path that's not under output_dir
+    (rare but possible — e.g. a /tmp scratch file), show the path as-is
+    rather than crashing."""
+    result = {"outputs": ["/var/tmp/scratch.txt"]}
+    out = console.phase_outputs(result, Path("/tmp/x"))
+    assert len(out) == 1
+    assert "/var/tmp/scratch.txt" in out[0]
+
+
+def test_phase_outputs_uses_arrow_glyph():
+    result = {"outputs": ["/tmp/x/a.txt"]}
+    out = console.phase_outputs(result, Path("/tmp/x"))
+    assert "→" in out[0]
+
+
+def test_phase_outputs_no_color_when_disabled():
+    console.set_enabled(False)
+    result = {"outputs": ["/tmp/x/a.txt"]}
+    out = console.phase_outputs(result, Path("/tmp/x"))
+    # No ANSI escape codes
+    assert all("\033" not in line for line in out)
+    # Still has the arrow
+    assert all("→" in line for line in out)
+
+
+def test_phase_outputs_handles_non_string_outputs():
+    """Outputs list might contain Path objects; helper should coerce."""
+    result = {"outputs": [Path("/tmp/x/a.txt"), Path("/tmp/x/b.txt")]}
+    out = console.phase_outputs(result, Path("/tmp/x"))
+    assert len(out) == 2
+    assert "a.txt" in out[0]
+    assert "b.txt" in out[1]
+
+
+def test_phase_outputs_handles_no_output_dir():
+    """When output_dir is None we fall back to absolute paths."""
+    result = {"outputs": ["/tmp/x/a.txt"]}
+    out = console.phase_outputs(result, None)
+    assert len(out) == 1
+    assert "/tmp/x/a.txt" in out[0]
 
 
 # ----------------------------------------------------------------------

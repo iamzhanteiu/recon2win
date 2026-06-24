@@ -252,11 +252,24 @@ tools land in `logs/subdomain.log` with section headers).
 ## Telegram
 
 Fill in `bot_token` and `chat_id` in `config.yml` and set `enabled: true`.
-- High/Critical nuclei findings fire an **immediate** alert.
-- Per-stage summaries fire when `nuclei_default`, `nuclei_dynamic`, and
-  `content_discovery` finish with results (count > 0).
-- Stage-6 and final summaries are sent at the end of the run.
-- The **final** Telegram message includes the path to `final_report.html`.
+
+Three notification modes, all controllable via flags:
+
+| Flag | Default | What it does |
+|---|---|---|
+| `notify_high_critical` | `true` | Immediate alert for each High/Critical nuclei finding (with template + target URL) |
+| `notify_summary` | `true` | Milestone summary at stage-6 and at the end of the run (includes final HTML path) |
+| `per_phase` | `false` | One message per stage with count + output paths (~13 messages per scan — turn on for a live progress feed) |
+
+Per-stage messages look like:
+
+```
+✅ subdomain — 343 result(s)
+  • processed/subdomains.txt
+  • raw/subdomain/subfinder.txt
+  • raw/subdomain/amass.txt
+  • raw/subdomain/chaos.txt
+```
 
 ## Final report
 
