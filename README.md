@@ -420,6 +420,31 @@ The tests cover the pure helpers in `modules/url_merge.py` and
 `modules/dirsearch.py`, plus a resume-mode behaviour test that uses
 `tmp_path` fixtures to assert stage-skip logic.
 
+## Web UI (optional)
+
+`web/app.py` is a tiny Flask server that lets you run recon2win from
+a browser with a live terminal view (xterm.js + Server-Sent Events).
+
+```bash
+pip install flask                 # optional — CLI works without it
+python3 web/app.py                # http://127.0.0.1:5000
+python3 web/app.py --host 0.0.0.0 --port 8080
+```
+
+Endpoints:
+
+| Route | Method | Purpose |
+|---|---|---|
+| `/` | GET | Single-page UI (form + xterm.js terminal) |
+| `/api/run` | POST | Start a scan, returns `scan_id` |
+| `/api/stream/<scan_id>` | GET | SSE stream of stdout |
+| `/api/status/<scan_id>` | GET | JSON snapshot |
+| `/api/scans` | GET | List known scan_ids |
+
+No auth, no persistence — single-process dev server only. For
+real-world usage run behind a reverse proxy (nginx + auth_basic) or
+use a production WSGI server (`gunicorn web.app:app`).
+
 ## Required external tools
 
 | Tool         | Stage(s)    | Install                                           |

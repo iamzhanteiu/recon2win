@@ -9,3 +9,7 @@ setuptools>=68.0
 # when stdout is a TTY. Falls back to a no-op (no import, no bar) when
 # rich is missing OR when output is piped — log files stay clean.
 rich>=13.0
+# Flask powers ``web/app.py`` — a small server that lets you run
+# recon2win from a browser with a live terminal view. Optional: the
+# CLI workflow works without it.
+flask>=3.0
