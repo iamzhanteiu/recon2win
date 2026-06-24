@@ -90,6 +90,16 @@ arjun:
   threads: 5
   rate_limit: 60          # requests per minute
   timeout: 3600
+  # Cap the number of dynamic URLs fed to arjun. Without this, an
+  # aggressive crawler + waymore can produce 5k+ URLs and arjun will
+  # sit fuzzing them for an hour before timing out. The framework
+  # ranks the URLs by high-value hints (api/login/admin/etc.) and keeps
+  # the top N — raise this if you have a small, curated target list.
+  max_urls: 200
+  # Per-request HTTP timeout (arjun -T). Default 15s is too generous
+  # for archive noise; 10s keeps a single hung URL from eating the
+  # whole stage budget.
+  request_timeout: 10
 
 # ---------- Nuclei ----------
 nuclei:

@@ -1,2 +1,7 @@
 pyyaml>=6.0
 requests>=2.31.0
+# setuptools ships ``pkg_resources``. dirsearch imports it from the
+# stdlib at module load — Python 3.12+ removed it from the stdlib, so
+# without this dep dirsearch crashes with ModuleNotFoundError the
+# instant you run it (count=0, 0.73s in the wild).
+setuptools>=68.0

@@ -42,28 +42,41 @@ from modules.report import (
 # ----------------------------------------------------------------------
 @pytest.fixture
 def fake_outputs(tmp_path: Path) -> Path:
-    """Populate ``tmp_path`` with a realistic but minimal output tree."""
+    """Populate ``tmp_path`` with a realistic but minimal output tree
+    using the v2 layout (raw grouped per stage, findings per kind)."""
     base = tmp_path
-    raw = base / "raw"
+    raw_sub = base / "raw" / "subdomain"
+    raw_cd = base / "raw" / "content_discovery"
+    raw_ds = base / "raw" / "dirsearch"
+    raw_wm = base / "raw" / "waymore"
+    raw_ar = base / "raw" / "arjun"
     proc = base / "processed"
-    findings = base / "findings"
+    fnd_def = base / "findings" / "default"
+    fnd_dyn = base / "findings" / "dynamic"
     logs = base / "logs"
-    for d in (raw, proc, findings, logs):
+    for d in (raw_sub, raw_cd, raw_ds, raw_wm, raw_ar,
+              proc, fnd_def, fnd_dyn, logs):
         d.mkdir(parents=True, exist_ok=True)
 
-    # raw
-    (raw / "subfinder.txt").write_text("a.example.com\nb.example.com\n")
-    (raw / "amass.txt").write_text("c.example.com\n")
-    (raw / "chaos.txt").write_text("")
-    (raw / "katana_urls.txt").write_text(
+    # raw/subdomain/
+    (raw_sub / "subfinder.txt").write_text("a.example.com\nb.example.com\n")
+    (raw_sub / "amass.txt").write_text("c.example.com\n")
+    (raw_sub / "chaos.txt").write_text("")
+    # raw/content_discovery/
+    (raw_cd / "katana_urls.txt").write_text(
         "https://example.com/login\nhttps://example.com/admin\n"
     )
-    (raw / "urlfinder_urls.txt").write_text("https://example.com/api/users\n")
-    (raw / "dirsearch_raw.txt").write_text(
+    (raw_cd / "urlfinder_urls.txt").write_text("https://example.com/api/users\n")
+    # raw/dirsearch/
+    (raw_ds / "dirsearch_raw.txt").write_text(
         "200  10B  https://example.com/.env\n"
         "200   5B  https://example.com/.git/HEAD\n"
     )
-    (raw / "waymore_raw.txt").write_text("https://example.com/old/login\n")
+    (raw_ds / "merged_wordlists.txt").write_text("/.env\n/.git\n/admin\n")
+    # raw/waymore/
+    (raw_wm / "waymore_raw.txt").write_text("https://example.com/old/login\n")
+    # raw/arjun/
+    (raw_ar / "input_subset.txt").write_text("https://example.com/login\n")
 
     # processed
     (proc / "subdomains.txt").write_text("a.example.com\nb.example.com\nc.example.com\n")
@@ -85,20 +98,14 @@ def fake_outputs(tmp_path: Path) -> Path:
          "status_code": 200, "title": "API", "content_type": "application/json",
          "content_length": 567, "webserver": "nginx", "tech": "Node.js"},
     ]))
-    (proc / "alive_detail.csv").write_text(
-        "url,status_code,content_length,content_type,webserver,tech\n"
-        "https://a.example.com,200,1234,text/html,nginx,PHP\n"
-    )
     (proc / "crawler_urls.txt").write_text(
         "https://example.com/login\nhttps://example.com/admin\n"
         "https://example.com/api/users\n"
     )
-    (proc / "js_urls_from_crawler.txt").write_text("https://example.com/app.js\n")
     (proc / "dirsearch_urls.txt").write_text(
         "https://example.com/.env\nhttps://example.com/.git/HEAD\n"
     )
     (proc / "waymore_urls.txt").write_text("https://example.com/old/login\n")
-    (proc / "all_urls_raw.txt").write_text("https://example.com/login\n")
     (proc / "all_urls.txt").write_text(
         "https://example.com/login\nhttps://example.com/admin\n"
         "https://example.com/.env\nhttps://example.com/api/users\n"
@@ -134,11 +141,11 @@ def fake_outputs(tmp_path: Path) -> Path:
         "https://example.com/admin?debug=\n"
     )
 
-    # findings
-    (findings / "nuclei_default.txt").write_text(
+    # findings/<kind>/
+    (fnd_def / "nuclei.txt").write_text(
         "https://a.example.com\nhttps://b.example.com\n"
     )
-    (findings / "nuclei_default.json").write_text(json.dumps({
+    (fnd_def / "nuclei.json").write_text(json.dumps({
         "findings": [
             {"template-id": "tech-detect", "info": {"name": "Nginx",
              "severity": "info"}, "matched-at": "https://a.example.com"},
@@ -148,8 +155,8 @@ def fake_outputs(tmp_path: Path) -> Path:
         ],
         "severity_count": {"info": 1, "high": 1, "medium": 0, "low": 0, "critical": 0},
     }))
-    (findings / "nuclei_dynamic.txt").write_text("https://example.com/login?id=\n")
-    (findings / "nuclei_dynamic.json").write_text(json.dumps({
+    (fnd_dyn / "nuclei.txt").write_text("https://example.com/login?id=\n")
+    (fnd_dyn / "nuclei.json").write_text(json.dumps({
         "findings": [
             {"template-id": "sqli-error", "info": {"name": "SQL error",
              "severity": "critical"}, "matched-at": "https://example.com/login?id=",
@@ -163,6 +170,7 @@ def fake_outputs(tmp_path: Path) -> Path:
         "[2026-06-23T10:00:00Z] [subdomain] subfinder -d example.com -all\n"
         "[2026-06-23T10:00:05Z] [dnsx] dnsx -l subdomains.txt -json\n"
     )
+    (logs / "stages.json").write_text("[]")
     return base
 
 
@@ -306,10 +314,10 @@ def test_extract_interesting_api_paths_dedupes():
 # ----------------------------------------------------------------------
 def test_rel_link_from_report_to_raw(tmp_path: Path):
     report = tmp_path / "report" / "final_report.html"
-    target = tmp_path / "raw" / "subfinder.txt"
-    # from report/final_report.html, target is ../raw/subfinder.txt
+    target = tmp_path / "raw" / "subdomain" / "subfinder.txt"
+    # from report/final_report.html, target is ../raw/subdomain/subfinder.txt
     link = rel_link(report, target)
-    assert link == "../raw/subfinder.txt"
+    assert link == "../raw/subdomain/subfinder.txt"
 
 
 def test_rel_link_from_report_to_logs(tmp_path: Path):
@@ -499,26 +507,24 @@ def test_render_html_uses_clickable_links(fake_outputs: Path):
     html = ReportBuilder(_make_inputs(fake_outputs)).render_html(
         ReportBuilder(_make_inputs(fake_outputs)).collect()
     )
-    # every required link should be present
+    # every required link should be present (v2 layout)
     for rel in [
-        "../raw/subfinder.txt",
-        "../raw/amass.txt",
-        "../raw/chaos.txt",
+        "../raw/subdomain/subfinder.txt",
+        "../raw/subdomain/amass.txt",
+        "../raw/subdomain/chaos.txt",
         "../processed/subdomains.txt",
         "../processed/resolved.txt",
         "../processed/resolved_detail.json",
         "../processed/alive.txt",
         "../processed/alive_detail.json",
-        "../processed/alive_detail.csv",
-        "../raw/katana_urls.txt",
-        "../raw/urlfinder_urls.txt",
+        "../raw/content_discovery/katana_urls.txt",
+        "../raw/content_discovery/urlfinder_urls.txt",
         "../processed/crawler_urls.txt",
-        "../processed/js_urls_from_crawler.txt",
-        "../raw/dirsearch_raw.txt",
+        "../raw/dirsearch/dirsearch_raw.txt",
+        "../raw/dirsearch/merged_wordlists.txt",
         "../processed/dirsearch_urls.txt",
-        "../raw/waymore_raw.txt",
+        "../raw/waymore/waymore_raw.txt",
         "../processed/waymore_urls.txt",
-        "../processed/all_urls_raw.txt",
         "../processed/all_urls.txt",
         "../processed/js_urls.txt",
         "../processed/dynamic_urls.txt",
@@ -527,12 +533,14 @@ def test_render_html_uses_clickable_links(fake_outputs: Path):
         "../processed/alive_urls.txt",
         "../processed/alive_urls_detail.json",
         "../processed/arjun_params.txt",
+        "../raw/arjun/input_subset.txt",
         "../processed/parameterized_urls.txt",
-        "../findings/nuclei_default.txt",
-        "../findings/nuclei_default.json",
-        "../findings/nuclei_dynamic.txt",
-        "../findings/nuclei_dynamic.json",
+        "../findings/default/nuclei.txt",
+        "../findings/default/nuclei.json",
+        "../findings/dynamic/nuclei.txt",
+        "../findings/dynamic/nuclei.json",
         "../logs/commands.log",
+        "../logs/stages.json",
     ]:
         assert f'href="{rel}"' in html, f"missing clickable link: {rel}"
 
@@ -604,9 +612,9 @@ def test_render_markdown_uses_relative_links(fake_outputs: Path):
     md = ReportBuilder(_make_inputs(fake_outputs)).render_markdown(
         ReportBuilder(_make_inputs(fake_outputs)).collect()
     )
-    assert "](../raw/subfinder.txt)" in md
+    assert "](../raw/subdomain/subfinder.txt)" in md
     assert "](../logs/commands.log)" in md
-    assert "](../findings/nuclei_default.json)" in md
+    assert "](../findings/default/nuclei.json)" in md
 
 
 def test_render_markdown_includes_timing(fake_outputs: Path):

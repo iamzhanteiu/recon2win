@@ -381,25 +381,36 @@ def _stage_results() -> list[dict]:
 # Populate an output tree
 # ----------------------------------------------------------------------
 def populate(output_dir: Path, domain: str) -> dict:
-    raw = output_dir / "raw"
+    # v2 layout — raw outputs grouped per stage, findings grouped per kind
+    raw_sub = output_dir / "raw" / "subdomain"
+    raw_cd = output_dir / "raw" / "content_discovery"
+    raw_ds = output_dir / "raw" / "dirsearch"
+    raw_wm = output_dir / "raw" / "waymore"
+    raw_ar = output_dir / "raw" / "arjun"
     proc = output_dir / "processed"
-    findings = output_dir / "findings"
+    fnd_def = output_dir / "findings" / "default"
+    fnd_dyn = output_dir / "findings" / "dynamic"
     logs = output_dir / "logs"
-    for d in (raw, proc, findings, logs):
+    for d in (raw_sub, raw_cd, raw_ds, raw_wm, raw_ar,
+              proc, fnd_def, fnd_dyn, logs):
         d.mkdir(parents=True, exist_ok=True)
 
     subs = _subdomains()
-    subs_simple = [s.replace(f".{domain}", "") for s in subs]
 
-    # raw
-    (raw / "subfinder.txt").write_text("\n".join(subs[:8]) + "\n")
-    (raw / "amass.txt").write_text("\n".join(subs[5:]) + "\n")
-    (raw / "chaos.txt").write_text("\n".join(subs[::2]) + "\n")
-    (raw / "katana_urls.txt").write_text("\n".join(_crawler_urls()[:10]) + "\n")
-    (raw / "urlfinder_urls.txt").write_text("\n".join(_crawler_urls()[10:]) + "\n")
-    (raw / "dirsearch_raw.txt").write_text("\n".join(
+    # raw/subdomain/
+    (raw_sub / "subfinder.txt").write_text("\n".join(subs[:8]) + "\n")
+    (raw_sub / "amass.txt").write_text("\n".join(subs[5:]) + "\n")
+    (raw_sub / "chaos.txt").write_text("\n".join(subs[::2]) + "\n")
+    # raw/content_discovery/
+    (raw_cd / "katana_urls.txt").write_text("\n".join(_crawler_urls()[:10]) + "\n")
+    (raw_cd / "urlfinder_urls.txt").write_text("\n".join(_crawler_urls()[10:]) + "\n")
+    # raw/dirsearch/
+    (raw_ds / "dirsearch_raw.txt").write_text("\n".join(
         f"200  {random.randint(10, 200)}B  {u}" for u in _dirsearch_urls()) + "\n")
-    (raw / "waymore_raw.txt").write_text("\n".join(_waymore_urls()) + "\n")
+    (raw_ds / "merged_wordlists.txt").write_text(
+        "\n".join(["/.env", "/admin", "/login", "/api/v1/users"]) + "\n")
+    # raw/waymore/
+    (raw_wm / "waymore_raw.txt").write_text("\n".join(_waymore_urls()) + "\n")
 
     # processed — subdomains
     (proc / "subdomains.txt").write_text("\n".join(subs) + "\n")
@@ -410,23 +421,13 @@ def populate(output_dir: Path, domain: str) -> dict:
     alive_urls = [a["url"] for a in assets]
     (proc / "alive.txt").write_text("\n".join(alive_urls) + "\n")
     (proc / "alive_detail.json").write_text(json.dumps(assets, indent=2))
-    # alive_detail.csv
-    csv_lines = ["url,input,status_code,content_length,content_type,webserver,tech"]
-    for a in assets:
-        csv_lines.append(
-            f"{a['url']},{a['input']},{a['status_code']},"
-            f"{a['content_length']},{a['content_type']},{a['webserver']},{a['tech']}"
-        )
-    (proc / "alive_detail.csv").write_text("\n".join(csv_lines) + "\n")
     # crawler
     (proc / "crawler_urls.txt").write_text("\n".join(_crawler_urls()) + "\n")
-    (proc / "js_urls_from_crawler.txt").write_text("\n".join(_js_urls()) + "\n")
     # dirsearch / waymore
     (proc / "dirsearch_urls.txt").write_text("\n".join(_dirsearch_urls()) + "\n")
     (proc / "waymore_urls.txt").write_text("\n".join(_waymore_urls()) + "\n")
     # merged
     all_urls = list({*_crawler_urls(), *_dirsearch_urls(), *_waymore_urls()})
-    (proc / "all_urls_raw.txt").write_text("\n".join(all_urls) + "\n")
     (proc / "all_urls.txt").write_text("\n".join(all_urls) + "\n")
     (proc / "js_urls.txt").write_text("\n".join(_js_urls()) + "\n")
     # dynamic = everything that is not a static asset
@@ -449,13 +450,15 @@ def populate(output_dir: Path, domain: str) -> dict:
     raw_arjun, param_urls = _arjun_params()
     (proc / "arjun_params.txt").write_text("\n".join(raw_arjun) + "\n")
     (proc / "parameterized_urls.txt").write_text("\n".join(param_urls) + "\n")
+    # raw/arjun/
+    (raw_ar / "input_subset.txt").write_text("\n".join(param_urls) + "\n")
 
-    # findings
+    # findings/<kind>/
     n_def = _nuclei_default()
     n_dyn = _nuclei_dynamic()
-    (findings / "nuclei_default.txt").write_text(
+    (fnd_def / "nuclei.txt").write_text(
         "\n".join(f["matched-at"] for f in n_def) + "\n")
-    (findings / "nuclei_default.json").write_text(json.dumps({
+    (fnd_def / "nuclei.json").write_text(json.dumps({
         "findings": n_def,
         "severity_count": {
             "critical": sum(1 for f in n_def if f["info"]["severity"] == "critical"),
@@ -465,9 +468,9 @@ def populate(output_dir: Path, domain: str) -> dict:
             "info":     sum(1 for f in n_def if f["info"]["severity"] == "info"),
         },
     }, indent=2))
-    (findings / "nuclei_dynamic.txt").write_text(
+    (fnd_dyn / "nuclei.txt").write_text(
         "\n".join(f["matched-at"] for f in n_dyn) + "\n")
-    (findings / "nuclei_dynamic.json").write_text(json.dumps({
+    (fnd_dyn / "nuclei.json").write_text(json.dumps({
         "findings": n_dyn,
         "severity_count": {
             "critical": sum(1 for f in n_dyn if f["info"]["severity"] == "critical"),
@@ -480,13 +483,13 @@ def populate(output_dir: Path, domain: str) -> dict:
 
     # logs
     cmd_lines = [
-        f"[2026-06-23T10:00:00Z] [subdomain] subfinder -d {domain} -all -silent -o raw/subfinder.txt",
-        f"[2026-06-23T10:00:05Z] [subdomain] amass enum -passive -d {domain} -o raw/amass.txt",
+        f"[2026-06-23T10:00:00Z] [subdomain] subfinder -d {domain} -all -silent -o raw/subdomain/subfinder.txt",
+        f"[2026-06-23T10:00:05Z] [subdomain] amass enum -passive -d {domain} -o raw/subdomain/amass.txt",
         f"[2026-06-23T10:00:10Z] [dnsx] dnsx -l processed/subdomains.txt -json -resp -o processed/resolved_detail.json",
         f"[2026-06-23T10:00:14Z] [httpx_alive] httpx -l processed/resolved.txt -json -o processed/alive_detail.json",
         f"[2026-06-23T10:00:22Z] [content_discovery_katana] katana -list processed/alive.txt -depth 3 -silent",
-        f"[2026-06-23T10:00:47Z] [content_discovery_urlfinder] urlfinder -i processed/alive.txt -o raw/urlfinder_urls.txt",
-        f"[2026-06-23T10:01:18Z] [dirsearch] dirsearch -l processed/alive.txt -e bak,old,zip,env,git",
+        f"[2026-06-23T10:00:47Z] [content_discovery_urlfinder] urlfinder -i processed/alive.txt -o raw/content_discovery/urlfinder_urls.txt",
+        f"[2026-06-23T10:01:18Z] [dirsearch] dirsearch -l processed/alive.txt -w raw/dirsearch/merged_wordlists.txt",
         f"[2026-06-23T10:01:49Z] [nuclei_default] nuclei -l processed/alive.txt -severity critical,high,medium,low,info",
         f"[2026-06-23T10:03:17Z] [url_merge] merging crawler + dirsearch + waymore into processed/all_urls.txt",
         f"[2026-06-23T10:03:25Z] [httpx_urls] httpx -l processed/all_urls.txt -json",
@@ -495,6 +498,7 @@ def populate(output_dir: Path, domain: str) -> dict:
         f"[2026-06-23T10:04:56Z] [nuclei_dynamic] nuclei -l processed/parameterized_urls.txt -tags sqli,xss,ssrf",
     ]
     (logs / "commands.log").write_text("\n".join(cmd_lines) + "\n")
+    (logs / "stages.json").write_text(json.dumps([], indent=2))
 
     return {
         "subs_count": len(subs),

@@ -37,11 +37,76 @@ def validate_domain(domain: str) -> str:
 # Filesystem layout
 # ----------------------------------------------------------------------
 def create_output_structure(domain: str, root: str = "outputs") -> Path:
-    """Create the standard folder tree under <root>/<domain>/."""
+    """Create the standard folder tree under ``<root>/<domain>/``.
+
+    Layout (v2 — grouped by stage for ``raw/`` and ``findings/``):
+
+        <root>/<domain>/
+            raw/                     # tool outputs grouped by stage
+                subdomain/           # subfinder.txt, amass.txt, chaos.txt
+                content_discovery/   # katana_urls.txt, urlfinder_urls.txt
+                dirsearch/           # dirsearch_raw.txt, merged_wordlists.txt
+                waymore/             # waymore_raw.txt
+                arjun/               # input_subset.txt
+            processed/               # cleaned + merged artefacts, flat
+            findings/                # nuclei only, grouped by kind
+                default/             # nuclei.json, nuclei.txt
+                dynamic/             # nuclei.json, nuclei.txt
+            logs/                    # commands.log, stages.json, <stage>.log
+            tests_input/             # reserved for future sample inputs
+            report/                  # final_report.{html,md,json}
+    """
     base = Path(root) / domain
-    for sub in ("raw", "processed", "findings", "logs", "tests_input"):
+    for sub in (
+        "raw",
+        "raw/subdomain",
+        "raw/content_discovery",
+        "raw/dirsearch",
+        "raw/waymore",
+        "raw/arjun",
+        "processed",
+        "findings",
+        "findings/default",
+        "findings/dynamic",
+        "logs",
+        "tests_input",
+        "report",
+    ):
         (base / sub).mkdir(parents=True, exist_ok=True)
     return base
+
+
+def raw_dir(output_dir: Path, stage: str) -> Path:
+    """Return ``<output_dir>/raw/<stage>/`` and create it if missing.
+
+    Centralises the per-stage raw subfolder convention so callers don't
+    accidentally write to the old flat ``raw/`` root. Raises if *stage*
+    is not a known subfolder (catches typos at write time).
+    """
+    valid = {"subdomain", "content_discovery", "dirsearch", "waymore", "arjun"}
+    if stage not in valid:
+        raise ValueError(
+            f"unknown raw subfolder {stage!r} — valid options: {sorted(valid)}"
+        )
+    d = output_dir / "raw" / stage
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+def findings_dir(output_dir: Path, kind: str) -> Path:
+    """Return ``<output_dir>/findings/<kind>/`` and create it if missing.
+
+    ``kind`` is one of ``"default"`` or ``"dynamic"`` (the two nuclei
+    scan modes).
+    """
+    valid = {"default", "dynamic"}
+    if kind not in valid:
+        raise ValueError(
+            f"unknown findings subfolder {kind!r} — valid options: {sorted(valid)}"
+        )
+    d = output_dir / "findings" / kind
+    d.mkdir(parents=True, exist_ok=True)
+    return d
 
 
 def ensure_dir(p: Path) -> Path:

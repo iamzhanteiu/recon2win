@@ -323,27 +323,33 @@ class ReportBuilder:
 
     # Every file the report must reference. ``kind`` drives the empty-state
     # label: ``"raw"`` / ``"processed"`` / ``"findings"`` / ``"logs"``.
+    # Paths follow the v2 layout: raw outputs are grouped per stage
+    # (``raw/<stage>/...``) and findings are grouped per kind
+    # (``findings/<kind>/nuclei.{json,txt}``).
     OUTPUT_FILES: list[tuple[str, str, Path]] = [
-        # raw/
-        ("raw/subfinder.txt",            "raw",       "subfinder raw output"),
-        ("raw/amass.txt",                "raw",       "amass raw output"),
-        ("raw/chaos.txt",                "raw",       "chaos raw output"),
-        ("raw/katana_urls.txt",          "raw",       "katana raw crawl"),
-        ("raw/urlfinder_urls.txt",       "raw",       "urlfinder raw crawl"),
-        ("raw/dirsearch_raw.txt",        "raw",       "dirsearch raw output"),
-        ("raw/waymore_raw.txt",          "raw",       "waymore raw output"),
+        # raw/subdomain/
+        ("raw/subdomain/subfinder.txt",  "raw",       "subfinder raw output"),
+        ("raw/subdomain/amass.txt",      "raw",       "amass raw output"),
+        ("raw/subdomain/chaos.txt",      "raw",       "chaos raw output"),
+        # raw/content_discovery/
+        ("raw/content_discovery/katana_urls.txt",    "raw", "katana raw crawl"),
+        ("raw/content_discovery/urlfinder_urls.txt", "raw", "urlfinder raw crawl"),
+        # raw/dirsearch/
+        ("raw/dirsearch/dirsearch_raw.txt",   "raw",  "dirsearch raw output"),
+        ("raw/dirsearch/merged_wordlists.txt","raw",  "merged wordlists (deduped)"),
+        # raw/waymore/
+        ("raw/waymore/waymore_raw.txt",     "raw",    "waymore raw output"),
+        # raw/arjun/
+        ("raw/arjun/input_subset.txt",      "raw",    "arjun capped input"),
         # processed/
         ("processed/subdomains.txt",     "processed", "merged unique subdomains"),
         ("processed/resolved.txt",       "processed", "dnsx-resolved hosts"),
         ("processed/resolved_detail.json","processed","dnsx per-host detail"),
         ("processed/alive.txt",          "processed", "httpx alive URLs"),
         ("processed/alive_detail.json",  "processed", "httpx per-host JSON"),
-        ("processed/alive_detail.csv",   "processed", "httpx per-host CSV"),
         ("processed/crawler_urls.txt",   "processed", "crawler union"),
-        ("processed/js_urls_from_crawler.txt","processed","JS URLs from crawler"),
         ("processed/dirsearch_urls.txt", "processed", "dirsearch URL list"),
         ("processed/waymore_urls.txt",   "processed", "waymore URL list"),
-        ("processed/all_urls_raw.txt",   "processed", "raw union (pre-normalize)"),
         ("processed/all_urls.txt",       "processed", "merged normalised URLs"),
         ("processed/js_urls.txt",        "processed", "JS URLs (final)"),
         ("processed/dynamic_urls.txt",   "processed", "dynamic URLs only"),
@@ -353,13 +359,14 @@ class ReportBuilder:
         ("processed/alive_urls_detail.json","processed","httpx URL check detail"),
         ("processed/arjun_params.txt",   "processed", "Arjun raw output"),
         ("processed/parameterized_urls.txt","processed","parameterized URLs"),
-        # findings/
-        ("findings/nuclei_default.txt",  "findings",  "nuclei default matched URLs"),
-        ("findings/nuclei_default.json", "findings",  "nuclei default findings"),
-        ("findings/nuclei_dynamic.txt",  "findings",  "nuclei dynamic matched URLs"),
-        ("findings/nuclei_dynamic.json", "findings",  "nuclei dynamic findings"),
+        # findings/<kind>/
+        ("findings/default/nuclei.txt",  "findings",  "nuclei default matched URLs"),
+        ("findings/default/nuclei.json", "findings",  "nuclei default findings"),
+        ("findings/dynamic/nuclei.txt",  "findings",  "nuclei dynamic matched URLs"),
+        ("findings/dynamic/nuclei.json", "findings",  "nuclei dynamic findings"),
         # logs/
         ("logs/commands.log",            "logs",      "every command ever run"),
+        ("logs/stages.json",             "logs",      "per-stage structured result"),
     ]
 
     def __init__(self, inputs: ReportInputs):
@@ -428,9 +435,13 @@ class ReportBuilder:
                 assets_dedup.append(a)
         assets = assets_dedup
 
-        # nuclei
-        n_def_findings, n_def_sev = parse_nuclei_summary(findings / "nuclei_default.json")
-        n_dyn_findings, n_dyn_sev = parse_nuclei_summary(findings / "nuclei_dynamic.json")
+        # nuclei — v2 layout puts the two scans under findings/<kind>/
+        n_def_findings, n_def_sev = parse_nuclei_summary(
+            findings / "default" / "nuclei.json"
+        )
+        n_dyn_findings, n_dyn_sev = parse_nuclei_summary(
+            findings / "dynamic" / "nuclei.json"
+        )
         counts["nuclei_default_findings"] = len(n_def_findings)
         counts["nuclei_dynamic_findings"] = len(n_dyn_findings)
 
@@ -1028,10 +1039,10 @@ class ReportBuilder:
                 ("katana + urlfinder (union)", "crawler_urls",  "../processed/crawler_urls.txt"),
                 ("dirsearch",                  "dirsearch_urls","../processed/dirsearch_urls.txt"),
                 ("waymore",                    "waymore_urls",  "../processed/waymore_urls.txt"),
-                ("raw katana output",          None,            "../raw/katana_urls.txt"),
-                ("raw urlfinder output",       None,            "../raw/urlfinder_urls.txt"),
-                ("raw dirsearch output",       None,            "../raw/dirsearch_raw.txt"),
-                ("raw waymore output",         None,            "../raw/waymore_raw.txt"),
+                ("raw katana output",          None,            "../raw/content_discovery/katana_urls.txt"),
+                ("raw urlfinder output",       None,            "../raw/content_discovery/urlfinder_urls.txt"),
+                ("raw dirsearch output",       None,            "../raw/dirsearch/dirsearch_raw.txt"),
+                ("raw waymore output",         None,            "../raw/waymore/waymore_raw.txt"),
             ]
         )
         return (
@@ -1121,7 +1132,7 @@ class ReportBuilder:
                         f"<td><code>{escape(f.get('matched-at') or f.get('host','?'))}</code></td>"
                         f"<td>{escape(str(matcher))}</td>"
                         f"<td><span class=\"small\">{escape(evidence_str)}</span></td>"
-                        f"<td><a href=\"../findings/nuclei_{kind}.json\"><code>nuclei_{kind}.json</code></a></td>"
+                        f"<td><a href=\"../findings/{kind}/nuclei.json\"><code>nuclei.json</code></a></td>"
                         "</tr>"
                     )
                 extra = ""

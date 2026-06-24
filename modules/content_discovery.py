@@ -1,9 +1,9 @@
 """content_discovery — stage 4.1: katana + urlfinder crawling.
 
 The output is split:
-  * raw/katana_urls.txt, raw/urlfinder_urls.txt  — raw tool output
+  * raw/content_discovery/katana_urls.txt, raw/content_discovery/urlfinder_urls.txt  — raw tool output
   * processed/crawler_urls.txt                    — deduped union
-  * processed/js_urls_from_crawler.txt            — *.js URLs found while crawling
+  * processed/js_urls.txt                         — *.js URLs found while crawling
 """
 from __future__ import annotations
 
@@ -14,6 +14,7 @@ from . import runner
 from .telegram import notify_stage_result
 from .utils import (
     make_result,
+    raw_dir,
     read_lines,
     write_lines,
 )
@@ -36,23 +37,22 @@ def crawl(
     dry_run: bool = False,
 ) -> dict:
     stage = "content_discovery"
-    raw = output_dir / "raw"
+    raw_cd = raw_dir(output_dir, "content_discovery")
     proc = output_dir / "processed"
-    raw.mkdir(parents=True, exist_ok=True)
     proc.mkdir(parents=True, exist_ok=True)
 
     if resume and _outputs_exist(output_dir):
         return make_result(
             stage, "success", input_path=alive_file,
-            outputs=[proc / "crawler_urls.txt", proc / "js_urls_from_crawler.txt"],
+            outputs=[proc / "crawler_urls.txt", proc / "js_urls.txt"],
             count=len(read_lines(proc / "crawler_urls.txt")),
         )
 
     if dry_run:
         return make_result(
             stage, "skipped", input_path=alive_file,
-            outputs=[raw / "katana_urls.txt", raw / "urlfinder_urls.txt",
-                     proc / "crawler_urls.txt", proc / "js_urls_from_crawler.txt"],
+            outputs=[raw_cd / "katana_urls.txt", raw_cd / "urlfinder_urls.txt",
+                     proc / "crawler_urls.txt", proc / "js_urls.txt"],
             count=0, error="dry-run",
         )
 
@@ -62,14 +62,15 @@ def crawl(
 
     # 4.1.a — katana
     if cd_cfg.get("katana", {}).get("enabled", True):
-        out = raw / "katana_urls.txt"
+        out = raw_cd / "katana_urls.txt"
         if runner.tool_available("katana"):
             depth = int(cd_cfg.get("katana", {}).get("depth", 3))
             to = int(cd_cfg.get("katana", {}).get("timeout", 1800))
             r = runner.run(
                 ["katana", "-list", str(alive_file), "-depth", str(depth),
                  "-silent", "-output", str(out)],
-                stage="content_discovery_katana", output_dir=output_dir, timeout=to,
+                stage="content_discovery_katana", log_name=stage,
+                output_dir=output_dir, timeout=to,
             )
             if not r["success"] and not r["missing_binary"]:
                 print(f"[{stage}] katana failed: {r['stderr'][:200]}")
@@ -79,19 +80,20 @@ def crawl(
         outputs.append(out)
         all_urls.extend(read_lines(out))
     else:
-        (raw / "katana_urls.txt").write_text("")
-        outputs.append(raw / "katana_urls.txt")
+        (raw_cd / "katana_urls.txt").write_text("")
+        outputs.append(raw_cd / "katana_urls.txt")
 
     # 4.1.b — urlfinder (projectdiscovery/urlfinder — flags: -d for input,
     # -o for output, -silent for URL-only stdout). Earlier versions used -i;
     # projectdiscovery's tool has always used -d / -list.
     if cd_cfg.get("urlfinder", {}).get("enabled", True):
-        out = raw / "urlfinder_urls.txt"
+        out = raw_cd / "urlfinder_urls.txt"
         if runner.tool_available("urlfinder"):
             to = int(cd_cfg.get("urlfinder", {}).get("timeout", 1800))
             r = runner.run(
                 ["urlfinder", "-d", str(alive_file), "-o", str(out), "-silent"],
-                stage="content_discovery_urlfinder", output_dir=output_dir, timeout=to,
+                stage="content_discovery_urlfinder", log_name=stage,
+                output_dir=output_dir, timeout=to,
             )
             if not r["success"] and not r["missing_binary"]:
                 print(f"[{stage}] urlfinder failed: {r['stderr'][:200]}")
@@ -101,12 +103,16 @@ def crawl(
         outputs.append(out)
         all_urls.extend(read_lines(out))
     else:
-        (raw / "urlfinder_urls.txt").write_text("")
-        outputs.append(raw / "urlfinder_urls.txt")
+        (raw_cd / "urlfinder_urls.txt").write_text("")
+        outputs.append(raw_cd / "urlfinder_urls.txt")
 
     crawler_txt = proc / "crawler_urls.txt"
-    js_txt = proc / "js_urls_from_crawler.txt"
+    js_txt = proc / "js_urls.txt"
     n_crawl = write_lines(crawler_txt, all_urls)
+    # ``js_urls.txt`` is the only JS-URL file now — ``js_urls_from_crawler.txt``
+    # was dropped because it's just a subset of the union produced by
+    # the later url_merge stage. Other stages (crawler-derived JS) get
+    # folded in by url_merge.
     n_js = write_lines(js_txt, [u for u in all_urls if JS_RE.match(u)])
 
     result = make_result(

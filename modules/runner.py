@@ -24,6 +24,7 @@ import time
 from pathlib import Path
 from typing import List, Optional, Sequence
 
+from . import console
 from .utils import ensure_dir, safe_append
 
 
@@ -80,27 +81,31 @@ def run(
     stage: str,
     output_dir: Path,
     timeout: int = 600,
+    log_name: Optional[str] = None,
     input_data: Optional[str] = None,
     env: Optional[dict] = None,
     check: bool = False,
 ) -> dict:
     """Run a subprocess and return a structured dict.
 
-    Output paths are derived from `output_dir/logs/`:
-      - commands.log: cumulative command history (UTC ts + stage + argv)
-      - <stage>.stdout: process stdout
-      - <stage>.stderr: process stderr
+    Output paths are derived from ``output_dir/logs/``:
 
-    The full command line is echoed to stderr as a single ``$ ...`` line
-    right before exec so the operator can see what is running without
-    scrolling through ``commands.log``. Child stdout/stderr is *not*
-    streamed — inspect ``<stage>.stdout`` / ``<stage>.stderr`` afterwards
-    for details.
+    * ``commands.log`` — cumulative command history (UTC ts + stage + argv)
+    * ``<log_name>.log`` — process output, append mode. ``log_name``
+      defaults to ``stage`` but stages with multiple sub-calls (e.g.
+      ``subdomain`` runs subfinder + amass + chaos) pass a shared
+      ``log_name`` so all three outputs land in one log file with
+      clear sub-stage headers.
+
+    The full command line is echoed to stderr as a single ``$ ...``
+    line right before exec so the operator can see what is running
+    without scrolling through ``commands.log``. Child stdout/stderr
+    is *not* streamed — inspect ``<log_name>.log`` afterwards.
     """
     logs_dir = ensure_dir(Path(output_dir) / "logs")
     cmd_log = logs_dir / "commands.log"
-    out_log = logs_dir / f"{stage}.stdout"
-    err_log = logs_dir / f"{stage}.stderr"
+    log_target = log_name or stage
+    out_log = logs_dir / f"{log_target}.log"
 
     _log_command(cmd_log, cmd, stage)
 
@@ -118,7 +123,10 @@ def run(
 
     cmd_str = " ".join(str(c) for c in resolved)
     # Single line on stderr — what command is being run, nothing else.
-    print(f"[{stage}] $ {cmd_str}", file=sys.stderr, flush=True)
+    # Colored via console.cmd_echo() so parallel-stage output stays
+    # scannable. Stays on stderr so it shows up immediately while the
+    # process is starting (stdout would be buffered).
+    print(console.cmd_echo(stage, resolved), file=sys.stderr, flush=True)
     start = time.time()
     try:
         proc = subprocess.run(
@@ -130,15 +138,25 @@ def run(
             env=env,
             check=check,
         )
-        out_log.write_text(proc.stdout or "", encoding="utf-8")
-        err_log.write_text(proc.stderr or "", encoding="utf-8")
-        duration = round(time.time() - start, 2)
+        # Append to the per-stage log. Multiple sub-stages that share
+        # a log_name (e.g. subdomain_subfinder + subdomain_amass +
+        # subdomain_chaos all writing to logs/subdomain.log) get
+        # clear section headers so the reader can tell them apart.
+        elapsed = round(time.time() - start, 2)
+        with out_log.open("a", encoding="utf-8") as fh:
+            fh.write(f"=== {stage} ===\n")
+            fh.write(f"--- stdout ---\n{proc.stdout or ''}")
+            if proc.stderr and proc.stderr.strip():
+                fh.write(f"--- stderr ---\n{proc.stderr}\n")
+            fh.write(f"--- exit {proc.returncode} ({elapsed}s) ---\n\n")
+        duration = elapsed
         return {
             "returncode": proc.returncode,
             "stdout": proc.stdout,
             "stderr": proc.stderr,
             "stdout_path": str(out_log),
-            "stderr_path": str(err_log),
+            "stderr_path": str(out_log),  # combined into one log file (v2 layout)
+            "log_path": str(out_log),
             "duration": duration,
             "success": proc.returncode == 0,
             "timed_out": False,
@@ -146,39 +164,45 @@ def run(
         }
     except FileNotFoundError as exc:
         # binary not on PATH
-        err_log.write_text(f"FileNotFoundError: {exc}\n", encoding="utf-8")
+        with out_log.open("a", encoding="utf-8") as fh:
+            fh.write(f"=== {stage} ===\n--- stderr ---\nFileNotFoundError: {exc}\n\n")
         return {
             "returncode": -1,
             "stdout": "",
             "stderr": str(exc),
             "stdout_path": str(out_log),
-            "stderr_path": str(err_log),
+            "stderr_path": str(out_log),
+            "log_path": str(out_log),
             "duration": round(time.time() - start, 2),
             "success": False,
             "timed_out": False,
             "missing_binary": True,
         }
     except subprocess.TimeoutExpired:
-        err_log.write_text(f"TimeoutExpired after {timeout}s\n", encoding="utf-8")
+        with out_log.open("a", encoding="utf-8") as fh:
+            fh.write(f"=== {stage} ===\n--- stderr ---\nTimeoutExpired after {timeout}s\n\n")
         return {
             "returncode": -1,
             "stdout": "",
             "stderr": f"timeout after {timeout}s",
             "stdout_path": str(out_log),
-            "stderr_path": str(err_log),
+            "stderr_path": str(out_log),
+            "log_path": str(out_log),
             "duration": round(time.time() - start, 2),
             "success": False,
             "timed_out": True,
             "missing_binary": False,
         }
     except Exception as exc:  # noqa: BLE001
-        err_log.write_text(f"Exception: {exc}\n", encoding="utf-8")
+        with out_log.open("a", encoding="utf-8") as fh:
+            fh.write(f"=== {stage} ===\n--- stderr ---\nException: {exc}\n\n")
         return {
             "returncode": -1,
             "stdout": "",
             "stderr": str(exc),
             "stdout_path": str(out_log),
-            "stderr_path": str(err_log),
+            "stderr_path": str(out_log),
+            "log_path": str(out_log),
             "duration": round(time.time() - start, 2),
             "success": False,
             "timed_out": False,

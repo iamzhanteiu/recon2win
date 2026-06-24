@@ -6,10 +6,13 @@ Inputs:
   processed/waymore_urls.txt
 
 Outputs:
-  processed/all_urls_raw.txt   — raw union (no normalisation)
   processed/all_urls.txt       — normalised + de-duped
   processed/js_urls.txt        — JS URLs only
   processed/dynamic_urls.txt   — likely-dynamic, static assets removed
+
+The earlier ``all_urls_raw.txt`` intermediate was dropped in v2 — it
+was just the input to the dedup step, and any caller that needs the
+raw union can re-merge the three source files deterministically.
 
 Pure helper functions (dedupe_urls, normalize_url, is_js_url, is_dynamic_url)
 are exposed at module level so the unit tests can import them.
@@ -127,7 +130,6 @@ def merge(output_dir: Path, *, resume: bool = False, dry_run: bool = False) -> d
         proc / "waymore_urls.txt",
     ]
 
-    out_raw = proc / "all_urls_raw.txt"
     out_all = proc / "all_urls.txt"
     out_js = proc / "js_urls.txt"
     out_dyn = proc / "dynamic_urls.txt"
@@ -135,20 +137,19 @@ def merge(output_dir: Path, *, resume: bool = False, dry_run: bool = False) -> d
     if resume and all(p.exists() and p.stat().st_size > 0 for p in (out_all, out_js, out_dyn)):
         return make_result(
             stage, "success", input_path=",".join(str(f) for f in files),
-            outputs=[out_raw, out_all, out_js, out_dyn],
+            outputs=[out_all, out_js, out_dyn],
             count=len(read_lines(out_all)),
         )
 
     if dry_run:
         return make_result(
             stage, "skipped", input_path=",".join(str(f) for f in files),
-            outputs=[out_raw, out_all, out_js, out_dyn], count=0, error="dry-run",
+            outputs=[out_all, out_js, out_dyn], count=0, error="dry-run",
         )
 
     all_lines: list[str] = []
     for f in files:
         all_lines.extend(read_lines(f))
-    n_raw = write_lines(out_raw, all_lines)
 
     normalised = [normalize_url(u) for u in dedupe_urls(all_lines)]
     normalised = [u for u in normalised if u]
@@ -162,8 +163,8 @@ def merge(output_dir: Path, *, resume: bool = False, dry_run: bool = False) -> d
 
     return make_result(
         stage, "success", input_path=",".join(str(f) for f in files),
-        outputs=[out_raw, out_all, out_js, out_dyn],
-        count=n_all, extra={"js": n_js, "dynamic": n_dyn, "raw": n_raw},
+        outputs=[out_all, out_js, out_dyn],
+        count=n_all, extra={"js": n_js, "dynamic": n_dyn},
     )
 
 

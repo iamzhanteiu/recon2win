@@ -22,11 +22,11 @@ def _touch(path: Path, content: str = "x") -> None:
 
 
 def test_resume_subdomain_outputs_exist(tmp_path: Path):
-    (tmp_path / "raw").mkdir()
+    (tmp_path / "raw" / "subdomain").mkdir(parents=True)
     (tmp_path / "processed").mkdir()
-    _touch(tmp_path / "raw/subfinder.txt", "a.example.com\n")
-    _touch(tmp_path / "raw/amass.txt", "b.example.com\n")
-    _touch(tmp_path / "raw/chaos.txt", "c.example.com\n")
+    _touch(tmp_path / "raw" / "subdomain" / "subfinder.txt", "a.example.com\n")
+    _touch(tmp_path / "raw" / "subdomain" / "amass.txt", "b.example.com\n")
+    _touch(tmp_path / "raw" / "subdomain" / "chaos.txt", "c.example.com\n")
     _touch(tmp_path / "processed/subdomains.txt", "a.example.com\nb.example.com\nc.example.com\n")
     from modules.subdomain import _all_outputs_exist
     assert _all_outputs_exist(tmp_path, ["subfinder", "amass", "chaos"]) is True
@@ -54,8 +54,10 @@ def test_resume_url_merge_outputs_exist(tmp_path: Path):
 
 
 def test_resume_nuclei_outputs_exist(tmp_path: Path):
-    (tmp_path / "findings").mkdir()
-    _touch(tmp_path / "findings/nuclei_default.json", "{\"findings\": []}")
+    # v2 layout: findings/{default,dynamic}/nuclei.json
+    (tmp_path / "findings" / "default").mkdir(parents=True)
+    (tmp_path / "findings" / "dynamic").mkdir(parents=True)
+    _touch(tmp_path / "findings/default/nuclei.json", "{\"findings\": []}")
     assert nuclei._outputs_exist(tmp_path, "default") is True
     assert nuclei._outputs_exist(tmp_path, "dynamic") is False
 
@@ -65,11 +67,11 @@ def test_subdomain_collect_resume_returns_existing(tmp_path: Path):
     """subdomain.collect() with resume=True should NOT call any external
     command if all raw outputs and the merged list exist.
     """
-    (tmp_path / "raw").mkdir()
+    (tmp_path / "raw" / "subdomain").mkdir(parents=True)
     (tmp_path / "processed").mkdir()
-    write_lines(tmp_path / "raw/subfinder.txt", ["a.example.com"])
-    write_lines(tmp_path / "raw/amass.txt", ["b.example.com"])
-    write_lines(tmp_path / "raw/chaos.txt", ["c.example.com"])
+    write_lines(tmp_path / "raw" / "subdomain" / "subfinder.txt", ["a.example.com"])
+    write_lines(tmp_path / "raw" / "subdomain" / "amass.txt", ["b.example.com"])
+    write_lines(tmp_path / "raw" / "subdomain" / "chaos.txt", ["c.example.com"])
     write_lines(tmp_path / "processed/subdomains.txt",
                 ["a.example.com", "b.example.com", "c.example.com"])
 
@@ -97,13 +99,13 @@ def test_url_merge_resume_returns_existing(tmp_path: Path):
 
 def test_resume_does_not_overwrite_existing_outputs(tmp_path: Path):
     """When outputs already exist, resume must not touch them."""
-    (tmp_path / "raw").mkdir()
+    (tmp_path / "raw" / "subdomain").mkdir(parents=True)
     (tmp_path / "processed").mkdir()
     # populate all the raw outputs the resume check expects, plus a sentinel
     # value in the merged file that the actual tools would never have produced.
-    write_lines(tmp_path / "raw/subfinder.txt", ["a.example.com"])
-    write_lines(tmp_path / "raw/amass.txt", ["b.example.com"])
-    write_lines(tmp_path / "raw/chaos.txt", ["c.example.com"])
+    write_lines(tmp_path / "raw" / "subdomain" / "subfinder.txt", ["a.example.com"])
+    write_lines(tmp_path / "raw" / "subdomain" / "amass.txt", ["b.example.com"])
+    write_lines(tmp_path / "raw" / "subdomain" / "chaos.txt", ["c.example.com"])
     sentinel = tmp_path / "processed" / "subdomains.txt"
     sentinel.write_text("sentinel.example.com\n")
 

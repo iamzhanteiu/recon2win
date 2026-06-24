@@ -72,7 +72,7 @@ def scan(
             error="xnlinkfinder binary not found (optional, skipped)",
         )
 
-    timeout = int(cfg.get("xnlinkfinder", {}).get("timeout", 1200))
+    timeout = int(cfg.get("xnlinkfinder", {}).get("timeout", 1800))
 
     # xnLinkFinder accepts a single URL, a file of URLs, a directory,
     # or Burp/ZAP/HAR exports via -i. We pass the JS URL file directly

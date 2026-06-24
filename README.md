@@ -43,6 +43,15 @@ python3 main.py -d example.com --config config.yml --dry-run
 python3 main.py -d example.com --config config.yml
 ```
 
+### Troubleshooting common startup failures
+
+| Symptom (from `stages.json`) | Root cause | Fix |
+|---|---|---|
+| `dirsearch` → `failed (count=0, <1s)` with `ModuleNotFoundError: No module named 'pkg_resources'` | dirsearch imports `pkg_resources` from the stdlib; Python 3.12+ removed it | `pip install -r requirements.txt` (adds `setuptools>=68`) |
+| `arjun` → `failed (count=0, 3600s)` with `timeout after 3600s` | Stage budget exceeded because too many dynamic URLs were fed to arjun | Lower `arjun.max_urls` in `config.yml` (default 200) or raise `arjun.timeout` |
+| `xnlinkfinder` → `failed (count=0, 1200s)` | xnLinkFinder hangs on a single slow JS URL | Lower `xnlinkfinder.timeout` *or* pre-filter `js_urls.txt` |
+| `nuclei_dynamic` → `skipped (input file empty or missing)` | Cascade from `arjun` failing | Fix arjun (above) and the cascade clears |
+
 ### `setup.py` — environment bootstrap
 
 `setup.py` is a self-contained script that:
@@ -85,6 +94,49 @@ python3 setup.py --no-color            # disable ANSI colors
 | `--skip-waymore`       | Skip the waymore archived-URL collection                  |
 | `--skip-arjun`         | Skip the arjun parameter discovery                        |
 | `--skip-xnlinkfinder`  | Skip the xnLinkFinder JS scan                             |
+| `--color`              | Force ANSI colors even when stdout is not a TTY (CI, tmux capture) |
+| `--no-color`           | Disable ANSI colors (overrides `$FORCE_COLOR`)            |
+
+### Terminal output
+
+Every recon stage gets a distinct color so the output is scannable
+at a glance, especially when parallel stages interleave (stage 4 runs
+4 stages concurrently, stage 6 runs 2):
+
+| Stage                | Color          |
+|----------------------|----------------|
+| `subdomain`          | bright cyan    |
+| `dnsx`               | blue           |
+| `httpx_alive`        | bright blue    |
+| `content_discovery`  | bright magenta |
+| `dirsearch`          | bright yellow  |
+| `waymore`            | yellow         |
+| `nuclei_default`     | bright red     |
+| `url_merge`          | white          |
+| `httpx_urls`         | cyan           |
+| `xnlinkfinder`       | bright green   |
+| `arjun`              | green          |
+| `nuclei_dynamic`     | red            |
+| `report`             | bright white   |
+
+Status glyphs:
+
+* `✓ success` (green)
+* `✗ failed`  (red)
+* `⊘ skipped` (yellow)
+
+Color is auto-detected: enabled when `sys.stdout.isatty()`, disabled
+otherwise. Override with `--color` / `--no-color`, or set the env vars
+`$FORCE_COLOR` (always on) / `$NO_COLOR` (always off, per
+[no-color.org](https://no-color.org)). When colors are off the icons
+become ASCII (`[OK] [FAIL] [SKIP]`) and the unicode bars become `-`,
+so log files stay grep-friendly:
+
+```
+$ python3 main.py -d example.com 2>&1 | tee /tmp/scan.log   # colors on terminal, plain in log
+$ FORCE_COLOR=1 python3 main.py -d example.com             # force colors (CI logs)
+$ NO_COLOR=1    python3 main.py -d example.com             # force plain text
+```
 
 ## Project structure
 
@@ -109,8 +161,10 @@ recon-agent/
 │   ├── arjun.py           # Stage 7
 │   ├── nuclei.py          # Stages 4.4 & 8
 │   ├── telegram.py        # Notifications
+│   ├── console.py         # Terminal formatting (colors, status icons)
 │   └── sensitive_ext.py   # Shared extension lists
 ├── tests/                 # Pytest unit tests
+│   ├── test_console.py
 │   ├── test_url_dedup.py
 │   ├── test_js_extraction.py
 │   ├── test_dynamic_url.py
@@ -118,9 +172,63 @@ recon-agent/
 │   ├── test_dirsearch_wordlists.py
 │   ├── test_telegram_notify.py
 │   ├── test_setup.py
-│   └── test_resume.py
-└── outputs/               # Created per-run
+│   ├── test_resume.py
+│   ├── test_output_structure.py   # v2 output layout
+│   └── test_arjun_cap.py
+└── outputs/               # Created per-run (see below)
 ```
+
+## Output directory layout (v2)
+
+For every scan the framework creates `outputs/<domain>/` with this
+layout — ``raw/`` is grouped per stage and ``findings/`` per kind so
+you can `ls raw/<stage>/` to see everything one tool produced, instead
+of grepping through a flat 50-file dir.
+
+```
+outputs/<domain>/
+├── raw/                                # tool outputs grouped per stage
+│   ├── subdomain/                      # subfinder.txt, amass.txt, chaos.txt
+│   ├── content_discovery/              # katana_urls.txt, urlfinder_urls.txt
+│   ├── dirsearch/                      # dirsearch_raw.txt, merged_wordlists.txt
+│   ├── waymore/                        # waymore_raw.txt
+│   └── arjun/                          # input_subset.txt
+├── processed/                          # cleaned + merged (flat, single source of truth)
+│   ├── subdomains.txt
+│   ├── resolved.txt, resolved_detail.json
+│   ├── alive.txt, alive_detail.json
+│   ├── crawler_urls.txt, js_urls.txt
+│   ├── dirsearch_urls.txt, waymore_urls.txt
+│   ├── all_urls.txt, dynamic_urls.txt
+│   ├── xnlinkfinder_endpoints.txt, xnlinkfinder_urls.txt
+│   ├── alive_urls.txt, alive_urls_detail.json
+│   └── arjun_params.txt, parameterized_urls.txt
+├── findings/                           # nuclei only, grouped per kind
+│   ├── default/                        # nuclei.json, nuclei.txt
+│   └── dynamic/                        # nuclei.json, nuclei.txt
+├── logs/
+│   ├── commands.log                    # cumulative command history (UTC ts + argv)
+│   └── stages.json                     # per-stage structured result
+└── report/
+    ├── final_report.html
+    ├── final_report.md
+    └── summary.json
+```
+
+**Log consolidation:** every tool's stdout/stderr is captured into
+`stages.json` (structured). If a stage needs its own per-call log file
+(e.g. for post-mortem analysis), `runner.run()` accepts a `log_name=`
+parameter that groups sub-stage outputs (e.g. all three subdomain
+tools land in `logs/subdomain.log` with section headers).
+
+**Files removed in v2** (the data is in the canonical file already):
+
+| Removed | Why |
+|---|---|
+| `processed/all_urls_raw.txt` | Just the pre-dedup input; can re-derive from the three source files |
+| `processed/js_urls_from_crawler.txt` | Just a subset of `js_urls.txt` |
+| `processed/alive_detail.csv` | JSON is canonical; CSV was a convenience export |
+| `logs/<stage>.stdout` / `.stderr` | One `<stage>.log` per stage (sub-stages merged) |
 
 ## Required vs optional stages
 
@@ -227,10 +335,66 @@ expanded into ~50 individual `-w` arguments to dirsearch.
 
 ### Mode precedence
 
-* If `wordlists` is non-empty → **wordlist mode** (one `-w` per file).
-  Extensions are appended only when `combine: true`.
+* If `wordlists` is non-empty → **wordlist mode**. The framework
+  resolves the configured paths to a flat list of `.txt` files, then
+  **merges them into a single deduped file** before invoking dirsearch
+  (see *Wordlist merging* below). Extensions are appended via `-e` only
+  when `combine: true`.
 * Else if `extensions` is non-empty → **extension mode** (legacy).
 * Else → curated `SENSITIVE_EXT` fallback.
+
+### Wordlist merging
+
+**dirsearch only accepts a single `-w` flag** — passing multiple `-w`
+flags is silently dropped on most versions (only the first is honoured)
+and triggers an argparse error on others. To keep `config.yml`'s
+multi-entry `wordlists:` list ergonomic, the framework resolves the
+list to a flat set of `.txt` files (recursing into directories) and
+then **merges them into one deduped file** at:
+
+```
+outputs/<domain>/raw/merged_wordlists/all.txt
+```
+
+The merge:
+
+* Skips `#`-comments and blank lines (matches `read_lines()` semantics).
+* Dedupes case-sensitively — the first occurrence wins (preserves
+  ordering from the first wordlist that contributed the entry).
+* Silently skips missing files (the warning is already emitted by
+  `_resolve_wordlists`).
+* Records `files`, `lines_in`, `lines_out`, and `path` in the stage
+  result's `extra.merge` dict for visibility in the report.
+
+If you want to run dirsearch *sequentially* per wordlist instead,
+either repeat the stage with different configs (using `--resume`) or
+set `combine: true` to fuzz each word against every extension.
+
+## Arjun tunables (input capping)
+
+`arjun` is a parameter fuzzer — given an unbounded list of dynamic URLs
+it will happily spend hours fuzzing every one. On targets with
+aggressive crawlers + waymore, `dynamic_urls.txt` can easily grow past
+5k URLs, which causes the stage to time out at the configured
+`arjun.timeout` (default 3600s).
+
+The framework mitigates this by:
+
+1. Ranking dynamic URLs by high-value hints
+   (`/api/`, `/login`, `/admin`, `/graphql`, `id=`, `q=`, …)
+2. Demoting archive noise (`web.archive.org`, `webcache.googleusercontent`)
+3. Keeping only the top `arjun.max_urls` (default 200)
+
+The original URL count and the scanned count are both recorded in
+`outputs/<domain>/logs/stages.json` under the `arjun` stage's `extra`
+field so you can see how many were dropped.
+
+```yaml
+arjun:
+  max_urls: 200          # cap input; ranking preserves the interesting ones
+  request_timeout: 10    # arjun -T; lower = hung URLs die faster
+  timeout: 3600          # overall stage budget
+```
 
 ## Tests
 

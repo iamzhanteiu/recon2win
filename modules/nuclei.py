@@ -15,6 +15,7 @@ from typing import Optional
 
 from . import runner
 from .utils import (
+    findings_dir,
     make_result,
     read_lines,
     write_json,
@@ -27,7 +28,7 @@ SEV_ORDER = ["info", "low", "medium", "high", "critical"]
 
 
 def _outputs_exist(out_dir: Path, kind: str) -> bool:
-    j = out_dir / "findings" / f"nuclei_{kind}.json"
+    j = findings_dir(out_dir, kind) / "nuclei.json"
     return j.exists() and j.stat().st_size > 0
 
 
@@ -43,10 +44,9 @@ def _run(
     skip: bool = False,
 ) -> dict:
     stage = f"nuclei_{kind}"
-    findings_dir = output_dir / "findings"
-    findings_dir.mkdir(parents=True, exist_ok=True)
-    txt_out = findings_dir / f"nuclei_{kind}.txt"
-    json_out = findings_dir / f"nuclei_{kind}.json"
+    fdir = findings_dir(output_dir, kind)
+    txt_out = fdir / "nuclei.txt"
+    json_out = fdir / "nuclei.json"
 
     if skip:
         txt_out.write_text("")
@@ -91,7 +91,8 @@ def _run(
     if tags:
         cmd.extend(["-tags", ",".join(tags)])
 
-    r = runner.run(cmd, stage=stage, output_dir=output_dir, timeout=timeout)
+    r = runner.run(cmd, stage=stage, log_name=stage,
+                   output_dir=output_dir, timeout=timeout)
     if not r["success"] and not r["missing_binary"]:
         return make_result(
             stage, "failed", input_path=input_file,
@@ -146,26 +147,23 @@ def default_scan(
     skip: bool = False,
 ) -> dict:
     n_cfg = (cfg.get("nuclei") or {}).get("default") or {}
+    fdir = findings_dir(output_dir, "default")
+    outputs = [fdir / "nuclei.txt", fdir / "nuclei.json"]
     if resume and _outputs_exist(output_dir, "default"):
         return make_result(
             "nuclei_default", "success", input_path=alive_file,
-            outputs=[output_dir / "findings" / "nuclei_default.txt",
-                     output_dir / "findings" / "nuclei_default.json"],
-            count=len(read_lines(output_dir / "findings" / "nuclei_default.txt")),
+            outputs=outputs,
+            count=len(read_lines(fdir / "nuclei.txt")),
         )
     if dry_run:
         return make_result(
             "nuclei_default", "skipped", input_path=alive_file,
-            outputs=[output_dir / "findings" / "nuclei_default.txt",
-                     output_dir / "findings" / "nuclei_default.json"],
-            count=0, error="dry-run",
+            outputs=outputs, count=0, error="dry-run",
         )
     if not n_cfg.get("enabled", True):
         return make_result(
             "nuclei_default", "skipped", input_path=alive_file,
-            outputs=[output_dir / "findings" / "nuclei_default.txt",
-                     output_dir / "findings" / "nuclei_default.json"],
-            count=0, error="disabled in config",
+            outputs=outputs, count=0, error="disabled in config",
         )
     return _run(
         alive_file, "default", cfg, output_dir,
@@ -185,26 +183,23 @@ def dynamic_scan(
     skip: bool = False,
 ) -> dict:
     n_cfg = (cfg.get("nuclei") or {}).get("dynamic") or {}
+    fdir = findings_dir(output_dir, "dynamic")
+    outputs = [fdir / "nuclei.txt", fdir / "nuclei.json"]
     if resume and _outputs_exist(output_dir, "dynamic"):
         return make_result(
             "nuclei_dynamic", "success", input_path=parameterized_urls_file,
-            outputs=[output_dir / "findings" / "nuclei_dynamic.txt",
-                     output_dir / "findings" / "nuclei_dynamic.json"],
-            count=len(read_lines(output_dir / "findings" / "nuclei_dynamic.txt")),
+            outputs=outputs,
+            count=len(read_lines(fdir / "nuclei.txt")),
         )
     if dry_run:
         return make_result(
             "nuclei_dynamic", "skipped", input_path=parameterized_urls_file,
-            outputs=[output_dir / "findings" / "nuclei_dynamic.txt",
-                     output_dir / "findings" / "nuclei_dynamic.json"],
-            count=0, error="dry-run",
+            outputs=outputs, count=0, error="dry-run",
         )
     if not n_cfg.get("enabled", True):
         return make_result(
             "nuclei_dynamic", "skipped", input_path=parameterized_urls_file,
-            outputs=[output_dir / "findings" / "nuclei_dynamic.txt",
-                     output_dir / "findings" / "nuclei_dynamic.json"],
-            count=0, error="disabled in config",
+            outputs=outputs, count=0, error="disabled in config",
         )
     return _run(
         parameterized_urls_file, "dynamic", cfg, output_dir,

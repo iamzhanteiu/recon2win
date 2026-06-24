@@ -10,6 +10,7 @@ from typing import List
 from . import runner
 from .utils import (
     make_result,
+    raw_dir,
     read_lines,
     write_lines,
 )
@@ -20,7 +21,7 @@ def _all_outputs_exist(out_dir: Path, tools: List[str]) -> bool:
     if not base.exists() or base.stat().st_size == 0:
         return False
     for tool in tools:
-        if not (out_dir / "raw" / f"{tool}.txt").exists():
+        if not (raw_dir(out_dir, "subdomain") / f"{tool}.txt").exists():
             return False
     return True
 
@@ -38,9 +39,8 @@ def collect(
     Returns the standard result dict.
     """
     stage = "subdomain"
-    raw = output_dir / "raw"
+    raw_sub = raw_dir(output_dir, "subdomain")
     proc = output_dir / "processed"
-    raw.mkdir(parents=True, exist_ok=True)
     proc.mkdir(parents=True, exist_ok=True)
 
     tools = cfg.get("subdomain", {}).get("tools", ["subfinder", "amass", "chaos"])
@@ -56,14 +56,16 @@ def collect(
     if dry_run:
         return make_result(
             stage, "skipped", input_path=domain,
-            outputs=[raw / f"{t}.txt" for t in tools] + [proc / "subdomains.txt"],
+            outputs=[raw_sub / f"{t}.txt" for t in tools] + [proc / "subdomains.txt"],
             count=0, error="dry-run",
         )
 
     chaos_key = cfg.get("subdomain", {}).get("chaos_api_key", "").strip()
 
+    # All three sub-tools share the same logs/subdomain.log so the
+    # reader gets a single chronological view of the stage.
     for tool in tools:
-        out_file = raw / f"{tool}.txt"
+        out_file = raw_sub / f"{tool}.txt"
         if tool == "subfinder":
             if not runner.tool_available("subfinder"):
                 print(f"[{stage}] subfinder not installed — skipping")
@@ -71,7 +73,8 @@ def collect(
                 continue
             r = runner.run(
                 ["subfinder", "-d", domain, "-all", "-silent", "-o", str(out_file)],
-                stage=f"{stage}_subfinder", output_dir=output_dir, timeout=timeout,
+                stage=f"{stage}_subfinder", log_name=stage,
+                output_dir=output_dir, timeout=timeout,
             )
         elif tool == "amass":
             if not runner.tool_available("amass"):
@@ -80,7 +83,8 @@ def collect(
                 continue
             r = runner.run(
                 ["amass", "enum", "-passive", "-d", domain, "-o", str(out_file)],
-                stage=f"{stage}_amass", output_dir=output_dir, timeout=timeout,
+                stage=f"{stage}_amass", log_name=stage,
+                output_dir=output_dir, timeout=timeout,
             )
         elif tool == "chaos":
             if not runner.tool_available("chaos"):
@@ -90,7 +94,10 @@ def collect(
             cmd = ["chaos", "-d", domain, "-silent", "-o", str(out_file)]
             if chaos_key:
                 cmd.extend(["-key", chaos_key])
-            r = runner.run(cmd, stage=f"{stage}_chaos", output_dir=output_dir, timeout=timeout)
+            r = runner.run(
+                cmd, stage=f"{stage}_chaos", log_name=stage,
+                output_dir=output_dir, timeout=timeout,
+            )
         else:
             # unknown tool — skip gracefully
             out_file.write_text("")
@@ -101,10 +108,10 @@ def collect(
     # Merge & dedupe — preserve original raw outputs
     merged: list[str] = []
     for tool in tools:
-        merged.extend(read_lines(raw / f"{tool}.txt"))
+        merged.extend(read_lines(raw_sub / f"{tool}.txt"))
     count = write_lines(proc / "subdomains.txt", merged)
     return make_result(
         stage, "success", input_path=domain,
-        outputs=[raw / f"{t}.txt" for t in tools] + [proc / "subdomains.txt"],
+        outputs=[raw_sub / f"{t}.txt" for t in tools] + [proc / "subdomains.txt"],
         count=count,
     )

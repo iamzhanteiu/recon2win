@@ -13,7 +13,7 @@ from urllib.parse import urlparse
 
 from . import runner
 from .sensitive_ext import SENSITIVE_EXT
-from .utils import make_result, read_lines, write_lines
+from .utils import make_result, raw_dir, read_lines, write_lines
 
 
 # All extensions we want to keep, with JS always included
@@ -46,11 +46,10 @@ def collect(
     skip: bool = False,
 ) -> dict:
     stage = "waymore"
-    raw = output_dir / "raw"
+    raw_wm = raw_dir(output_dir, "waymore")
     proc = output_dir / "processed"
-    raw.mkdir(parents=True, exist_ok=True)
     proc.mkdir(parents=True, exist_ok=True)
-    raw_out = raw / "waymore_raw.txt"
+    raw_out = raw_wm / "waymore_raw.txt"
     proc_out = proc / "waymore_urls.txt"
 
     if skip:

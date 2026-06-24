@@ -22,6 +22,7 @@ import yaml
 from modules import (
     arjun as arjun_mod,
     content_discovery as cd_mod,
+    console,
     dirsearch as dirsearch_mod,
     dnsx as dnsx_mod,
     httpx as httpx_mod,
@@ -42,11 +43,31 @@ from modules.utils import (
 )
 
 
+# Noun used by ``phase_status_line`` — most stages count "results",
+# but a few are more meaningful with a domain-specific noun.
+_STAGE_NOUN: dict[str, str] = {
+    "subdomain":         "subdomains",
+    "dnsx":              "resolved",
+    "httpx_alive":       "alive hosts",
+    "content_discovery": "urls",
+    "dirsearch":         "urls",
+    "waymore":           "urls",
+    "nuclei_default":    "findings",
+    "url_merge":         "urls",
+    "url_merge_append":  "urls",
+    "httpx_urls":        "alive urls",
+    "xnlinkfinder":      "endpoints+urls",
+    "arjun":             "parameterized urls",
+    "nuclei_dynamic":    "findings",
+    "report":            "artifacts",
+}
+
+
 # ----------------------------------------------------------------------
 # Stage runner with consistent logging
 # ----------------------------------------------------------------------
 def _run_stage(name: str, fn, *args, **kwargs) -> dict:
-    print(f"\n=== {name} ===", flush=True)
+    print(console.phase_header(name), flush=True)
     t0 = time.time()
     try:
         res = fn(*args, **kwargs)
@@ -54,16 +75,29 @@ def _run_stage(name: str, fn, *args, **kwargs) -> dict:
         res = make_result(name, "failed", error=f"exception: {exc}")
     dt = round(time.time() - t0, 2)
     res.setdefault("extra", {})["elapsed_seconds"] = dt
-    print(f"    -> {res['status']} (count={res['count']}, {dt}s)", flush=True)
-    if res.get("error"):
-        print(f"    ! {res['error']}", flush=True)
+    noun = _STAGE_NOUN.get(name, "results")
+    # ``success`` stages: green ✓ + result line.
+    # ``failed`` stages: red ✗ + result line + the error message below.
+    # ``skipped`` stages: yellow ⊘ + brief status — we fold the error
+    # message into the noun so the output stays one short line.
+    print(
+        console.phase_status_line(name, res["status"], res["count"], dt, noun=noun),
+        flush=True,
+    )
+    err = res.get("error")
+    if err and res["status"] != "skipped":
+        print(console.phase_error_line(err), flush=True)
+    elif err and res["status"] == "skipped":
+        # Skip the separate "!" line for skipped stages; the error is
+        # already informative (e.g. "no alive hosts to scan").
+        print(console.phase_info_line(err), flush=True)
     # In dry-run, every stage that built a planned command attaches it
     # to ``extra['planned_cmd']`` (see modules/dirsearch.py and friends).
     # Print it so the operator can sanity-check the argv without grepping
     # through Python.
     planned = (res.get("extra") or {}).get("planned_cmd")
     if planned:
-        print(f"    $ {' '.join(str(c) for c in planned)}", flush=True)
+        print(console.cmd_echo(name, planned), flush=True)
     return res
 
 
@@ -86,9 +120,19 @@ def main() -> int:
     p.add_argument("--skip-waymore", action="store_true")
     p.add_argument("--skip-arjun", action="store_true")
     p.add_argument("--skip-xnlinkfinder", action="store_true")
+    p.add_argument("--color", dest="color", action="store_true", default=None,
+                   help="Force ANSI colors even when stdout is not a TTY")
+    p.add_argument("--no-color", dest="color", action="store_false",
+                   help="Disable ANSI colors (overrides $FORCE_COLOR)")
     args = p.parse_args()
 
     # ---- 0. validate input + create structure ----
+    if args.color is True:
+        console.set_enabled(True)
+    elif args.color is False:
+        console.set_enabled(False)
+    # else: leave auto-detection alone (TTY / $NO_COLOR / $FORCE_COLOR)
+
     try:
         domain = validate_domain(args.domain)
     except ValueError as e:
@@ -104,8 +148,8 @@ def main() -> int:
     output_dir = create_output_structure(
         domain, root=cfg.get("output_root", "outputs"),
     )
-    print(f"[+] target: {domain}")
-    print(f"[+] output: {output_dir}")
+    print(console.banner(f"target: {domain}", "bright_cyan"))
+    print(console.banner(f"output: {output_dir}", "bright_cyan"))
 
     if args.dry_run:
         _print_plan(domain, output_dir, cfg, args)
@@ -257,11 +301,13 @@ def main() -> int:
     # persist full stage log
     log_path = output_dir / "logs" / "stages.json"
     log_path.write_text(json.dumps(results, indent=2, ensure_ascii=False), encoding="utf-8")
-    print(f"\n[+] stage log    : {log_path}")
-    print(f"[+] HTML report  : {report_info['html']}")
-    print(f"[+] Markdown     : {report_info['md']}")
-    print(f"[+] JSON summary : {report_info['json']}")
-    print(f"[+] output dir   : {output_dir}")
+    print()
+    print(console.phase_header("report"))
+    print(console.kv("stage log   ", str(log_path), value_color="bright_cyan"))
+    print(console.kv("HTML report ", str(report_info["html"]), value_color="bright_cyan"))
+    print(console.kv("Markdown    ", str(report_info["md"]), value_color="bright_cyan"))
+    print(console.kv("JSON summary", str(report_info["json"]), value_color="bright_cyan"))
+    print(console.kv("output dir  ", str(output_dir), value_color="bright_cyan"))
     return 0
 
 
@@ -269,16 +315,21 @@ def main() -> int:
 # Helpers
 # ----------------------------------------------------------------------
 def _print_plan(domain: str, output_dir: Path, cfg: dict, args: argparse.Namespace) -> None:
-    print("\n--- DRY-RUN plan ---")
-    print(f"  target         : {domain}")
-    print(f"  output         : {output_dir}")
-    print(f"  config         : {args.config}")
-    print(f"  resume         : {args.resume}")
-    print(f"  skip-nuclei    : {args.skip_nuclei}")
-    print(f"  skip-dirsearch : {args.skip_dirsearch}")
-    print(f"  skip-waymore   : {args.skip_waymore}")
-    print(f"  skip-arjun     : {args.skip_arjun}")
-    print("  workflow:")
+    print(console.phase_header("dry-run plan"))
+    for k, v in [
+        ("target        ", domain),
+        ("output        ", str(output_dir)),
+        ("config        ", args.config),
+        ("resume        ", args.resume),
+        ("skip-nuclei   ", args.skip_nuclei),
+        ("skip-dirsearch", args.skip_dirsearch),
+        ("skip-waymore  ", args.skip_waymore),
+        ("skip-arjun    ", args.skip_arjun),
+        ("color enabled ", console.is_enabled()),
+    ]:
+        print(console.kv(k, v))
+    print()
+    print(console.c("workflow:", "bright_white", bold=True))
     for step in [
         "  0  validate domain & create output structure",
         "  1  subdomain collection (subfinder + amass + chaos)",
@@ -291,7 +342,7 @@ def _print_plan(domain: str, output_dir: Path, cfg: dict, args: argparse.Namespa
         "  8  nuclei dynamic on parameterized_urls",
         "  9  final telegram summary",
     ]:
-        print(step)
+        print(console.c(step, "white"))
 
 
 def _send_summary(

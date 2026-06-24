@@ -3,9 +3,13 @@
 Two modes, controlled by config:
 
   * **wordlist mode**  (default when ``dirsearch.wordlists`` is non-empty)
-        Pass each wordlist file via ``-w``. Directory entries are recursively
-        expanded to every ``*.txt`` inside. ``-e`` is omitted unless the
-        operator also sets ``dirsearch.combine: true``.
+        Each entry in ``wordlists`` is either a single ``.txt`` file or a
+        directory (recursively expanded to every ``*.txt`` inside, sorted).
+        ``_merge_wordlists()`` then combines the resolved files into ONE
+        single deduped file because **dirsearch only accepts a single
+        ``-w`` flag** — multiple ``-w`` flags are silently dropped on
+        most versions (only the first is honoured). ``-e`` is appended
+        too only when ``combine: true`` is set.
 
   * **extension mode** (legacy behaviour — fallback when no wordlists)
         Pass the curated sensitive-extension list via ``-e``.
@@ -22,9 +26,9 @@ import re
 from pathlib import Path
 from typing import Iterable
 
-from . import runner
+from . import console, runner
 from .sensitive_ext import SENSITIVE_EXT, to_dirsearch_flag
-from .utils import make_result, read_lines, write_lines
+from .utils import make_result, raw_dir, read_lines, write_lines
 
 
 # Matches "<status>  <len>  <url>" or "<status>  <len>B  <url> [-> <redirect>]"
@@ -91,10 +95,56 @@ def _resolve_wordlists(
     return resolved
 
 
+def _merge_wordlists(
+    wordlists: list[Path],
+    merged_path: Path,
+) -> tuple[Path, int, int]:
+    """Merge multiple wordlist files into a single deduped file.
+
+    Why this exists: dirsearch only accepts a single ``-w`` flag —
+    multiple ``-w`` flags are silently dropped on most versions (only
+    the first is honoured), and on others they trigger an argparse
+    error. The two valid workarounds are:
+      1. Merge into one file (this function — chosen by default
+         because it is one process / one timeout window).
+      2. Run dirsearch once per wordlist (not implemented; can be
+         approximated by repeating the stage via ``--resume`` with
+         different configs).
+
+    Lines starting with ``#`` are treated as comments and dropped,
+    matching the behaviour of ``read_lines()`` elsewhere in the
+    framework. Duplicates are deduped case-sensitively; the first
+    occurrence wins (preserves the ordering from the first wordlist
+    that contributed the entry).
+
+    Returns ``(merged_path, lines_in, lines_out)`` so the caller can
+    log the dedup ratio.
+    """
+    seen: set[str] = set()
+    lines_in = 0
+    lines_out = 0
+    merged_path.parent.mkdir(parents=True, exist_ok=True)
+    with merged_path.open("w", encoding="utf-8") as out:
+        for wl in wordlists:
+            if not wl.exists() or not wl.is_file():
+                continue
+            for raw_line in wl.read_text(errors="ignore").splitlines():
+                s = raw_line.strip()
+                if not s or s.startswith("#"):
+                    continue
+                lines_in += 1
+                if s in seen:
+                    continue
+                seen.add(s)
+                out.write(s + "\n")
+                lines_out += 1
+    return merged_path, lines_in, lines_out
+
+
 def _build_cmd(
     alive_file: Path,
     raw_out: Path,
-    wordlists: list[Path],
+    wordlist: Path | None,
     extensions: list[str] | None,
     *,
     threads: int,
@@ -103,25 +153,32 @@ def _build_cmd(
 ) -> list[str]:
     """Build the dirsearch argv.
 
+    ``wordlist`` is a *single* merged file (or ``None``). Callers with
+    multiple input wordlists should run ``_merge_wordlists()`` first —
+    dirsearch does not accept multiple ``-w`` flags.
+
     Precedence:
-      1. If wordlists is non-empty → use wordlists. Extensions are added too
+      1. If wordlist is set → ``-w <path>``. Extensions are added too
          only when ``combine`` is True (extremely noisy — opt-in).
-      2. Else → fall back to extensions.
+      2. Else → fall back to extensions via ``-e``.
     """
     cmd = [
         "dirsearch",
         "-l", str(alive_file),
-        # Modern dirsearch (>=1.0) infers format from the output file
-        # extension; --format was removed. Our raw_out is .txt → plain.
+        # `--format plain` is accepted by both legacy dirsearch (<1.0, the
+        # default on most bug-bounty boxes) and modern releases (where it's
+        # silently ignored if the output extension already implies the
+        # format). Pinning it explicitly makes the output deterministic
+        # regardless of version and matches what our parser expects.
+        "--format", "plain",
         "-o", str(raw_out),
         "-t", str(threads),
     ]
     if recursive:
         cmd.append("-r")
 
-    if wordlists:
-        for wl in wordlists:
-            cmd.extend(["-w", str(wl)])
+    if wordlist:
+        cmd.extend(["-w", str(wordlist)])
         if combine and extensions:
             cmd.extend(["-e", to_dirsearch_flag(extensions)])
     elif extensions:
@@ -151,11 +208,11 @@ def scan(
     skip: bool = False,
 ) -> dict:
     stage = "dirsearch"
-    raw = output_dir / "raw"
+    raw_ds = raw_dir(output_dir, "dirsearch")
     proc = output_dir / "processed"
-    raw.mkdir(parents=True, exist_ok=True)
     proc.mkdir(parents=True, exist_ok=True)
-    raw_out = raw / "dirsearch_raw.txt"
+    raw_out = raw_ds / "dirsearch_raw.txt"
+    merged_wl_path = raw_ds / "merged_wordlists.txt"
     proc_out = proc / "dirsearch_urls.txt"
 
     if skip:
@@ -178,8 +235,20 @@ def scan(
         wl_paths = _resolve_wordlists(
             d_cfg.get("wordlists", []) or [], missing_callback=print,
         )
+        # If multiple wordlists were resolved, dry-run still won't
+        # create the merged file on disk — we only need to know what
+        # the argv *would* look like. Report the planned merge path
+        # in the extra so the operator can see it.
+        planned_wordlist: Path | None = None
+        planned_merge: dict | None = None
+        if len(wl_paths) == 1:
+            planned_wordlist = wl_paths[0]
+        elif wl_paths:
+            planned_wordlist = merged_wl_path
+            planned_merge = {"files": len(wl_paths),
+                             "path": str(planned_wordlist)}
         cmd = _build_cmd(
-            alive_file, raw_out, wl_paths,
+            alive_file, raw_out, planned_wordlist,
             extensions=d_cfg.get("extensions"),
             threads=int(d_cfg.get("threads", 30)),
             recursive=bool(d_cfg.get("recursive", True)),
@@ -188,7 +257,11 @@ def scan(
         return make_result(
             stage, "skipped", input_path=alive_file,
             outputs=[raw_out, proc_out], count=0, error="dry-run",
-            extra={"planned_cmd": cmd, "wordlists": [str(p) for p in wl_paths]},
+            extra={
+                "planned_cmd": cmd,
+                "wordlists": [str(p) for p in wl_paths],
+                "merge": planned_merge,
+            },
         )
 
     if not runner.tool_available("dirsearch"):
@@ -198,6 +271,18 @@ def scan(
             stage, "skipped", input_path=alive_file,
             outputs=[raw_out, proc_out], count=0,
             error="dirsearch binary not found (optional, skipped)",
+        )
+
+    # Nothing alive to scan → skip without spawning dirsearch. dirsearch
+    # exits non-zero on an empty -l file which we would otherwise
+    # misinterpret as a real failure.
+    if not alive_file.exists() or alive_file.stat().st_size == 0:
+        raw_out.write_text("")
+        proc_out.write_text("")
+        return make_result(
+            stage, "skipped", input_path=alive_file,
+            outputs=[raw_out, proc_out], count=0,
+            error="no alive hosts to scan",
         )
 
     d_cfg = cfg.get("dirsearch", {})
@@ -217,8 +302,37 @@ def scan(
     if not wl_paths and not extensions:
         extensions = SENSITIVE_EXT
 
+    # dirsearch accepts only one ``-w`` flag. If we resolved multiple
+    # wordlists (very common — one big raft-small-directories.txt
+    # plus 50 service-specific files), merge them into a single
+    # deduped file under raw/dirsearch/merged_wordlists.txt. A
+    # single wordlist is used as-is to avoid an unnecessary
+    # round-trip through disk.
+    wordlist_file: Path | None = None
+    merge_stats: dict | None = None
+    if wl_paths:
+        if len(wl_paths) == 1:
+            wordlist_file = wl_paths[0]
+        else:
+            merged_path, lines_in, lines_out = _merge_wordlists(
+                wl_paths, merged_wl_path,
+            )
+            wordlist_file = merged_path
+            merge_stats = {
+                "files": len(wl_paths),
+                "lines_in": lines_in,
+                "lines_out": lines_out,
+                "path": str(merged_path),
+            }
+            print(
+                console.phase_info_line(
+                    f"merged {len(wl_paths)} wordlists "
+                    f"({lines_in} lines → {lines_out} unique) into {merged_path}"
+                )
+            )
+
     cmd = _build_cmd(
-        alive_file, raw_out, wl_paths,
+        alive_file, raw_out, wordlist_file,
         extensions=extensions,
         threads=threads,
         recursive=recursive,
@@ -231,6 +345,7 @@ def scan(
             stage, "failed", input_path=alive_file,
             outputs=[raw_out, proc_out], count=0,
             error=(r["stderr"] or "")[:300],
+            extra={"wordlists": [str(p) for p in wl_paths], "merge": merge_stats},
         )
 
     src = raw_out.read_text(errors="ignore") if raw_out.exists() else (r["stdout"] or "")
@@ -240,5 +355,6 @@ def scan(
         stage, "success", input_path=alive_file,
         outputs=[raw_out, proc_out], count=n,
         extra={"wordlists": [str(p) for p in wl_paths],
+               "merge": merge_stats,
                "mode": "wordlist" if wl_paths else "extension"},
     )
