@@ -27,6 +27,7 @@ from modules import (
     dnsx as dnsx_mod,
     httpx as httpx_mod,
     nuclei as nuclei_mod,
+    progress as progress_mod,
     report as report_mod,
     subdomain as sub_mod,
     telegram,
@@ -191,140 +192,191 @@ def main() -> int:
     scan_start = datetime.now(timezone.utc)
     tool_versions = report_mod.capture_tool_versions()
 
+    # Total phases for the progress bar. Counts every distinct step the
+    # operator sees in the workflow — sequential phases plus each parallel
+    # group counted as one (the sub-stages are reported as rows within
+    # the parallel() context manager).
+    prog = progress_mod.ReconProgress(n_phases=11)
+
     results: list[dict] = []
 
-    # ---- 1. subdomain collection ----
-    results.append(_run_stage(
-        "subdomain", sub_mod.collect,
-        domain, output_dir, cfg,
-        resume=args.resume, dry_run=False,
-    ))
+    with prog:
+        # ---- 1. subdomain collection ----
+        prog.start_phase("subdomain", num=1)
+        r = _run_stage("subdomain", sub_mod.collect,
+                       domain, output_dir, cfg,
+                       resume=args.resume, dry_run=False)
+        results.append(r)
+        prog.finish_phase(r, num=1)
 
-    # ---- 2. DNS resolution ----
-    sub_file = output_dir / "processed" / "subdomains.txt"
-    results.append(_run_stage(
-        "dnsx", dnsx_mod.resolve,
-        sub_file, output_dir, cfg,
-        resume=args.resume, dry_run=False,
-    ))
+        # ---- 2. DNS resolution ----
+        prog.start_phase("dnsx", num=2)
+        sub_file = output_dir / "processed" / "subdomains.txt"
+        r = _run_stage("dnsx", dnsx_mod.resolve,
+                       sub_file, output_dir, cfg,
+                       resume=args.resume, dry_run=False)
+        results.append(r)
+        prog.finish_phase(r, num=2)
 
-    # ---- 3. HTTP alive ----
-    resolved_file = output_dir / "processed" / "resolved.txt"
-    results.append(_run_stage(
-        "httpx_alive", httpx_mod.alive_check,
-        resolved_file, output_dir, cfg,
-        resume=args.resume, dry_run=False,
-    ))
+        # ---- 3. HTTP alive ----
+        prog.start_phase("httpx_alive", num=3)
+        resolved_file = output_dir / "processed" / "resolved.txt"
+        r = _run_stage("httpx_alive", httpx_mod.alive_check,
+                       resolved_file, output_dir, cfg,
+                       resume=args.resume, dry_run=False)
+        results.append(r)
+        prog.finish_phase(r, num=3)
 
-    alive_file = output_dir / "processed" / "alive.txt"
+        alive_file = output_dir / "processed" / "alive.txt"
 
-    # ---- 4. parallel: katana/urlfinder + dirsearch + waymore + nuclei default ----
-    from concurrent.futures import ThreadPoolExecutor
-    with ThreadPoolExecutor(max_workers=4) as pool:
-        futures = {
-            pool.submit(_run_stage, "content_discovery", cd_mod.crawl,
-                        alive_file, output_dir, cfg,
-                        resume=args.resume, dry_run=False): "content_discovery",
-            pool.submit(_run_stage, "dirsearch", dirsearch_mod.scan,
-                        alive_file, output_dir, cfg,
-                        resume=args.resume, dry_run=False,
-                        skip=args.skip_dirsearch): "dirsearch",
-            pool.submit(_run_stage, "waymore", waymore_mod.collect,
-                        domain, output_dir, cfg,
-                        resume=args.resume, dry_run=False,
-                        skip=args.skip_waymore): "waymore",
-            pool.submit(_run_stage, "nuclei_default", nuclei_mod.default_scan,
-                        alive_file, output_dir, cfg,
-                        resume=args.resume, dry_run=False,
-                        skip=args.skip_nuclei): "nuclei_default",
-        }
-        for fut in futures:
-            try:
-                results.append(fut.result())
-            except Exception as exc:  # noqa: BLE001
-                results.append(make_result(futures[fut], "failed",
-                                            error=f"exception: {exc}"))
+        # ---- 4. parallel: katana/urlfinder + dirsearch + waymore + nuclei default ----
+        prog.start_phase("content_discovery (and 3 others)", num=4)
+        from concurrent.futures import ThreadPoolExecutor
+        par_results: dict[str, dict] = {}
+        with prog.parallel(
+            ["content_discovery", "dirsearch", "waymore", "nuclei_default"], num=4,
+        ):
+            with ThreadPoolExecutor(max_workers=4) as pool:
+                futures = {
+                    pool.submit(_run_stage, "content_discovery", cd_mod.crawl,
+                                alive_file, output_dir, cfg,
+                                resume=args.resume, dry_run=False): "content_discovery",
+                    pool.submit(_run_stage, "dirsearch", dirsearch_mod.scan,
+                                alive_file, output_dir, cfg,
+                                resume=args.resume, dry_run=False,
+                                skip=args.skip_dirsearch): "dirsearch",
+                    pool.submit(_run_stage, "waymore", waymore_mod.collect,
+                                domain, output_dir, cfg,
+                                resume=args.resume, dry_run=False,
+                                skip=args.skip_waymore): "waymore",
+                    pool.submit(_run_stage, "nuclei_default", nuclei_mod.default_scan,
+                                alive_file, output_dir, cfg,
+                                resume=args.resume, dry_run=False,
+                                skip=args.skip_nuclei): "nuclei_default",
+                }
+                for fut in futures:
+                    name = futures[fut]
+                    try:
+                        res = fut.result()
+                    except Exception as exc:  # noqa: BLE001
+                        res = make_result(name, "failed",
+                                          error=f"exception: {exc}")
+                    par_results[name] = res
+                    prog.subphase_done(name, res)
+        results.extend(par_results.values())
+        prog.finish_parallel(num=4)
 
-    # ---- 5. merge ----
-    results.append(_run_stage("url_merge", url_merge_mod.merge,
-                              output_dir, resume=args.resume, dry_run=False))
+        # ---- 5. merge ----
+        prog.start_phase("url_merge", num=5)
+        r = _run_stage("url_merge", url_merge_mod.merge,
+                       output_dir, resume=args.resume, dry_run=False)
+        results.append(r)
+        prog.finish_phase(r, num=5)
 
-    # ---- 6. parallel: httpx URL check + xnLinkFinder ----
-    all_urls_file = output_dir / "processed" / "all_urls.txt"
-    js_urls_file = output_dir / "processed" / "js_urls.txt"
-    with ThreadPoolExecutor(max_workers=2) as pool:
-        futures = {
-            pool.submit(_run_stage, "httpx_urls", httpx_mod.check_urls,
-                        all_urls_file, output_dir, cfg,
-                        resume=args.resume, dry_run=False): "httpx_urls",
-            pool.submit(_run_stage, "xnlinkfinder", xnlinkfinder_mod.scan,
-                        js_urls_file, output_dir, cfg,
-                        resume=args.resume, dry_run=False,
-                        skip=args.skip_xnlinkfinder): "xnlinkfinder",
-        }
-        for fut in futures:
-            try:
-                results.append(fut.result())
-            except Exception as exc:  # noqa: BLE001
-                results.append(make_result(futures[fut], "failed",
-                                            error=f"exception: {exc}"))
+        # ---- 6. parallel: httpx URL check + xnLinkFinder ----
+        prog.start_phase("httpx_urls (and 1 other)", num=6)
+        all_urls_file = output_dir / "processed" / "all_urls.txt"
+        js_urls_file = output_dir / "processed" / "js_urls.txt"
+        par6: dict[str, dict] = {}
+        with prog.parallel(["httpx_urls", "xnlinkfinder"], num=6):
+            with ThreadPoolExecutor(max_workers=2) as pool:
+                futures = {
+                    pool.submit(_run_stage, "httpx_urls", httpx_mod.check_urls,
+                                all_urls_file, output_dir, cfg,
+                                resume=args.resume, dry_run=False): "httpx_urls",
+                    pool.submit(_run_stage, "xnlinkfinder", xnlinkfinder_mod.scan,
+                                js_urls_file, output_dir, cfg,
+                                resume=args.resume, dry_run=False,
+                                skip=args.skip_xnlinkfinder): "xnlinkfinder",
+                }
+                for fut in futures:
+                    name = futures[fut]
+                    try:
+                        res = fut.result()
+                    except Exception as exc:  # noqa: BLE001
+                        res = make_result(name, "failed",
+                                          error=f"exception: {exc}")
+                    par6[name] = res
+                    prog.subphase_done(name, res)
+        results.extend(par6.values())
+        prog.finish_parallel(num=6)
 
-    # ---- 6.post: merge xnlinkfinder URLs back into all_urls.txt ----
-    ep_file = output_dir / "processed" / "xnlinkfinder_endpoints.txt"
-    url_file = output_dir / "processed" / "xnlinkfinder_urls.txt"
-    extras = [p for p in (ep_file, url_file) if p.exists() and p.stat().st_size > 0]
-    if extras:
-        results.append(_run_stage(
-            "url_merge_append", url_merge_mod.append_urls,
-            output_dir, extras,
-        ))
+        # ---- 6.post: merge xnlinkfinder URLs back into all_urls.txt ----
+        prog.start_phase("url_merge_append", num=7)
+        ep_file = output_dir / "processed" / "xnlinkfinder_endpoints.txt"
+        url_file = output_dir / "processed" / "xnlinkfinder_urls.txt"
+        extras = [p for p in (ep_file, url_file) if p.exists() and p.stat().st_size > 0]
+        if extras:
+            r = _run_stage(
+                "url_merge_append", url_merge_mod.append_urls,
+                output_dir, extras,
+            )
+            results.append(r)
+            prog.finish_phase(r, num=7)
+        else:
+            prog.finish_phase(
+                make_result("url_merge_append", "skipped", count=0,
+                            error="no xnlinkfinder output to merge"),
+                num=7,
+            )
 
-    # Telegram summary after stage 6
-    _send_summary("stage-6", domain, results, cfg, output_dir)
+        # Telegram summary after stage 6
+        _send_summary("stage-6", domain, results, cfg, output_dir)
 
-    # ---- 7. arjun on dynamic URLs ----
-    dyn_urls_file = output_dir / "processed" / "dynamic_urls.txt"
-    results.append(_run_stage(
-        "arjun", arjun_mod.discover,
-        dyn_urls_file, output_dir, cfg,
-        resume=args.resume, dry_run=False, skip=args.skip_arjun,
-    ))
+        # ---- 7. arjun on dynamic URLs ----
+        prog.start_phase("arjun", num=8)
+        dyn_urls_file = output_dir / "processed" / "dynamic_urls.txt"
+        r = _run_stage(
+            "arjun", arjun_mod.discover,
+            dyn_urls_file, output_dir, cfg,
+            resume=args.resume, dry_run=False, skip=args.skip_arjun,
+        )
+        results.append(r)
+        prog.finish_phase(r, num=8)
 
-    # ---- 8. nuclei dynamic ----
-    param_urls_file = output_dir / "processed" / "parameterized_urls.txt"
-    results.append(_run_stage(
-        "nuclei_dynamic", nuclei_mod.dynamic_scan,
-        param_urls_file, output_dir, cfg,
-        resume=args.resume, dry_run=False, skip=args.skip_nuclei,
-    ))
+        # ---- 8. nuclei dynamic ----
+        prog.start_phase("nuclei_dynamic", num=9)
+        param_urls_file = output_dir / "processed" / "parameterized_urls.txt"
+        r = _run_stage(
+            "nuclei_dynamic", nuclei_mod.dynamic_scan,
+            param_urls_file, output_dir, cfg,
+            resume=args.resume, dry_run=False, skip=args.skip_nuclei,
+        )
+        results.append(r)
+        prog.finish_phase(r, num=9)
 
-    # ---- 9. final summary ----
-    summary = _build_final_summary(domain, output_dir)
-    results.append(summary)
+        # ---- 9. final summary (no _run_stage wrapper — synthesised) ----
+        prog.start_phase("summary", num=10)
+        summary = _build_final_summary(domain, output_dir)
+        results.append(summary)
+        prog.finish_phase(summary, num=10)
 
-    # ---- 10. generate the final report (HTML + MD + JSON) ----
-    scan_end = datetime.now(timezone.utc)
-    cfg_text = ""
-    try:
-        cfg_text = cfg_path.read_text(encoding="utf-8")
-    except Exception:  # noqa: BLE001
+        # ---- 10. generate the final report (HTML + MD + JSON) ----
+        prog.start_phase("report", num=11)
+        scan_end = datetime.now(timezone.utc)
         cfg_text = ""
+        try:
+            cfg_text = cfg_path.read_text(encoding="utf-8")
+        except Exception:  # noqa: BLE001
+            cfg_text = ""
 
-    report_info = report_mod.build_report(
-        output_dir, domain, cfg,
-        cfg_path=str(cfg_path),
-        cfg_text=cfg_text,
-        scan_start=scan_start,
-        scan_end=scan_end,
-        tool_versions=tool_versions,
-        stage_results=results,
-        scan_mode="active",
-    )
-    results.append(make_result(
-        "report", "success", input_path=output_dir,
-        outputs=[report_info["html"], report_info["md"], report_info["json"]],
-        count=3, extra=report_info,
-    ))
+        report_info = report_mod.build_report(
+            output_dir, domain, cfg,
+            cfg_path=str(cfg_path),
+            cfg_text=cfg_text,
+            scan_start=scan_start,
+            scan_end=scan_end,
+            tool_versions=tool_versions,
+            stage_results=results,
+            scan_mode="active",
+        )
+        report_result = make_result(
+            "report", "success", input_path=output_dir,
+            outputs=[report_info["html"], report_info["md"], report_info["json"]],
+            count=3, extra=report_info,
+        )
+        results.append(report_result)
+        prog.finish_phase(report_result, num=11)
 
     # Final Telegram message includes the HTML report path
     _send_summary("final", domain, results, cfg, output_dir, report_info=report_info)

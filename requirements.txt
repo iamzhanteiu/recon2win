@@ -5,3 +5,7 @@ requests>=2.31.0
 # without this dep dirsearch crashes with ModuleNotFoundError the
 # instant you run it (count=0, 0.73s in the wild).
 setuptools>=68.0
+# rich powers the per-stage progress bar at the bottom of the terminal
+# when stdout is a TTY. Falls back to a no-op (no import, no bar) when
+# rich is missing OR when output is piped — log files stay clean.
+rich>=13.0
