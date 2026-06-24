@@ -220,6 +220,103 @@ def test_parse_nuclei_summary_handles_missing(tmp_path: Path):
     assert sev == {}
 
 
+def test_parse_nuclei_summary_handles_structured_format(tmp_path: Path):
+    """The standard format ``modules/nuclei.py`` writes — must parse
+    exactly as written."""
+    import json as _json
+    p = tmp_path / "nuclei.json"
+    doc = {
+        "findings": [
+            {"template-id": "tech-detect",
+             "info": {"severity": "info"},
+             "matched-at": "https://a"},
+            {"template-id": "exposed-env",
+             "info": {"severity": "high"},
+             "matched-at": "https://b/.env"},
+        ],
+        "severity_count": {"info": 1, "high": 1, "low": 0,
+                           "medium": 0, "critical": 0},
+    }
+    p.write_text(_json.dumps(doc))
+    findings, sev = parse_nuclei_summary(p)
+    assert len(findings) == 2
+    assert sev == {"info": 1, "high": 1, "low": 0,
+                   "medium": 0, "critical": 0}
+
+
+def test_parse_nuclei_summary_handles_raw_jsonl(tmp_path: Path):
+    """Some nuclei v3.x builds write JSONL directly via -json-export.
+    The report must still extract findings even if modules/nuclei.py
+    didn't successfully overwrite the file with our structured format.
+    """
+    import json as _json
+    p = tmp_path / "nuclei.json"
+    lines = [
+        _json.dumps({"template-id": "tech-detect",
+                     "info": {"severity": "info"},
+                     "matched-at": "https://a"}),
+        _json.dumps({"template-id": "exposed-env",
+                     "info": {"severity": "high"},
+                     "matched-at": "https://b/.env"}),
+    ]
+    p.write_text("\n".join(lines) + "\n")
+    findings, sev = parse_nuclei_summary(p)
+    assert len(findings) == 2
+    assert findings[0]["template-id"] == "tech-detect"
+    # Severity breakdown still works on raw JSONL.
+    assert sev.get("info") == 1
+    assert sev.get("high") == 1
+
+
+def test_parse_nuclei_summary_handles_raw_json_array(tmp_path: Path):
+    """Other nuclei v3.x builds write the entire findings as a single
+    JSON array on one line. The report must parse that too."""
+    import json as _json
+    p = tmp_path / "nuclei.json"
+    arr = [
+        {"template-id": "tech-detect",
+         "info": {"severity": "info"},
+         "matched-at": "https://a"},
+        {"template-id": "php-detect",
+         "info": {"severity": "low"},
+         "matched-at": "https://b"},
+    ]
+    p.write_text(_json.dumps(arr))
+    findings, sev = parse_nuclei_summary(p)
+    assert len(findings) == 2
+    assert sev.get("info") == 1
+    assert sev.get("low") == 1
+
+
+def test_parse_nuclei_summary_skips_non_dict_in_jsonl(tmp_path: Path):
+    """JSONL can contain stray primitives (some templating quirks).
+    Skip them defensively — same logic the stage parser uses."""
+    import json as _json
+    p = tmp_path / "nuclei.json"
+    valid1 = _json.dumps({"template-id": "ok", "info": {"severity": "info"},
+                          "matched-at": "https://a"})
+    valid2 = _json.dumps({"template-id": "ok2", "info": {"severity": "high"},
+                          "matched-at": "https://b"})
+    p.write_text(valid1 + "\n[1, 2, 3]\n42\n" + valid2 + "\n")
+    findings, sev = parse_nuclei_summary(p)
+    assert len(findings) == 2
+    assert sev.get("info") == 1
+    assert sev.get("high") == 1
+
+
+def test_parse_nuclei_summary_returns_empty_on_garbage(tmp_path: Path):
+    """If the file is genuinely garbage, return empty rather than crash.
+    The severity-count dict is always pre-populated with zeros for
+    every severity — that's the shape the rest of the report expects."""
+    p = tmp_path / "nuclei.json"
+    p.write_text("not json at all\n[[[")
+    findings, sev = parse_nuclei_summary(p)
+    assert findings == []
+    assert sum(sev.values()) == 0
+    # Every known severity has a zero entry.
+    assert all(v == 0 for v in sev.values())
+
+
 # ----------------------------------------------------------------------
 # Nuclei output parser — defensive against non-JSONL formats
 # ----------------------------------------------------------------------

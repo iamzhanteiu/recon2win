@@ -127,11 +127,66 @@ def load_json_safe(path: Path) -> Any:
 
 
 def parse_nuclei_summary(path: Path) -> tuple[list[dict], dict[str, int]]:
-    """Parse our structured nuclei JSON: ``{"findings": [...], "severity_count": {...}}``."""
-    data = load_json_safe(path)
-    if not isinstance(data, dict):
+    """Parse the nuclei output file — handles all three formats nuclei
+    can produce so the report stays robust even if ``modules/nuclei.py``
+    didn't successfully overwrite the raw file:
+
+    1. **Structured** (what ``modules/nuclei.py`` writes):
+       ``{"findings": [...], "severity_count": {...}}``
+    2. **JSONL** (some nuclei v3.x builds via ``-json-export``):
+       one ``{"template-id": ..., "info": {...}, ...}`` per line
+    3. **JSON array** (other nuclei v3.x builds):
+       single line ``[{...}, {...}, ...]``
+
+    Anything that doesn't parse cleanly → returns ``([], {})``.
+    """
+    SEV_ORDER = ("info", "low", "medium", "high", "critical")
+    if not path.exists() or path.stat().st_size == 0:
         return [], {}
-    return list(data.get("findings") or []), dict(data.get("severity_count") or {})
+
+    raw = path.read_text(errors="ignore").strip()
+
+    # Try structured first (most efficient — single json.loads).
+    try:
+        data = json.loads(raw)
+        if isinstance(data, dict) and "findings" in data:
+            return (
+                list(data.get("findings") or []),
+                dict(data.get("severity_count") or {}),
+            )
+        if isinstance(data, list):
+            # JSON array of findings.
+            findings = [o for o in data if isinstance(o, dict)]
+            return _aggregate_findings(findings, SEV_ORDER)
+    except (json.JSONDecodeError, ValueError):
+        pass
+
+    # Fall back to JSONL — one object per line.
+    findings = []
+    for ln in raw.splitlines():
+        ln = ln.strip()
+        if not ln:
+            continue
+        try:
+            obj = json.loads(ln)
+        except (json.JSONDecodeError, ValueError):
+            continue
+        if isinstance(obj, dict):
+            findings.append(obj)
+    return _aggregate_findings(findings, SEV_ORDER)
+
+
+def _aggregate_findings(
+    findings: list[dict], sev_order: tuple[str, ...]
+) -> tuple[list[dict], dict[str, int]]:
+    """Compute the severity_count breakdown for a flat findings list."""
+    sev_count: dict[str, int] = {s: 0 for s in sev_order}
+    for f in findings:
+        if not isinstance(f, dict):
+            continue
+        sev = ((f.get("info") or {}).get("severity") or "info").lower()
+        sev_count[sev] = sev_count.get(sev, 0) + 1
+    return findings, sev_count
 
 
 def parse_httpx_jsonl(path: Path) -> list[dict]:
