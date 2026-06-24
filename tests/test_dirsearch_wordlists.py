@@ -287,7 +287,12 @@ def test_build_cmd_threads_are_passed(tmp_path: Path):
     assert cmd[cmd.index("-t") + 1] == "42"
 
 
-def test_build_cmd_always_passes_l_and_format(tmp_path: Path):
+def test_build_cmd_does_not_pass_format_flag(tmp_path: Path):
+    """The legacy dirsearch (pre-1.0) doesn't accept ``--format`` and
+    exits with "no such option: --format". Both old and new versions
+    infer the format from the output file extension, so we never pass
+    it. Test guards against the flag creeping back in.
+    """
     alive, raw = _fake_alive_out(tmp_path)
     cmd = _build_cmd(
         alive, raw, None, extensions=[".bak"],
@@ -295,7 +300,7 @@ def test_build_cmd_always_passes_l_and_format(tmp_path: Path):
     )
     assert cmd[0] == "dirsearch"
     assert "-l" in cmd and cmd[cmd.index("-l") + 1] == str(alive)
-    assert "--format" in cmd and cmd[cmd.index("--format") + 1] == "plain"
+    assert "--format" not in cmd  # must NOT pass --format (breaks legacy dirsearch)
     assert "-o" in cmd and cmd[cmd.index("-o") + 1] == str(raw)
 
 

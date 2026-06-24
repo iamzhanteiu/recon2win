@@ -165,12 +165,12 @@ def _build_cmd(
     cmd = [
         "dirsearch",
         "-l", str(alive_file),
-        # `--format plain` is accepted by both legacy dirsearch (<1.0, the
-        # default on most bug-bounty boxes) and modern releases (where it's
-        # silently ignored if the output extension already implies the
-        # format). Pinning it explicitly makes the output deterministic
-        # regardless of version and matches what our parser expects.
-        "--format", "plain",
+        # Format is inferred from the output file extension — ``-o foo.txt``
+        # produces plain text, ``-o foo.json`` produces JSON. The legacy
+        # dirsearch (pre-1.0, the version most bug-bounty boxes ship) does
+        # NOT accept ``--format``; dirsearch 1.x accepts it but ignores
+        # it when the extension is unambiguous. Don't pass ``--format``
+        # here so we work on both versions.
         "-o", str(raw_out),
         "-t", str(threads),
     ]
