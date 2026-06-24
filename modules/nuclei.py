@@ -82,7 +82,14 @@ def _run(
     cmd = [
         "nuclei", "-l", str(input_file),
         "-severity", ",".join(severity),
-        "-silent", "-json",
+        "-silent",
+        # Format is inferred from the output file extension — ``-o foo.json``
+        # produces JSON Lines (one JSON object per line), ``-o foo.txt``
+        # produces plain text. The legacy ``-json`` flag was REMOVED in
+        # nuclei v3.0; v3.x no longer accepts it. Don't pass it here so
+        # we work on both v2.x and v3.x. Our parser splits the output
+        # by line and decodes each as JSON, which matches v3.x's
+        # default JSONL output to a ``.json`` file.
         "-o", str(json_out),
         "-rate-limit", str(rate),
         "-bulk-size", str(bulk),
