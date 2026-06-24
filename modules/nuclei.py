@@ -83,14 +83,20 @@ def _run(
         "nuclei", "-l", str(input_file),
         "-severity", ",".join(severity),
         "-silent",
-        # Format is inferred from the output file extension — ``-o foo.json``
-        # produces JSON Lines (one JSON object per line), ``-o foo.txt``
-        # produces plain text. The legacy ``-json`` flag was REMOVED in
-        # nuclei v3.0; v3.x no longer accepts it. Don't pass it here so
-        # we work on both v2.x and v3.x. Our parser splits the output
-        # by line and decodes each as JSON, which matches v3.x's
-        # default JSONL output to a ``.json`` file.
-        "-o", str(json_out),
+        # nuclei v3.x has THREE different output formats and the flag
+        # depends on which one you want:
+        #   -o foo.txt              → text (default; what we don't want)
+        #   -o foo.json             → STILL text in v3.x (extension
+        #                              inference is NOT honoured; this
+        #                              was the bug we just hit)
+        #   -json-export foo.json   → JSON, written directly to file ←
+        #   -jsonl                 → JSONL, written to stdout
+        # nuclei v2.x only accepts ``-json`` which writes to stdout, so
+        # for full v2.x support we'd need to also parse stdout. For v3.x
+        # (the version that ships on current Ubuntu/Debian releases),
+        # ``-json-export`` is the right flag.
+        "-o", str(txt_out),
+        "-json-export", str(json_out),
         "-rate-limit", str(rate),
         "-bulk-size", str(bulk),
         "-c", str(conc),
