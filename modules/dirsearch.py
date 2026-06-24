@@ -150,6 +150,9 @@ def _build_cmd(
     threads: int,
     recursive: bool,
     combine: bool,
+    follow_redirects: bool = True,
+    include_status: list[str] | None = None,
+    exclude_status: list[str] | None = None,
 ) -> list[str]:
     """Build the dirsearch argv.
 
@@ -161,6 +164,13 @@ def _build_cmd(
       1. If wordlist is set → ``-w <path>``. Extensions are added too
          only when ``combine`` is True (extremely noisy — opt-in).
       2. Else → fall back to extensions via ``-e``.
+
+    Status-code filtering (dirsearch v3.x ``-i`` / ``-x``):
+      * ``include_status`` — only show these codes (empty = show all).
+      * ``exclude_status`` — hide these codes (applied after include).
+      * ``follow_redirects`` — ``--follow-redirects`` flag; when True,
+        3xx responses are followed and the FINAL status is reported
+        (so ``/admin → 302 → /login (200)`` shows up as a 200).
     """
     cmd = [
         "dirsearch",
@@ -176,6 +186,22 @@ def _build_cmd(
     ]
     if recursive:
         cmd.append("-r")
+    if follow_redirects:
+        cmd.append("--follow-redirects")
+
+    # Status-code filtering. Both flags are optional — empty lists mean
+    # "no filter". -i / -x are comma-separated status codes
+    # (e.g. ``-i 200,403``). dirsearch's pre-1.0 versions don't accept
+    # these flags; if we detect they're unsupported (rare on modern
+    # bug-bounty boxes) the operator should leave both empty.
+    if include_status:
+        clean = [str(s).strip() for s in include_status if str(s).strip()]
+        if clean:
+            cmd.extend(["-i", ",".join(clean)])
+    if exclude_status:
+        clean = [str(s).strip() for s in exclude_status if str(s).strip()]
+        if clean:
+            cmd.extend(["-x", ",".join(clean)])
 
     if wordlist:
         cmd.extend(["-w", str(wordlist)])
@@ -253,6 +279,9 @@ def scan(
             threads=int(d_cfg.get("threads", 30)),
             recursive=bool(d_cfg.get("recursive", True)),
             combine=bool(d_cfg.get("combine", False)),
+            follow_redirects=bool(d_cfg.get("follow_redirects", True)),
+            include_status=d_cfg.get("include_status") or [],
+            exclude_status=d_cfg.get("exclude_status") or [],
         )
         return make_result(
             stage, "skipped", input_path=alive_file,
@@ -337,6 +366,9 @@ def scan(
         threads=threads,
         recursive=recursive,
         combine=combine,
+        follow_redirects=bool(d_cfg.get("follow_redirects", True)),
+        include_status=d_cfg.get("include_status") or [],
+        exclude_status=d_cfg.get("exclude_status") or [],
     )
 
     r = runner.run(cmd, stage=stage, output_dir=output_dir, timeout=timeout)

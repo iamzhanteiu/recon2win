@@ -287,6 +287,91 @@ def test_build_cmd_threads_are_passed(tmp_path: Path):
     assert cmd[cmd.index("-t") + 1] == "42"
 
 
+# ----------------------------------------------------------------------
+# _build_cmd — status-code filtering + follow-redirects
+# ----------------------------------------------------------------------
+def test_build_cmd_emits_follow_redirects_when_enabled(tmp_path: Path):
+    alive, raw = _fake_alive_out(tmp_path)
+    cmd = _build_cmd(
+        alive, raw, Path(tmp_path / "a.txt"), extensions=None,
+        threads=10, recursive=True, combine=False,
+        follow_redirects=True,
+    )
+    assert "--follow-redirects" in cmd
+
+
+def test_build_cmd_omits_follow_redirects_when_disabled(tmp_path: Path):
+    alive, raw = _fake_alive_out(tmp_path)
+    cmd = _build_cmd(
+        alive, raw, Path(tmp_path / "a.txt"), extensions=None,
+        threads=10, recursive=True, combine=False,
+        follow_redirects=False,
+    )
+    assert "--follow-redirects" not in cmd
+
+
+def test_build_cmd_emits_include_status_flag(tmp_path: Path):
+    alive, raw = _fake_alive_out(tmp_path)
+    cmd = _build_cmd(
+        alive, raw, Path(tmp_path / "a.txt"), extensions=None,
+        threads=10, recursive=True, combine=False,
+        include_status=[200, 401, 403, 500],
+    )
+    i_idx = cmd.index("-i")
+    assert cmd[i_idx + 1] == "200,401,403,500"
+
+
+def test_build_cmd_emits_exclude_status_flag(tmp_path: Path):
+    alive, raw = _fake_alive_out(tmp_path)
+    cmd = _build_cmd(
+        alive, raw, Path(tmp_path / "a.txt"), extensions=None,
+        threads=10, recursive=True, combine=False,
+        exclude_status=[404, 429],
+    )
+    x_idx = cmd.index("-x")
+    assert cmd[x_idx + 1] == "404,429"
+
+
+def test_build_cmd_no_status_filter_means_no_flags(tmp_path: Path):
+    """Empty include/exclude lists (default) → no -i / -x flag emitted
+    so dirsearch reports everything (legacy behaviour)."""
+    alive, raw = _fake_alive_out(tmp_path)
+    cmd = _build_cmd(
+        alive, raw, Path(tmp_path / "a.txt"), extensions=None,
+        threads=10, recursive=True, combine=False,
+        include_status=[], exclude_status=[],
+    )
+    assert "-i" not in cmd
+    assert "-x" not in cmd
+
+
+def test_build_cmd_filters_strip_empty_strings(tmp_path: Path):
+    """``["", "  ", "200"]`` should produce ``-i 200`` — no trailing
+    empty / whitespace entries in the comma-separated list."""
+    alive, raw = _fake_alive_out(tmp_path)
+    cmd = _build_cmd(
+        alive, raw, Path(tmp_path / "a.txt"), extensions=None,
+        threads=10, recursive=True, combine=False,
+        include_status=["", "  ", "200"],
+    )
+    i_idx = cmd.index("-i")
+    assert cmd[i_idx + 1] == "200"
+
+
+def test_build_cmd_emits_both_include_and_exclude(tmp_path: Path):
+    """Both filters can be active simultaneously — dirsearch applies
+    include first, then exclude."""
+    alive, raw = _fake_alive_out(tmp_path)
+    cmd = _build_cmd(
+        alive, raw, Path(tmp_path / "a.txt"), extensions=None,
+        threads=10, recursive=True, combine=False,
+        include_status=[200, 401, 403],
+        exclude_status=[404, 429],
+    )
+    assert cmd[cmd.index("-i") + 1] == "200,401,403"
+    assert cmd[cmd.index("-x") + 1] == "404,429"
+
+
 def test_build_cmd_does_not_pass_format_flag(tmp_path: Path):
     """The legacy dirsearch (pre-1.0) doesn't accept ``--format`` and
     exits with "no such option: --format". Both old and new versions

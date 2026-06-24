@@ -45,6 +45,26 @@ dirsearch:
   threads: 30
   timeout: 3600
   recursive: true
+  follow_redirects: true         # follow 3xx so the final status is reported
+  # ------------------------------------------------------------------
+  # Status-code filtering (dirsearch v3.x — `-i` and `-x`).
+  #   include_status: only show these status codes (empty = show all)
+  #   exclude_status: hide these status codes (applied after include)
+  #
+  # Default — hide the noise:
+  #   404  → most endpoints return this; useless for hunting
+  #   429  → rate-limited response; not a real finding
+  # Include only the "interesting" codes:
+  #   200  → endpoint exists, anonymous access
+  #   401  → endpoint exists, requires authentication
+  #   403  → endpoint exists, but access denied
+  #   500  → server error (often injection sink)
+  # With ``follow_redirects: true`` (above), 3xx responses are followed
+  # and the final code is reported — so e.g. /admin → 302 → /login (200)
+  # shows up as a 200, which we want to see.
+  # ------------------------------------------------------------------
+  include_status: [200, 401, 403, 500]
+  exclude_status: [404, 429]  # hide 404 noise + rate-limit responses
   # ------------------------------------------------------------------
   # Wordlists (SecLists) — dirsearch will receive one `-w` per file.
   # Paths may point to a single .txt file OR to a directory (directories
