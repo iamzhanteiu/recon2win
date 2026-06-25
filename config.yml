@@ -175,7 +175,7 @@ nuclei:
 
 # ---------- Telegram ----------
 telegram:
-  enabled: false
+  enabled: true
   bot_token: "8859623526:AAFqqNF8tLoELotR1BMwKRAe6jPuFP7tckM"           # create a bot via @BotFather
   chat_id: "1190354232"             # numeric chat id (can be a group)
   notify_high_critical: true        # immediate alert per high/critical nuclei finding
