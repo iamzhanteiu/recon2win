@@ -22,11 +22,33 @@ dnsx:
   threads: 100
   retries: 3
   timeout: 600
+  # ------------------------------------------------------------------
+  # Cap the number of resolved hosts passed to downstream stages.
+  # Targets like apple.com return 45k+ hosts from cert-transparency
+  # logs (mostly applebot/courier.push/sandbox noise). Feeding the
+  # full list to httpx_alive makes it blow its 600s timeout and never
+  # write ``alive.txt`` — every downstream stage then silently skips
+  # with "no alive hosts".
+  #
+  # The full resolved list is still saved to
+  # ``processed/resolved_detail.json`` for reference; only the flat
+  # ``resolved.txt`` is capped (and prioritised — see
+  # ``prioritize_subdomains`` in modules/utils.py for the scoring).
+  #
+  # Set to ``0`` to disable the cap (e.g. for a small curated target).
+  # ------------------------------------------------------------------
+  max_resolved: 5000
 
 # ---------- HTTPX alive check ----------
 httpx:
   threads: 50
-  timeout: 600
+  # Bumped from 600 → 1800. The upstream dnsx stage now caps the
+  # host list at 5000 (see dnsx.max_resolved), so 600s is usually
+  # fine — but with rate-limited CDNs (Akamai, Cloudflare, Fastly)
+  # a single httpx probe can hang 5–10s and 5000 hosts × 50 threads
+  # doesn't fit in 600s. 1800s gives 30s/host headroom which is what
+  # apple.com, microsoft.com and similar large targets need.
+  timeout: 1800
   follow_redirects: true
 
 # ---------- Content discovery ----------

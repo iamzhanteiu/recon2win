@@ -2,6 +2,12 @@
 
 Runs dnsx in JSON mode, parses out (subdomain, ip, asn, cname) and writes
 both a flat list and a structured detail file.
+
+After resolving, the host list is **prioritised and capped** so that
+downstream stages (httpx_alive, nuclei, dirsearch) get the *interesting*
+hosts first — not the bot/push/sandbox noise that cert-transparency
+logs inflate the count with. See ``prioritize_subdomains`` in
+``modules/utils.py`` for the scoring rules.
 """
 from __future__ import annotations
 
@@ -13,6 +19,7 @@ from . import runner
 from .utils import (
     load_json,
     make_result,
+    prioritize_subdomains,
     read_lines,
     write_json,
     write_lines,
@@ -108,10 +115,32 @@ def resolve(
             "asn": row.get("asn", {}) or {},
             "resolver": row.get("resolver", [None])[0] if row.get("resolver") else None,
         })
+
+    # ------------------------------------------------------------------
+    # Prioritise + cap before writing the flat host list.
+    # Without this, ``apple.com`` style cert-transparency dumps (45k+
+    # hosts, mostly applebot/courier.push/sandbox noise) feed the full
+    # list into httpx_alive, which then blows its timeout and never
+    # writes ``alive.txt`` — every downstream stage skips with
+    # "no alive hosts". Cap defaults to 5000 (configurable via
+    # ``dnsx.max_resolved``); the FULL list is preserved in the
+    # structured detail file for reference.
+    # ------------------------------------------------------------------
+    dnsx_cfg = cfg.get("dnsx", {}) if isinstance(cfg, dict) else {}
+    max_resolved = int(dnsx_cfg.get("max_resolved", 5000))
+    full_hosts = [d["subdomain"] for d in detail]
+    keep_hosts = prioritize_subdomains(full_hosts, max_count=max_resolved)
+
     write_json(detail_json, detail)
-    write_lines(resolved_txt, [d["subdomain"] for d in detail])
+    write_lines(resolved_txt, keep_hosts)
 
     return make_result(
         stage, "success", input_path=subdomains_file,
-        outputs=[resolved_txt, detail_json], count=len(detail),
+        outputs=[resolved_txt, detail_json],
+        count=len(detail),                       # raw resolved count
+        extra={
+            "kept_for_downstream": len(keep_hosts),  # prioritised count
+            "total_resolved": len(detail),
+            "max_resolved": max_resolved,
+        },
     )

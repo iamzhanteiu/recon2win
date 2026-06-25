@@ -193,3 +193,172 @@ def make_result(
 def now_iso() -> str:
     # timezone-aware UTC, ISO 8601 with trailing 'Z' for portability.
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+# ----------------------------------------------------------------------
+# Subdomain prioritisation — score + cap before feeding the next stage.
+# ----------------------------------------------------------------------
+# When subfinder / amass / chaos collectively return tens of thousands of
+# subdomains (apple.com pulls 45k+ via cert-transparency logs, mostly
+# bot/crawler/push-sandbox noise), feeding the *full* list into httpx_alive
+# means the timeout (default 600s) blows past before all hosts are
+# probed — so ``alive.txt`` never gets written and every downstream stage
+# skips with "no alive hosts".
+#
+# ``prioritize_subdomains`` scores each subdomain for "recon value" and
+# keeps the top ``max_count``. Heuristics:
+#   * ROOT DOMAIN (single label) → always kept (the apex itself)
+#   * HIGH-VALUE PREFIXES (www/api/admin/auth/...) → huge bonus
+#   * KNOWN BUG-BOUNTY TECH (jenkins/gitlab/jira/wordpress/...) → bonus
+#   * BOT/CRAWLER/PUSH INFRA (applebot, courier.push, sandbox.*) → penalty
+#   * SHORTER names (fewer labels) → mild bonus — ``foo.com`` over
+#     ``some.deeply.nested.subdomain.of.foo.com``
+#
+# Tweak ``_SUBDOMAIN_HIGH_VALUE`` / ``_SUBDOMAIN_NOISE`` below as you
+# learn what works for your targets; the unit tests pin the behaviour
+# for the common cases.
+_SUBDOMAIN_HIGH_VALUE: frozenset[str] = frozenset({
+    # Web entry points
+    "www", "api", "app", "web", "site", "home", "portal",
+    # Auth / admin
+    "admin", "auth", "login", "sso", "oauth", "saml",
+    "account", "accounts", "identity", "id",
+    # Dev / infra often misconfigured
+    "dev", "stage", "staging", "test", "qa", "uat", "sandbox",
+    "preprod", "demo", "lab", "internal",
+    # Mail / messaging
+    "mail", "smtp", "imap", "pop", "webmail", "mx",
+    # Network entry
+    "vpn", "remote", "gateway", "gw", "proxy", "edge",
+    # Common SaaS / dashboards
+    "crm", "erp", "jira", "confluence", "wiki",
+    "gitlab", "github", "bitbucket",
+    "grafana", "kibana", "prometheus", "nagios",
+    "jenkins", "ci", "cd", "build", "deploy",
+    "k8s", "kubernetes", "rancher",
+    "jumpserver", "bastion",
+    # Storage / data
+    "db", "mysql", "postgres", "redis", "es", "elastic",
+    "s3", "minio", "backup",
+    # Container / cloud
+    "docker", "registry", "artifactory", "nexus",
+    # Misc
+    "shop", "store", "blog", "crm", "help", "support",
+})
+
+_SUBDOMAIN_NOISE: tuple[str, ...] = (
+    # CDN / infra we can't usefully probe
+    "bot", "crawler", "spider", "scanner",
+    # Sandbox / staging infra we can't usually reach
+    "sandbox", "test-", "tmp", "temp",
+    # Specific Apple patterns (would not match other targets)
+    "applebot", "courier.push", "isoproxy",
+)
+
+_SUBDOMAIN_BOUNTY_TECH: tuple[str, ...] = (
+    "jenkins", "gitlab", "jira", "confluence",
+    "wordpress", "wp-", "drupal", "magento",
+    "tomcat", "weblogic", "websphere",
+    "grafana", "kibana", "prometheus",
+    "sonarqube", "nexus", "artifactory",
+    "phpmyadmin", "adminer",
+)
+
+
+def score_subdomain(sub: str) -> int:
+    """Higher score = more interesting for a recon scan.
+
+    Pure helper — no I/O, fully unit-testable. Used by
+    :func:`prioritize_subdomains` and exported so callers can ask
+    "why is this host ranked where it is?".
+    """
+    s = sub.lower().strip(".")
+    if not s:
+        return -10_000
+    # The apex itself (``example.com`` → 1 label) is mandatory.
+    if s.count(".") <= 0:
+        return 10_000
+    first, _, rest = s.partition(".")
+    score = 0
+
+    # APEX BONUS — single-label host MUST rank #1, above even
+    # the high-value prefixes (``www``, ``api``, ``admin``, ...).
+    # Without this bonus, ``www.example.com`` (1000 + depth 40)
+    # outranks ``example.com`` (depth 60) — wrong, the apex is the
+    # crown jewel of any recon scan.
+    if s.count(".") == 1:
+        score += 5000
+
+    # 1) HIGH-VALUE PREFIX — exact match is huge, partial is moderate.
+    if first in _SUBDOMAIN_HIGH_VALUE:
+        score += 1000
+    elif any(kw in first for kw in _SUBDOMAIN_HIGH_VALUE):
+        score += 500
+
+    # 2) KNOWN BUG-BOUNTY TECH — substring match anywhere in the host.
+    # ``jenkins.foo.com`` and ``ci.jenkins.foo.com`` both score.
+    if any(tech in s for tech in _SUBDOMAIN_BOUNTY_TECH):
+        score += 800
+
+    # 3) NOISE — bot/crawler/sandbox infra. Heavily penalise.
+    if any(bad in s for bad in _SUBDOMAIN_NOISE):
+        score -= 1000
+
+    # 4) SHORTER IS BETTER — fewer labels = closer to the apex.
+    #    ``foo.com`` (1 dot) scores higher than
+    #    ``a.b.c.d.foo.com`` (4 dots). Mild effect.
+    dot_count = s.count(".")
+    score += max(0, 80 - dot_count * 20)
+
+    # 5) Numeric / random-looking labels are usually auto-generated.
+    #    Penalise lightly so they sort lower than hand-picked names.
+    if any(ch.isdigit() for ch in first) and len(first) >= 6:
+        score -= 100
+
+    # 6) Random long hex / uuid-looking hostnames are noise.
+    if len(first) >= 24 and all(c in "0123456789abcdef" for c in first):
+        score -= 500
+
+    return score
+
+
+def prioritize_subdomains(
+    subdomains: list[str], max_count: int = 5000,
+) -> list[str]:
+    """Score + cap a subdomain list before passing it downstream.
+
+    Returns the top ``max_count`` hosts ordered by ``score_subdomain``
+    (highest first). Order of equal-score hosts is stable (Python's
+    sort is stable), so the original discovery order is preserved
+    within a tier.
+
+    Why this matters in practice:
+      * ``apple.com`` returns ~45k hosts from cert-transparency logs.
+        ~95% of them are bot/push/sandbox infra we can't usefully
+        probe. Without a cap, ``httpx_alive`` blows its 600s timeout
+        and every downstream stage silently skips with "no alive hosts".
+      * With a cap of 5000 (default), the *interesting* hosts
+        (root, www/api/admin/auth, tech-detected CMS/CI, etc.) are
+        always kept and httpx finishes comfortably within budget.
+
+    Set ``max_count=0`` to skip the cap (return the full list,
+    score-ordered). The full list is *never* lost — callers that
+    need it can pass the input directly.
+    """
+    if max_count is None or max_count <= 0:
+        # No cap. Sort by score anyway so the user gets a stable,
+        # interesting-first ordering for free.
+        return sorted(subdomains, key=lambda s: -score_subdomain(s))
+
+    # Dedupe (case-insensitive on host) before scoring — many
+    # sources return overlapping results.
+    seen: set[str] = set()
+    unique: list[str] = []
+    for s in subdomains:
+        key = s.lower().strip()
+        if key and key not in seen:
+            seen.add(key)
+            unique.append(s)
+
+    ranked = sorted(unique, key=lambda s: -score_subdomain(s))
+    return ranked[:max_count]  # when max_count > len(ranked), no-op
