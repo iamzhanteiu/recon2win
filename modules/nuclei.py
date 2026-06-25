@@ -104,6 +104,16 @@ def _run(
     if tags:
         cmd.extend(["-tags", ",".join(tags)])
 
+    # ``-etags`` (exclude-tags) — nuclei v3.x-only flag that skips
+    # templates whose tags match the list. Useful for cutting noise
+    # from templates that don't apply to a web target (e.g.
+    # ``interaction`` requires user interaction; ``smtp/dns/ftp/...``
+    # are non-HTTP protocols). Whitespace-only entries are stripped.
+    exclude_tags = n_cfg.get("exclude_tags") or []
+    clean_excludes = [str(t).strip() for t in exclude_tags if str(t).strip()]
+    if clean_excludes:
+        cmd.extend(["-etags", ",".join(clean_excludes)])
+
     r = runner.run(cmd, stage=stage, log_name=stage,
                    output_dir=output_dir, timeout=timeout)
     if not r["success"] and not r["missing_binary"]:

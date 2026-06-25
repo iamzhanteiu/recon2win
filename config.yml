@@ -123,6 +123,25 @@ arjun:
 
 # ---------- Nuclei ----------
 nuclei:
+  # ------------------------------------------------------------------
+  # exclude_tags — passed to nuclei as ``-etags``. Filters out
+  # templates whose tags match this list. Useful for cutting noise:
+  #   interaction — requires user interaction (browser cookie
+  #                 acceptance, captcha solving, etc.); useless for
+  #                 automated scans
+  #   smtp/dns/ftp/ssh/tcp/udp — non-HTTP templates that don't apply
+  #                 to a web target
+  # Global to BOTH default + dynamic scans (single source of truth).
+  # Leave empty to run every template.
+  # ------------------------------------------------------------------
+  exclude_tags:
+    - interaction
+    - smtp
+    - dns
+    - ftp
+    - ssh
+    - tcp
+    - udp
   default:
     enabled: true
     severity:
