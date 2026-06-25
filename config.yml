@@ -183,4 +183,4 @@ telegram:
   # Per-phase notification — sends one message per stage with count + output
   # paths. Off by default (a full scan produces ~13 messages). Turn on for
   # a "live progress feed" experience; turn off for milestone-only updates.
-  per_phase: false
+  per_phase: true
