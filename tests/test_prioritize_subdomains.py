@@ -241,3 +241,31 @@ def test_string_normalisation_lowercase():
     upper = score_subdomain("ADMIN.EXAMPLE.COM")
     lower = score_subdomain("admin.example.com")
     assert upper == lower
+
+
+# ----------------------------------------------------------------------
+# Extended high_value list — modern dev tools (added 2026-06-25)
+# ----------------------------------------------------------------------
+@pytest.mark.parametrize("tool", [
+    # Modern dev/data tools frequently seen on real targets with
+    # a history of CVEs (see modules/utils.py docstring for the
+    # CVE references that motivated each entry).
+    "hasura", "airflow", "superset", "metabase", "jupyter",
+    "vault", "backstage", "discourse", "mattermost", "rocket",
+    "rocketchat", "ghost", "strapi", "directus", "gitea",
+    "argocd", "flux", "rancher",
+])
+def test_modern_dev_tools_score_higher_than_random(tool):
+    """Every modern dev tool in the high_value list must outrank a
+    random-looking host of similar length. Regression guard against
+    someone deleting entries during a 'cleanup'."""
+    real = score_subdomain(f"{tool}.example.com")
+    random = score_subdomain("xyz123abc456def.example.com")
+    assert real > random
+
+
+def test_high_value_list_at_least_50_entries():
+    """The high_value list is the largest single contributor to
+    capture-rate of valuable hosts. If it shrinks below 50 we lose
+    meaningful coverage on large targets — guard against deletions."""
+    assert len(_SUBDOMAIN_HIGH_VALUE) >= 50

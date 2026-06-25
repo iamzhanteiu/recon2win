@@ -127,7 +127,7 @@ def resolve(
     # structured detail file for reference.
     # ------------------------------------------------------------------
     dnsx_cfg = cfg.get("dnsx", {}) if isinstance(cfg, dict) else {}
-    max_resolved = int(dnsx_cfg.get("max_resolved", 5000))
+    max_resolved = int(dnsx_cfg.get("max_resolved", 10000))
     full_hosts = [d["subdomain"] for d in detail]
     keep_hosts = prioritize_subdomains(full_hosts, max_count=max_resolved)
 

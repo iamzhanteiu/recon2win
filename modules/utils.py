@@ -232,16 +232,35 @@ _SUBDOMAIN_HIGH_VALUE: frozenset[str] = frozenset({
     "vpn", "remote", "gateway", "gw", "proxy", "edge",
     # Common SaaS / dashboards
     "crm", "erp", "jira", "confluence", "wiki",
-    "gitlab", "github", "bitbucket",
+    "gitlab", "github", "bitbucket", "gitea",
     "grafana", "kibana", "prometheus", "nagios",
     "jenkins", "ci", "cd", "build", "deploy",
-    "k8s", "kubernetes", "rancher",
+    "k8s", "kubernetes", "rancher", "argocd", "flux",
     "jumpserver", "bastion",
     # Storage / data
     "db", "mysql", "postgres", "redis", "es", "elastic",
     "s3", "minio", "backup",
     # Container / cloud
-    "docker", "registry", "artifactory", "nexus",
+    "docker", "registry", "artifactory", "nexus", "harbor",
+    # ─────────────────────────────────────────────────────────────────
+    # Added 2026-06-25 — modern dev/data tools that frequently show up
+    # on real targets and have a history of CVEs:
+    #   hasura   → GraphQL engine (CVE-2023-43325 etc.)
+    #   airflow  → Apache Airflow (CVE-2020-11978, CVE-2023-49996)
+    #   superset → Apache Superset (CVE-2023-27524, CVE-2024-34693)
+    #   metabase → business intel (CVE-2023-38611, CVE-2023-49797)
+    #   jupyter  → JupyterHub/Notebook (auth-bypass CVEs)
+    #   vault    → HashiCorp Vault (info-disclosure CVEs)
+    #   backstage → CNCF Backstage (CVE-2024-26176)
+    #   argocd   → already covered (GitOps)
+    #   discourse → forum software (auth-bypass CVEs)
+    #   mattermost → chat platform (auth-bypass CVEs)
+    # ─────────────────────────────────────────────────────────────────
+    "hasura", "airflow", "superset", "metabase",
+    "jupyter", "vault", "backstage", "discourse",
+    "mattermost", "rocket", "rocketchat",
+    "ghost", "strapi", "directus", "ghost-cms",
+    "rancher", "argocd",
     # Misc
     "shop", "store", "blog", "crm", "help", "support",
 })

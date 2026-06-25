@@ -35,9 +35,19 @@ dnsx:
   # ``resolved.txt`` is capped (and prioritised — see
   # ``prioritize_subdomains`` in modules/utils.py for the scoring).
   #
-  # Set to ``0`` to disable the cap (e.g. for a small curated target).
+  # Trade-off: higher = more coverage, longer httpx runtime.
+  #   10000 → ~95% of valuable hosts covered; fits in 30 min budget
+  #   0     → no cap (use only for small curated targets)
+  #
+  # If the first pass yields 0 alive hosts, main.py automatically
+  # retries with ``max_resolved_expanded`` (see below).
   # ------------------------------------------------------------------
-  max_resolved: 5000
+  max_resolved: 10000
+  # When the first pass yields 0 alive hosts, main.py automatically
+  # retries dnsx+httpx_alive with this larger cap. Set to 0 to
+  # disable the retry (just keep the first-pass result, however
+  # disappointing). The retry is skipped on subsequent passes too.
+  max_resolved_expanded: 25000
 
 # ---------- HTTPX alive check ----------
 httpx:

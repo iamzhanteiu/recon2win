@@ -229,6 +229,45 @@ def main() -> int:
 
         alive_file = output_dir / "processed" / "alive.txt"
 
+        # ------------------------------------------------------------------
+        # 2-PASS FALLBACK — if httpx_alive produced 0 alive hosts on the
+        # first try (e.g. because the cap of 5000/10000 was too tight
+        # and the cap-prioritiser dropped something important), retry
+        # the dnsx→httpx_alive chain with a larger cap. Only happens
+        # once, only when the user opted in via dnsx.max_resolved_expanded,
+        # and only when ``resume=False`` (otherwise we'd be fighting
+        # cached results).
+        # ------------------------------------------------------------------
+        dnsx_cfg = cfg.get("dnsx", {}) if isinstance(cfg, dict) else {}
+        first_cap = int(dnsx_cfg.get("max_resolved", 10000))
+        expanded_cap = int(dnsx_cfg.get("max_resolved_expanded", 25000))
+        if (
+            expanded_cap > first_cap
+            and not args.resume
+            and r.get("status") != "success"
+            and (not alive_file.exists() or alive_file.stat().st_size == 0)
+        ):
+            retry_cfg = {
+                **cfg,
+                "dnsx": {**dnsx_cfg, "max_resolved": expanded_cap},
+            }
+            print(
+                f"[!] alive.txt empty after first pass (cap={first_cap}). "
+                f"Retrying with cap={expanded_cap}…"
+            )
+            prog.start_phase("dnsx (retry)", num=3)
+            r_retry = _run_stage("dnsx", dnsx_mod.resolve,
+                                 sub_file, output_dir, retry_cfg,
+                                 resume=False, dry_run=False)
+            prog.finish_phase(r_retry, num=3)
+            results.append(r_retry)
+            prog.start_phase("httpx_alive (retry)", num=3)
+            r = _run_stage("httpx_alive", httpx_mod.alive_check,
+                           resolved_file, output_dir, retry_cfg,
+                           resume=False, dry_run=False)
+            prog.finish_phase(r, num=3)
+            results.append(r)
+
         # ---- 4. parallel: katana/urlfinder + dirsearch + waymore + nuclei default ----
         prog.start_phase("content_discovery (and 3 others)", num=4)
         from concurrent.futures import ThreadPoolExecutor
