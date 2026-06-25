@@ -1,0 +1,19 @@
+200  10B   https://example.com/.env
+200  10B   https://example.com/.env
+200   5B   https://example.com/.git/HEAD
+301    0B   https://example.com/admin  ->  https://example.com/admin/
+200    0B   https://example.com/admin/
+403   50B   https://example.com/.htaccess
+200  200B  https://example.com/api/users
+200  200B  https://example.com/api/users
+200  200B  https://example.com/api/users  ["admin","user","guest"]
+200  500B  https://example.com/api/v1/login
+404   10B  https://example.com/admin.php
+500   20B  https://example.com/debug
+500   20B  https://example.com/debug
+200    1B  https://example.com/robots.txt
+301    0B  https://example.com/api  ->  https://example.com/api/
+200  100B  https://example.com/api
+200  100B  https://example.com/api
+401   20B  https://example.com/secret-endpoint
+403   20B  https://example.com/restricted
