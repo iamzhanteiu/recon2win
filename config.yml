@@ -16,6 +16,35 @@ subdomain:
   chaos_api_key: ""
   timeout: 900
 
+# ---------- puredns (subdomain validator) ----------
+# Runs AFTER subfinder/amass/chaos to filter the raw candidate list:
+#   * drops hosts that don't actually resolve
+#   * drops wildcard subdomains (e.g. ``*.foo.com`` from CT logs)
+# The output OVERWRITES ``processed/subdomains.txt`` with the
+# validated, deduplicated, wildcard-free list — so downstream stages
+# (dnsx, httpx_alive, …) get the clean list, not the 45k raw
+# candidates from cert-transparency logs.
+# Uses the public **trickest** resolver list (≈5k public DNS resolvers
+# curated by trickest — Cloudflare, Quad9, AdGuard, etc.) so we get
+# real validation, not just one resolver's view.
+puredns:
+  enabled: true
+  # rate-limit for puredns's mass queries (per second, per resolver).
+  rate_limit: 200
+  # how many random lookups puredns does to confirm a wildcard
+  # pattern. Higher = fewer false-positive wildcard drops, slower.
+  wildcard_tests: 3
+  # Brute-force common subdomains on top of the input list — uses
+  # a wordlist. Off by default (subfinder/amass/chaos is already
+  # comprehensive) but useful on small targets.
+  bruteforce: false
+  # Optional explicit wordlist for --bruteforce mode. Ignored when
+  # bruteforce is false. Defaults to a SecLists path.
+  wordlist: "wordlists/SecLists/Discovery/DNS/subdomains-top1million-20000.txt"
+  # overall stage timeout — puredns against 5k resolvers can take a
+  # while. Bump if you're processing huge candidate lists.
+  timeout: 1800
+
 # ---------- DNS resolution ----------
 dnsx:
   # dnsx flags: -l list -json -resp -silent -r resolver

@@ -110,6 +110,31 @@ def collect(
     for tool in tools:
         merged.extend(read_lines(raw_sub / f"{tool}.txt"))
     count = write_lines(proc / "subdomains.txt", merged)
+
+    # --------------------------------------------------------------
+    # puredns — validate + filter the merged list.
+    # If enabled, this overwrites processed/subdomains.txt with the
+    # wildcard-free, deduplicated, actually-resolving subset. Skips
+    # gracefully if puredns isn't installed (returns "skipped"
+    # status with no error — the raw merged list is still in place).
+    # --------------------------------------------------------------
+    from . import puredns as puredns_mod
+    if bool(cfg.get("puredns", {}).get("enabled", True)):
+        puredns_result = puredns_mod.collect(
+            domain, proc / "subdomains.txt", output_dir, cfg,
+            resume=resume, dry_run=dry_run,
+        )
+        if puredns_result.get("status") == "success":
+            # Use the validated list everywhere from now on.
+            return puredns_result
+        # puredns skipped/failed → keep the raw merged list.
+        return make_result(
+            stage, "success", input_path=domain,
+            outputs=[raw_sub / f"{t}.txt" for t in tools] + [proc / "subdomains.txt"],
+            count=count,
+            extra={"puredns": puredns_result.get("status")},
+        )
+
     return make_result(
         stage, "success", input_path=domain,
         outputs=[raw_sub / f"{t}.txt" for t in tools] + [proc / "subdomains.txt"],

@@ -215,8 +215,11 @@ def test_subdomain_writes_under_raw_subdomain(tmp_path: Path, monkeypatch):
 
     base = create_output_structure("example.com", root=str(tmp_path))
     from modules.subdomain import collect
+    # puredns disabled here — this test only cares about where the
+    # subfinder/amass/chaos raw outputs land, not the validation step.
     collect("example.com", base,
-            {"subdomain": {"tools": ["subfinder", "amass", "chaos"]}},
+            {"subdomain": {"tools": ["subfinder", "amass", "chaos"]},
+             "puredns": {"enabled": False}},
             resume=False, dry_run=False)
 
     # Tools live under raw/subdomain/
