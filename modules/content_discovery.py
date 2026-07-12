@@ -7,8 +7,11 @@ The output is split:
 """
 from __future__ import annotations
 
+import os
 import re
+import tempfile
 from pathlib import Path
+from urllib.parse import urlsplit
 
 from . import runner
 from .telegram import notify_stage_result
@@ -21,6 +24,28 @@ from .utils import (
 
 
 JS_RE = re.compile(r"https?://[^\s\"'<>]+\.js(?:[?#][^\s\"'<>]*)?", re.IGNORECASE)
+
+
+def _hosts_from_urls(url_lines: list[str]) -> list[str]:
+    """Reduce a list of full URLs (httpx alive output) to unique bare hosts.
+
+    urlfinder's ``-list`` expects domains/hosts, not full ``scheme://host/path``
+    URLs, so we strip everything but the hostname (port dropped) and dedupe
+    while preserving first-seen order.
+    """
+    seen: set[str] = set()
+    hosts: list[str] = []
+    for ln in url_lines:
+        s = ln.strip()
+        if not s:
+            continue
+        if "://" not in s:
+            s = "http://" + s  # bare host — give urlsplit a scheme to parse
+        host = urlsplit(s).hostname or ""
+        if host and host not in seen:
+            seen.add(host)
+            hosts.append(host)
+    return hosts
 
 
 def _outputs_exist(out_dir: Path) -> bool:
@@ -83,20 +108,39 @@ def crawl(
         (raw_cd / "katana_urls.txt").write_text("")
         outputs.append(raw_cd / "katana_urls.txt")
 
-    # 4.1.b — urlfinder (projectdiscovery/urlfinder — flags: -d for input,
-    # -o for output, -silent for URL-only stdout). Earlier versions used -i;
-    # projectdiscovery's tool has always used -d / -list.
+    # 4.1.b — urlfinder (projectdiscovery/urlfinder). ``-list`` takes a file of
+    # *domains/hosts* (not full URLs), so we feed it hostnames extracted from
+    # the httpx alive list. ``-d`` is for a literal domain string and would
+    # silently do nothing when handed a file path — that was the old bug.
     if cd_cfg.get("urlfinder", {}).get("enabled", True):
         out = raw_cd / "urlfinder_urls.txt"
         if runner.tool_available("urlfinder"):
             to = int(cd_cfg.get("urlfinder", {}).get("timeout", 1800))
-            r = runner.run(
-                ["urlfinder", "-d", str(alive_file), "-o", str(out), "-silent"],
-                stage="content_discovery_urlfinder", log_name=stage,
-                output_dir=output_dir, timeout=to,
-            )
-            if not r["success"] and not r["missing_binary"]:
-                print(f"[{stage}] urlfinder failed: {r['stderr'][:200]}")
+            hosts = _hosts_from_urls(read_lines(alive_file))
+            if hosts:
+                # Temp host list — not persisted (keeps the output tree lean).
+                tmp = tempfile.NamedTemporaryFile(
+                    "w", suffix=".txt", prefix="urlfinder_hosts_",
+                    delete=False, encoding="utf-8",
+                )
+                try:
+                    tmp.write("\n".join(hosts) + "\n")
+                    tmp.close()
+                    r = runner.run(
+                        ["urlfinder", "-list", tmp.name, "-o", str(out), "-silent"],
+                        stage="content_discovery_urlfinder", log_name=stage,
+                        output_dir=output_dir, timeout=to,
+                    )
+                    if not r["success"] and not r["missing_binary"]:
+                        print(f"[{stage}] urlfinder failed: {r['stderr'][:200]}")
+                finally:
+                    try:
+                        os.unlink(tmp.name)
+                    except OSError:
+                        pass
+            else:
+                print(f"[{stage}] no alive hosts for urlfinder — skipping")
+                out.write_text("")
         else:
             print(f"[{stage}] urlfinder not installed — skipping")
             out.write_text("")
