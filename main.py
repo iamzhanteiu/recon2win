@@ -141,8 +141,15 @@ def main() -> int:
         prog="recon-agent",
         description="Automated recon framework — follow the recon diagram.",
     )
-    p.add_argument("-d", "--domain", required=True, help="Target domain (e.g. example.com)")
+    p.add_argument("-d", "--domain",
+                   help="Target domain (e.g. example.com). Optional when using "
+                        "--h1-program (the target comes from the chosen H1 scope).")
     p.add_argument("--config", default="config.yml", help="Path to YAML config")
+    p.add_argument("--h1-list", action="store_true",
+                   help="List your HackerOne programs and exit")
+    p.add_argument("--h1-program", metavar="HANDLE",
+                   help="Pull in-scope roots from a HackerOne program handle and "
+                        "pick one to recon (MVP: single root)")
     p.add_argument("--resume", action="store_true",
                    help="Skip stages whose expected outputs already exist")
     p.add_argument("--dry-run", action="store_true",
@@ -165,17 +172,34 @@ def main() -> int:
         console.set_enabled(False)
     # else: leave auto-detection alone (TTY / $NO_COLOR / $FORCE_COLOR)
 
-    try:
-        domain = validate_domain(args.domain)
-    except ValueError as e:
-        print(f"[!] {e}", file=sys.stderr)
-        return 2
-
     cfg_path = Path(args.config)
     if not cfg_path.exists():
         print(f"[!] config not found: {cfg_path}", file=sys.stderr)
         return 2
-    cfg = yaml.safe_load(cfg_path.read_text(encoding="utf-8")) or {}
+    cfg = _load_config(cfg_path)
+
+    # ---- HackerOne integration (optional) ----
+    # --h1-list just prints programs and exits; --h1-program pulls the
+    # in-scope roots and lets the operator pick one to become the target.
+    if args.h1_list:
+        return _h1_list(cfg)
+
+    if args.h1_program:
+        raw_domain = _h1_pick_root(cfg, args.h1_program)
+        if raw_domain is None:
+            return 2
+    elif args.domain:
+        raw_domain = args.domain
+    else:
+        print("[!] no target: pass -d DOMAIN, or --h1-program HANDLE, "
+              "or --h1-list to browse your HackerOne programs", file=sys.stderr)
+        return 2
+
+    try:
+        domain = validate_domain(raw_domain)
+    except ValueError as e:
+        print(f"[!] {e}", file=sys.stderr)
+        return 2
 
     output_dir = create_output_structure(
         domain, root=cfg.get("output_root", "outputs"),
@@ -431,6 +455,97 @@ def main() -> int:
     print(console.kv("JSON summary", str(report_info["json"]), value_color="bright_cyan"))
     print(console.kv("output dir  ", str(output_dir), value_color="bright_cyan"))
     return 0
+
+
+# ----------------------------------------------------------------------
+# Config loading (config.yml + optional config.local.yml overlay)
+# ----------------------------------------------------------------------
+def _deep_merge(base: dict, overlay: dict) -> dict:
+    """Recursively merge ``overlay`` over ``base`` (overlay wins)."""
+    out = dict(base)
+    for k, v in (overlay or {}).items():
+        if isinstance(v, dict) and isinstance(out.get(k), dict):
+            out[k] = _deep_merge(out[k], v)
+        else:
+            out[k] = v
+    return out
+
+
+def _load_config(cfg_path: Path) -> dict:
+    """Load ``config.yml`` and overlay a sibling ``config.local.yml`` if present.
+
+    ``config.local.yml`` is git-ignored — the right place for secrets like
+    the HackerOne API token or a real Telegram bot token.
+    """
+    cfg = yaml.safe_load(cfg_path.read_text(encoding="utf-8")) or {}
+    local = cfg_path.with_name("config.local.yml")
+    if local.exists():
+        overlay = yaml.safe_load(local.read_text(encoding="utf-8")) or {}
+        if isinstance(overlay, dict):
+            cfg = _deep_merge(cfg, overlay)
+    return cfg
+
+
+# ----------------------------------------------------------------------
+# HackerOne helpers
+# ----------------------------------------------------------------------
+def _h1_list(cfg: dict) -> int:
+    """Print the operator's HackerOne programs and exit."""
+    from modules import hackerone as h1
+    try:
+        user, token = h1.get_credentials(cfg)
+        programs = h1.list_programs(user, token)
+    except h1.H1Error as e:
+        print(f"[!] {e}", file=sys.stderr)
+        return 2
+    if not programs:
+        print("[!] no programs returned (check your API token / program access).")
+        return 0
+    print(console.phase_header("hackerone programs"))
+    for pr in programs:
+        print(f"  {pr['handle']:<32} {pr['name']}")
+    print(
+        f"\n{len(programs)} program(s). Recon one with: "
+        f"python3 main.py --h1-program <handle>"
+    )
+    return 0
+
+
+def _h1_pick_root(cfg: dict, handle: str) -> str | None:
+    """Fetch in-scope roots for ``handle`` and let the operator pick one.
+
+    Returns the chosen domain string, or ``None`` on error / no selection.
+    """
+    from modules import hackerone as h1
+    try:
+        user, token = h1.get_credentials(cfg)
+        roots = h1.roots_for_program(user, token, handle)
+    except h1.H1Error as e:
+        print(f"[!] {e}", file=sys.stderr)
+        return None
+    if not roots:
+        print(f"[!] no in-scope URL/WILDCARD assets found for '{handle}'.",
+              file=sys.stderr)
+        return None
+    print(console.phase_header(f"in-scope roots — {handle}"))
+    for i, d in enumerate(roots, 1):
+        print(f"  {i:>2}. {d}")
+    try:
+        choice = input(f"\nPick a target [1-{len(roots)}] (default 1): ").strip()
+    except EOFError:
+        choice = ""
+    if not choice:
+        idx = 0
+    else:
+        try:
+            idx = int(choice) - 1
+        except ValueError:
+            print(f"[!] invalid choice: {choice!r}", file=sys.stderr)
+            return None
+    if not (0 <= idx < len(roots)):
+        print(f"[!] choice out of range: {choice}", file=sys.stderr)
+        return None
+    return roots[idx]
 
 
 # ----------------------------------------------------------------------

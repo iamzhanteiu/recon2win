@@ -235,13 +235,31 @@ nuclei:
   concurrency: 25
 
 # ---------- Telegram ----------
+# Secrets (bot_token, chat_id) live in config.local.yml (git-ignored), NOT here.
+# config.local.yml is deep-merged over this file — set enabled:true + creds there.
 telegram:
-  enabled: true
-  bot_token: "8859623526:AAFqqNF8tLoELotR1BMwKRAe6jPuFP7tckM"           # create a bot via @BotFather
-  chat_id: "1190354232"             # numeric chat id (can be a group)
+  enabled: false                    # turn on in config.local.yml once creds are set
+  bot_token: ""                     # set in config.local.yml (create a bot via @BotFather)
+  chat_id: ""                       # set in config.local.yml (numeric chat id / group)
   notify_high_critical: true        # immediate alert per high/critical nuclei finding
   notify_summary: true              # milestone summaries at stage-6 and final
   # Per-phase notification — sends one message per stage with count + output
   # paths. Off by default (a full scan produces ~13 messages). Turn on for
   # a "live progress feed" experience; turn off for milestone-only updates.
   per_phase: true
+
+# ---------- HackerOne (optional) ----------
+# Pull target scope straight from the H1 Hacker API instead of copy-pasting:
+#   python3 main.py --h1-list                 # list your programs
+#   python3 main.py --h1-program <handle>     # pick an in-scope root to recon
+#
+# Only assets flagged eligible_for_submission are used, so out-of-scope hosts
+# never enter the pipeline. Credentials (HTTP Basic: token identifier =
+# username, token value = password) are read from env vars
+# H1_API_USERNAME / H1_API_TOKEN first, then from the keys below.
+#
+# Do NOT put real credentials here — copy config.local.yml.example to
+# config.local.yml (git-ignored) and fill them in there.
+hackerone:
+  api_username: ""   # API token identifier
+  api_token: ""      # API token value

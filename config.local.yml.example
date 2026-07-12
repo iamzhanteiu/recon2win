@@ -1,0 +1,23 @@
+# ============================================================
+#  config.local.yml  — local secret overrides (git-ignored)
+# ============================================================
+# Copy this file to `config.local.yml` and fill in real values.
+# `config.local.yml` is deep-merged OVER `config.yml` at startup, so you
+# only need to include the keys you want to override.
+#
+#   cp config.local.yml.example config.local.yml
+#
+# NOTE: env vars H1_API_USERNAME / H1_API_TOKEN take precedence over the
+# hackerone.* keys below, if set.
+
+# ---------- HackerOne API ----------
+# Generate a token at https://hackerone.com/settings/api_token/edit
+hackerone:
+  api_username: "your-api-token-identifier"
+  api_token: "your-api-token-value"
+
+# ---------- Telegram (optional override) ----------
+# telegram:
+#   enabled: true
+#   bot_token: "123456:your-bot-token"
+#   chat_id: "123456789"
