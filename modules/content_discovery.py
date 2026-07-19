@@ -91,8 +91,13 @@ def crawl(
         if runner.tool_available("katana"):
             depth = int(cd_cfg.get("katana", {}).get("depth", 3))
             to = int(cd_cfg.get("katana", {}).get("timeout", 1800))
+            # -do (-display-out-scope): also emit external endpoints found
+            # while crawling in-scope pages — e.g. JS/assets served from a
+            # CDN / S3 / static host. These out-of-scope JS URLs feed the
+            # JS-analysis stages (xnLinkFinder + jsluice), which parse them
+            # for the app's own API endpoints.
             r = runner.run(
-                ["katana", "-list", str(alive_file), "-depth", str(depth),
+                ["katana", "-list", str(alive_file), "-do", "-depth", str(depth),
                  "-silent", "-output", str(out)],
                 stage="content_discovery_katana", log_name=stage,
                 output_dir=output_dir, timeout=to,
