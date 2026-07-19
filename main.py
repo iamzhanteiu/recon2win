@@ -30,6 +30,7 @@ from modules import (
     nuclei as nuclei_mod,
     priority as priority_mod,
     progress as progress_mod,
+    scandiff as scandiff_mod,
     report as report_mod,
     subdomain as sub_mod,
     telegram,
@@ -474,6 +475,11 @@ def main() -> int:
         prio = priority_mod.build_priority_targets(output_dir, domain)
         results.append(prio)
 
+        # ---- 10.post.b: diff vs the previous scan → report/delta.md ----
+        # "What's new since last time" — the point of repeated recon.
+        delta = scandiff_mod.build_scan_diff(output_dir, domain)
+        results.append(delta)
+
     # Final Telegram message includes the HTML report path
     _send_summary("final", domain, results, cfg, output_dir, report_info=report_info)
 
@@ -488,7 +494,21 @@ def main() -> int:
     print(console.kv("JSON summary", str(report_info["json"]), value_color="bright_cyan"))
     print(console.kv("priority    ", str(output_dir / "report" / "priority_targets.txt"),
                      value_color="bright_cyan"))
+    print(console.kv("delta       ", str(output_dir / "report" / "delta.md"),
+                     value_color="bright_cyan"))
     print(console.kv("output dir  ", str(output_dir), value_color="bright_cyan"))
+
+    # One-line "what changed since last scan" summary.
+    dx = delta.get("extra") or {}
+    if dx.get("first_run"):
+        print(console.phase_info_line("delta: first scan — baseline established"))
+    else:
+        n = dx.get("new") or {}
+        print(console.phase_info_line(
+            f"delta since last scan: +{n.get('findings', 0)} findings, "
+            f"+{n.get('subdomains', 0)} subdomains, "
+            f"+{n.get('alive', 0)} alive, +{n.get('urls', 0)} urls"
+        ))
 
     # Echo the top priority targets so the operator sees "test these first"
     # without opening a file. Full ranked list is in priority_targets.txt.

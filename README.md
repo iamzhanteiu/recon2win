@@ -216,8 +216,12 @@ outputs/<domain>/
     ├── final_report.html
     ├── final_report.md
     ├── priority_targets.txt           # ranked "test these first" URLs
+    ├── delta.md                       # what changed since the previous scan
     └── summary.json
 ```
+
+(`outputs/<domain>/.scan_state.json` holds the previous run's snapshot for
+the delta — a hidden state file, not a per-run artifact.)
 
 **Log consolidation:** every tool's stdout/stderr is captured into
 `stages.json` (structured). If a stage needs its own per-call log file
@@ -386,6 +390,30 @@ The merge:
 If you want to run dirsearch *sequentially* per wordlist instead,
 either repeat the stage with different configs (using `--resume`) or
 set `combine: true` to fuzz each word against every extension.
+
+## Scan delta — "what changed since last time"
+
+Recon is run against the same target again and again; 95% of each run is
+identical to the last. After the report, the framework diffs the current
+run against the previous one and writes:
+
+```
+outputs/<domain>/report/delta.md
+```
+
+It lists **new nuclei findings** (first — highest signal), **new
+subdomains**, **new alive hosts**, and **new URLs** (capped at 100).
+A one-line summary is echoed to the console:
+
+```
+delta since last scan: +2 findings, +5 subdomains, +1 alive, +38 urls
+```
+
+State is kept in `outputs/<domain>/.scan_state.json` (a snapshot of the
+key result sets) and persists across runs — the first scan just
+establishes the baseline. Pair this with a scheduled/cron run and you get
+a change feed for the target: only the new attack surface, not the whole
+haystack every time.
 
 ## Priority targets — "test these first"
 
