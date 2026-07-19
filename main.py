@@ -613,8 +613,8 @@ def _send_summary(
 
 
 def _build_final_summary(domain: str, output_dir: Path) -> dict:
-    findings_default = load_json(output_dir / "findings" / "nuclei_default.json") or {}
-    findings_dynamic = load_json(output_dir / "findings" / "nuclei_dynamic.json") or {}
+    findings_default = load_json(output_dir / "findings" / "default" / "nuclei.json") or {}
+    findings_dynamic = load_json(output_dir / "findings" / "dynamic" / "nuclei.json") or {}
     return make_result(
         "summary", "success", input_path=domain,
         outputs=[output_dir],
