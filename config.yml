@@ -198,7 +198,7 @@ jsluice:
 arjun:
   enabled: true
   threads: 5
-  rate_limit: 60          # requests per minute
+  rate_limit: 60          # arjun --rate-limit: max requests per SECOND (0 = arjun default 9999)
   timeout: 3600
   # Cap the number of dynamic URLs fed to arjun. Without this, an
   # aggressive crawler + waymore can produce 5k+ URLs and arjun will
