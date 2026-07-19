@@ -215,6 +215,7 @@ outputs/<domain>/
 └── report/
     ├── final_report.html
     ├── final_report.md
+    ├── priority_targets.txt           # ranked "test these first" URLs
     └── summary.json
 ```
 
@@ -385,6 +386,36 @@ The merge:
 If you want to run dirsearch *sequentially* per wordlist instead,
 either repeat the stage with different configs (using `--resume`) or
 set `combine: true` to fuzz each word against every extension.
+
+## Priority targets — "test these first"
+
+A full scan emits thousands of URLs and, on noisy targets, hundreds of
+`info`-level nuclei hits — the one High finding drowns in the flood
+(a real run returned **585 findings, 533 of them `info`**). After the
+report, the framework distils everything into a single ranked file:
+
+```
+outputs/<domain>/report/priority_targets.txt
+```
+
+Each URL accumulates a score + reasons from every source it appears in:
+
+| Signal | Weight |
+|---|---|
+| nuclei finding | by severity — critical 1000 / high 800 / medium 400 / low 120 / info 15 |
+| jsluice secret | severity score + 100 |
+| parameterized URL (arjun + jsluice) | 300 (injection surface) |
+| dirsearch hit | 220 (exists + passed status filter) |
+| high-value path (`.env` `.git` `.sql` `actuator` `graphql` `admin` `/api/` …) | 120–350 |
+
+The top 10 are also echoed to the console at the end of the run. On the
+`vulnweb.com` test scan the real finding floated straight to the top:
+
+```
+[ 1520]  http://rest.vulnweb.com/db.sql  — nuclei high: WordPress Database
+                                            Backup File - Exposure; sql dump
+[  270]  http://rest.vulnweb.com  — nuclei info: WAF Detection; …
+```
 
 ## JavaScript analysis — xnLinkFinder (regex) + jsluice (AST)
 
