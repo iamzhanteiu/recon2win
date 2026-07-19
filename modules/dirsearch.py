@@ -31,11 +31,17 @@ from .sensitive_ext import SENSITIVE_EXT, to_dirsearch_flag
 from .utils import make_result, raw_dir, read_lines, write_lines
 
 
-# Matches "<status>  <len>  <url>" or "<status>  <len>B  <url> [-> <redirect>]"
-# Non-greedy URL + optional ` -> <redirect>` suffix so redirect lines still
-# produce the original (source) URL.
+# Matches "<status>  <len>  <url>" or "<status>  <len>B  <url> [-> <redirect>]".
+# Non-greedy URL + optional redirect suffix so redirect lines still produce
+# the original (source) URL.
+#
+# dirsearch's real ``plain`` report (lib/reports/plain_text_report.py) writes
+# the redirect suffix as ``    -> REDIRECTS TO: <url>`` — NOT a bare
+# ``-> <url>``. Both spellings are accepted here so redirect entries aren't
+# silently dropped (which they were when only ``-> <url>`` was matched).
 LINE_RE = re.compile(
-    r"^\s*(\d{3})\s+\S+\s+(https?://\S+?)(?:\s*->\s*https?://\S+)?\s*$"
+    r"^\s*(\d{3})\s+\S+\s+(https?://\S+?)"
+    r"(?:\s*->\s*(?:REDIRECTS TO:\s*)?https?://\S+)?\s*$"
 )
 
 
