@@ -75,8 +75,24 @@ def test_normalize_returns_empty_for_empty_input():
 
 
 def test_normalize_handles_redirect_marker():
-    # Some dirsearch versions print "URL -> REDIRECT" with an arrow
+    # Bare-arrow spelling (some builds / our own convenience form).
     raw = ["301  0B  https://example.com/admin/ -> https://example.com/admin/index.php"]
     out = normalize_output(raw)
     # we only keep the original (first) URL, not the redirect target
     assert out == ["https://example.com/admin/"]
+
+
+def test_normalize_handles_real_dirsearch_redirect_format():
+    # dirsearch's actual ``plain`` report (lib/reports/plain_text_report.py)
+    # writes the redirect as "    -> REDIRECTS TO: <url>". This MUST be
+    # parsed to the source URL — previously it was silently dropped
+    # (LINE_RE only knew the bare "-> <url>" arrow).
+    raw = [
+        "301   0B     https://example.com/admin    -> REDIRECTS TO: https://example.com/admin/",
+        "302   0B     https://example.com/old       -> REDIRECTS TO: https://example.com/new",
+    ]
+    out = normalize_output(raw)
+    assert out == [
+        "https://example.com/admin",
+        "https://example.com/old",
+    ]

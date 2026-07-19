@@ -1,15 +1,12 @@
 """arjun — stage 7: parameter discovery on dynamic URLs."""
 from __future__ import annotations
 
-import re
 from pathlib import Path
 from typing import Iterable
 
 from . import runner
 from .utils import make_result, raw_dir, read_lines, write_lines
 
-
-_PARAM_RE = re.compile(r"\[(\d{1,4})\] (.+)$")
 
 # Heuristics for "this URL is worth fuzzing" — we sort dynamic URLs by
 # these markers and keep only the top ``arjun.max_urls`` so the stage
@@ -105,6 +102,9 @@ def discover(
     # for archive noise — lower it so a single hung URL can't blow the
     # whole stage budget.
     request_timeout = int(a_cfg.get("request_timeout", 10))
+    # arjun --rate-limit is requests **per second** (default 9999). 0/None
+    # means "don't pass it" (use arjun's default).
+    rate_limit = int(a_cfg.get("rate_limit", 0) or 0)
 
     urls = read_lines(dynamic_urls_file)
     if not urls:
@@ -125,14 +125,30 @@ def discover(
     input_file = dynamic_urls_file if len(urls) == original_count \
         else _write_input_subset(output_dir, urls)
 
-    r = runner.run(
-        ["arjun", "-i", str(input_file),
-         "-o", str(params_out),
-         "-t", str(threads),
-         "-T", str(request_timeout),
-         "--stable"],
-        stage=stage, output_dir=output_dir, timeout=timeout,
-    )
+    # ------------------------------------------------------------------
+    # Output flag: arjun's ``-o`` writes JSON ({url: {params, method}}),
+    # NOT the ``[200] url`` text you see on the console. We want a flat
+    # list of parameterised URLs to feed nuclei_dynamic, so we use
+    # ``-oT`` (text) which writes exactly ``https://site/page?id=&q=``
+    # (one per line; POST/JSON rows are ``url\t<params>``).
+    #
+    # ``-oT`` opens the file in append mode, so a leftover file from a
+    # previous partial run would accumulate stale lines — delete it first.
+    # ------------------------------------------------------------------
+    if params_out.exists():
+        params_out.unlink()
+
+    cmd = [
+        "arjun", "-i", str(input_file),
+        "-oT", str(params_out),
+        "-t", str(threads),
+        "-T", str(request_timeout),
+        "--stable",
+    ]
+    if rate_limit > 0:
+        cmd.extend(["--rate-limit", str(rate_limit)])
+
+    r = runner.run(cmd, stage=stage, output_dir=output_dir, timeout=timeout)
     if not r["success"] and not r["missing_binary"]:
         return make_result(
             stage, "failed", input_path=dynamic_urls_file,
@@ -141,16 +157,23 @@ def discover(
             extra={"input_urls": original_count, "scanned_urls": len(urls)},
         )
 
-    # arjun output format: "[200] https://example.com/api?id=&x="
-    # We extract the parameterised URL list and dedupe.
-    param_lines: list[str] = []
+    # arjun -oT text format, one URL per line:
+    #   GET   → "https://example.com/api?id=&x="
+    #   POST  → "https://example.com/api\t?id=&x="   (url TAB query-string)
+    #   JSON  → "https://example.com/api\t{...}"     (url TAB json body)
+    # For the URL list we want the full parameterised GET-style URL, so we
+    # rejoin ``url`` + query-string when the second column looks like one.
+    parameterized: list[str] = []
     if params_out.exists():
-        param_lines = params_out.read_text(errors="ignore").splitlines()
-    parameterized = []
-    for ln in param_lines:
-        m = _PARAM_RE.match(ln.strip())
-        if m:
-            parameterized.append(m.group(2).strip())
+        for ln in params_out.read_text(errors="ignore").splitlines():
+            ln = ln.strip()
+            if not ln:
+                continue
+            parts = ln.split("\t")
+            url = parts[0]
+            if len(parts) > 1 and parts[1] and parts[1][0] in "?&":
+                url = url + parts[1]
+            parameterized.append(url)
     n = write_lines(urls_out, parameterized)
     return make_result(
         stage, "success", input_path=dynamic_urls_file,
