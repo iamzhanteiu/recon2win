@@ -411,6 +411,19 @@ def main() -> int:
         results.append(r)
         prog.finish_phase(r, num=8)
 
+        # ---- 7.post: enrich nuclei_dynamic input with jsluice's param intel ----
+        # jsluice extracted {url, method, queryParams, bodyParams} via AST.
+        # Feed those param-rich URLs (incl. POST/JSON params arjun never sees,
+        # and anything past arjun's cap) straight into parameterized_urls.txt.
+        # Safe/additive even when arjun was skipped or found nothing.
+        merged = jsluice_mod.merge_params_into_nuclei_input(output_dir)
+        results.append(merged)
+        if merged["count"]:
+            print(console.phase_info_line(
+                f"jsluice: +{merged['count']} param URL(s) → nuclei_dynamic "
+                f"(now {merged['extra']['total']} total)"
+            ))
+
         # ---- 8. nuclei dynamic ----
         prog.start_phase("nuclei_dynamic", num=9)
         param_urls_file = output_dir / "processed" / "parameterized_urls.txt"

@@ -7,12 +7,17 @@ that turns jsluice's raw output into the framework's canonical files.
 """
 from __future__ import annotations
 
+from pathlib import Path
+
 from modules.jsluice import (
     _in_scope,
     _iter_jsonl,
     _parse_secrets,
     _resolve_urls,
+    build_param_urls,
+    merge_params_into_nuclei_input,
 )
+from modules.utils import create_output_structure, write_json, write_lines
 
 
 FNAME_TO_URL = {
@@ -137,3 +142,86 @@ def test_parse_secrets_defaults_severity_to_info():
     )
     assert findings[0]["severity"] == "info"
     assert sev == {"info": 1}
+
+
+# ----------------------------------------------------------------------
+# build_param_urls — feed jsluice param intel to nuclei_dynamic
+# ----------------------------------------------------------------------
+def test_build_param_urls_attaches_query_and_body_params():
+    recs = [
+        {"url": "https://x.com/search?q=", "method": "GET",
+         "queryParams": ["q"], "bodyParams": []},
+        {"url": "https://x.com/login", "method": "POST",
+         "queryParams": [], "bodyParams": ["user", "pass"]},
+    ]
+    out = build_param_urls(recs)
+    # GET query rebuilt from queryParams; POST body params become a query
+    # string so nuclei can fuzz them (arjun, GET-only, never would).
+    assert out == [
+        "https://x.com/search?q=",
+        "https://x.com/login?user=&pass=",
+    ]
+
+
+def test_build_param_urls_skips_records_without_params():
+    recs = [{"url": "https://x.com/api", "method": "GET",
+             "queryParams": [], "bodyParams": []}]
+    assert build_param_urls(recs) == []
+
+
+def test_build_param_urls_dedupes_and_rebuilds_query():
+    recs = [
+        {"url": "https://x.com/a?id=EXPR", "queryParams": ["id"], "bodyParams": []},
+        {"url": "https://x.com/a?id=", "queryParams": ["id"], "bodyParams": []},
+    ]
+    # both collapse to the same rebuilt URL → deduped
+    assert build_param_urls(recs) == ["https://x.com/a?id="]
+
+
+def test_build_param_urls_handles_garbage():
+    assert build_param_urls([]) == []
+    assert build_param_urls([{"url": ""}, "not-a-dict", None]) == []
+
+
+# ----------------------------------------------------------------------
+# merge_params_into_nuclei_input — append to parameterized_urls.txt
+# ----------------------------------------------------------------------
+def test_merge_appends_jsluice_params_deduped(tmp_path: Path):
+    base = create_output_structure("example.com", root=str(tmp_path))
+    # arjun already produced one URL
+    write_lines(base / "processed" / "parameterized_urls.txt",
+                ["https://x.com/existing?a="])
+    write_json(base / "processed" / "jsluice_params.json", [
+        {"url": "https://x.com/new", "queryParams": ["id"], "bodyParams": []},
+        {"url": "https://x.com/existing?a=", "queryParams": ["a"], "bodyParams": []},
+    ])
+    res = merge_params_into_nuclei_input(base)
+    out = (base / "processed" / "parameterized_urls.txt").read_text().split()
+    assert res["count"] == 1                       # only /new is added
+    assert "https://x.com/new?id=" in out
+    assert out.count("https://x.com/existing?a=") == 1  # no duplicate
+
+
+def test_merge_creates_file_when_arjun_skipped(tmp_path: Path):
+    """When arjun was skipped, parameterized_urls.txt may be empty/missing —
+    jsluice params alone should still drive nuclei_dynamic."""
+    base = create_output_structure("example.com", root=str(tmp_path))
+    write_json(base / "processed" / "jsluice_params.json", [
+        {"url": "https://x.com/p", "queryParams": ["x"], "bodyParams": ["y"]},
+    ])
+    res = merge_params_into_nuclei_input(base)
+    assert res["count"] == 1
+    out = read_target(base)
+    assert out == ["https://x.com/p?x=&y="]
+
+
+def test_merge_noop_when_no_params(tmp_path: Path):
+    base = create_output_structure("example.com", root=str(tmp_path))
+    write_json(base / "processed" / "jsluice_params.json", [])
+    res = merge_params_into_nuclei_input(base)
+    assert res["count"] == 0
+
+
+def read_target(base: Path) -> list[str]:
+    from modules.utils import read_lines
+    return read_lines(base / "processed" / "parameterized_urls.txt")

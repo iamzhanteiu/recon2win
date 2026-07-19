@@ -37,7 +37,14 @@ from urllib.parse import urljoin, urlsplit
 
 from . import runner
 from .telegram import notify as _tg_notify
-from .utils import ensure_dir, make_result, read_lines, write_json, write_lines
+from .utils import (
+    ensure_dir,
+    load_json,
+    make_result,
+    read_lines,
+    write_json,
+    write_lines,
+)
 
 
 # A browser-ish UA — some CDNs 403 the default python-urllib agent.
@@ -328,4 +335,82 @@ def scan(
             "js_fetched": len(files),
             "js_total": len(read_lines(js_urls_file)),
         },
+    )
+
+
+# ----------------------------------------------------------------------
+# Feed jsluice's param intel into nuclei_dynamic
+# ----------------------------------------------------------------------
+def build_param_urls(params: list[dict]) -> list[str]:
+    """Turn jsluice ``params`` records into fuzzable URLs for nuclei.
+
+    Each record is ``{url, method, queryParams, bodyParams}``. We attach
+    **all** discovered params — query *and* body — to the URL as a query
+    string (``base?p1=&p2=``), because:
+
+      * arjun only fuzzes what looks dynamic in the URL (``?x=``) and is
+        GET-only + capped at ``max_urls`` — so POST/JSON endpoints and
+        anything past the cap never reach a dynamic scan.
+      * jsluice extracted the real param names from the AST, so we can
+        hand nuclei a precise fuzz target instead of guessing.
+
+    Existing query strings on the URL are rebuilt from ``queryParams`` so
+    the output is deduped and free of jsluice's ``EXPR`` placeholders.
+    Records with no params are skipped (nothing to fuzz). Order-preserving
+    dedupe.
+    """
+    out: list[str] = []
+    seen: set[str] = set()
+    for rec in params or []:
+        if not isinstance(rec, dict):
+            continue
+        url = (rec.get("url") or "").strip()
+        if not url:
+            continue
+        base = url.split("?", 1)[0]
+        names: list[str] = []
+        for n in (rec.get("queryParams") or []) + (rec.get("bodyParams") or []):
+            n = str(n).strip()
+            if n and n not in names:
+                names.append(n)
+        if not names:
+            continue
+        built = base + "?" + "&".join(f"{n}=" for n in names)
+        if built not in seen:
+            seen.add(built)
+            out.append(built)
+    return out
+
+
+def merge_params_into_nuclei_input(output_dir: Path) -> dict:
+    """Append jsluice's param-rich URLs to ``parameterized_urls.txt``.
+
+    Runs between arjun (stage 7) and nuclei_dynamic (stage 8). Reads
+    ``processed/jsluice_params.json``, builds fuzzable URLs via
+    :func:`build_param_urls`, and merges them (deduped) into
+    ``processed/parameterized_urls.txt`` — the file nuclei_dynamic scans.
+
+    This is additive and safe when arjun was skipped/failed: the target
+    file is created if missing, so jsluice params alone can drive the
+    dynamic scan. No-op (count 0) when jsluice found no params.
+    """
+    proc = output_dir / "processed"
+    params_json = proc / "jsluice_params.json"
+    target = proc / "parameterized_urls.txt"
+
+    data = load_json(params_json)
+    built = build_param_urls(data if isinstance(data, list) else [])
+
+    existing = read_lines(target)
+    existing_set = set(existing)
+    added = [u for u in built if u not in existing_set]
+    if added:
+        write_lines(target, existing + added)
+
+    return make_result(
+        "jsluice_params_merge", "success", input_path=params_json,
+        outputs=[target], count=len(added),
+        extra={"jsluice_param_urls": len(built),
+               "added": len(added),
+               "total": len(existing) + len(added)},
     )
