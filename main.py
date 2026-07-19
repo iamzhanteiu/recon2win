@@ -26,6 +26,7 @@ from modules import (
     dirsearch as dirsearch_mod,
     dnsx as dnsx_mod,
     httpx as httpx_mod,
+    jsluice as jsluice_mod,
     nuclei as nuclei_mod,
     progress as progress_mod,
     report as report_mod,
@@ -58,6 +59,7 @@ _STAGE_NOUN: dict[str, str] = {
     "url_merge_append":  "urls",
     "httpx_urls":        "alive urls",
     "xnlinkfinder":      "endpoints+urls",
+    "jsluice":           "endpoints+urls",
     "arjun":             "parameterized urls",
     "nuclei_dynamic":    "findings",
     "report":            "artifacts",
@@ -159,6 +161,7 @@ def main() -> int:
     p.add_argument("--skip-waymore", action="store_true")
     p.add_argument("--skip-arjun", action="store_true")
     p.add_argument("--skip-xnlinkfinder", action="store_true")
+    p.add_argument("--skip-jsluice", action="store_true")
     p.add_argument("--color", dest="color", action="store_true", default=None,
                    help="Force ANSI colors even when stdout is not a TTY")
     p.add_argument("--no-color", dest="color", action="store_false",
@@ -336,13 +339,13 @@ def main() -> int:
         results.append(r)
         prog.finish_phase(r, num=5)
 
-        # ---- 6. parallel: httpx URL check + xnLinkFinder ----
-        prog.start_phase("httpx_urls (and 1 other)", num=6)
+        # ---- 6. parallel: httpx URL check + xnLinkFinder + jsluice ----
+        prog.start_phase("httpx_urls (and 2 others)", num=6)
         all_urls_file = output_dir / "processed" / "all_urls.txt"
         js_urls_file = output_dir / "processed" / "js_urls.txt"
         par6: dict[str, dict] = {}
-        with prog.parallel(["httpx_urls", "xnlinkfinder"], num=6):
-            with ThreadPoolExecutor(max_workers=2) as pool:
+        with prog.parallel(["httpx_urls", "xnlinkfinder", "jsluice"], num=6):
+            with ThreadPoolExecutor(max_workers=3) as pool:
                 futures = {
                     pool.submit(_run_stage, "httpx_urls", httpx_mod.check_urls,
                                 all_urls_file, output_dir, cfg,
@@ -351,6 +354,10 @@ def main() -> int:
                                 js_urls_file, output_dir, cfg,
                                 resume=args.resume, dry_run=False,
                                 skip=args.skip_xnlinkfinder): "xnlinkfinder",
+                    pool.submit(_run_stage, "jsluice", jsluice_mod.scan,
+                                js_urls_file, output_dir, cfg,
+                                resume=args.resume, dry_run=False,
+                                skip=args.skip_jsluice): "jsluice",
                 }
                 for fut in futures:
                     name = futures[fut]
@@ -364,11 +371,18 @@ def main() -> int:
         results.extend(par6.values())
         prog.finish_parallel(num=6)
 
-        # ---- 6.post: merge xnlinkfinder URLs back into all_urls.txt ----
+        # ---- 6.post: merge xnlinkfinder + jsluice URLs back into all_urls.txt ----
+        # Both JS tools (regex + AST) feed their endpoints/urls here so they
+        # get httpx-probed + nuclei-scanned, and any parameterised ones flow
+        # on to arjun (stage 7) via the re-derived dynamic_urls.txt.
         prog.start_phase("url_merge_append", num=7)
-        ep_file = output_dir / "processed" / "xnlinkfinder_endpoints.txt"
-        url_file = output_dir / "processed" / "xnlinkfinder_urls.txt"
-        extras = [p for p in (ep_file, url_file) if p.exists() and p.stat().st_size > 0]
+        merge_candidates = [
+            output_dir / "processed" / "xnlinkfinder_endpoints.txt",
+            output_dir / "processed" / "xnlinkfinder_urls.txt",
+            output_dir / "processed" / "jsluice_endpoints.txt",
+            output_dir / "processed" / "jsluice_urls.txt",
+        ]
+        extras = [p for p in merge_candidates if p.exists() and p.stat().st_size > 0]
         if extras:
             r = _run_stage(
                 "url_merge_append", url_merge_mod.append_urls,
@@ -379,7 +393,7 @@ def main() -> int:
         else:
             prog.finish_phase(
                 make_result("url_merge_append", "skipped", count=0,
-                            error="no xnlinkfinder output to merge"),
+                            error="no xnlinkfinder/jsluice output to merge"),
                 num=7,
             )
 
@@ -574,7 +588,7 @@ def _print_plan(domain: str, output_dir: Path, cfg: dict, args: argparse.Namespa
         "  3  httpx alive check",
         "  4  PARALLEL: katana/urlfinder + dirsearch + waymore + nuclei-default",
         "  5  url_merge (crawler + dirsearch + waymore -> all_urls / js_urls / dynamic_urls)",
-        "  6  PARALLEL: httpx url check + xnLinkFinder -> re-merge",
+        "  6  PARALLEL: httpx url check + xnLinkFinder + jsluice -> re-merge",
         "  7  arjun on dynamic_urls",
         "  8  nuclei dynamic on parameterized_urls",
         "  9  final telegram summary",

@@ -14,15 +14,17 @@ Automated recon framework that follows a strict 9-stage workflow
    ├─ 4.1  katana + urlfinder crawling              → raw/katana_urls.txt + raw/urlfinder_urls.txt
    ├─ 4.2  dirsearch (SecLists wordlists +/or sensitive ext) → processed/dirsearch_urls.txt
    ├─ 4.3  waymore (archived URLs + JS)              → processed/waymore_urls.txt
-   └─ 4.4  nuclei default scan                      → findings/nuclei_default.{txt,json}
+   └─ 4.4  nuclei default scan                      → findings/default/nuclei.{txt,json}
 5. Merge                                                    → processed/all_urls.txt
    + processed/js_urls.txt, processed/dynamic_urls.txt
 6. PARALLEL
    ├─ 6.1  httpx on all_urls.txt                    → processed/alive_urls.txt
-   └─ 6.2  xnLinkFinder on js_urls.txt              → processed/xnlinkfinder_{endpoints,urls}.txt
-       re-merge xnlinkfinder output back into all_urls.txt
+   ├─ 6.2  xnLinkFinder on js_urls.txt (regex)      → processed/xnlinkfinder_{endpoints,urls}.txt
+   └─ 6.3  jsluice on js_urls.txt (AST)             → processed/jsluice_{endpoints,urls}.txt
+                                                       + findings/jsluice_secrets.json
+       re-merge xnlinkfinder + jsluice output back into all_urls.txt
 7. Arjun on dynamic_urls.txt                        → processed/parameterized_urls.txt
-8. Nuclei dynamic scan                              → findings/nuclei_dynamic.{txt,json}
+8. Nuclei dynamic scan                              → findings/dynamic/nuclei.{txt,json}
 9. Final Telegram summary  (HTML report path included)
 10. Generate final report   → report/final_report.{html,md} + summary.json
 ```
@@ -94,6 +96,7 @@ python3 setup.py --no-color            # disable ANSI colors
 | `--skip-waymore`       | Skip the waymore archived-URL collection                  |
 | `--skip-arjun`         | Skip the arjun parameter discovery                        |
 | `--skip-xnlinkfinder`  | Skip the xnLinkFinder JS scan                             |
+| `--skip-jsluice`       | Skip the jsluice AST JS analysis (endpoints + secrets)    |
 | `--color`              | Force ANSI colors even when stdout is not a TTY (CI, tmux capture) |
 | `--no-color`           | Disable ANSI colors (overrides `$FORCE_COLOR`)            |
 
@@ -151,30 +154,25 @@ recon-agent/
 │   ├── runner.py          # Centralized subprocess runner (logs every cmd)
 │   ├── utils.py           # Domain validation, IO helpers, result factory
 │   ├── subdomain.py       # Stage 1
+│   ├── puredns.py         # Stage 1 post — validate/filter subdomains
 │   ├── dnsx.py            # Stage 2
 │   ├── httpx.py           # Stages 3 & 6.1
 │   ├── content_discovery.py  # Stage 4.1
 │   ├── dirsearch.py       # Stage 4.2
 │   ├── waymore.py         # Stage 4.3
 │   ├── url_merge.py       # Stage 5 (+ 6.post re-merge)
-│   ├── xnlinkfinder.py    # Stage 6.2
+│   ├── xnlinkfinder.py    # Stage 6.2 (regex JS link extraction)
+│   ├── jsluice.py         # Stage 6.3 (AST JS endpoints + secrets)
 │   ├── arjun.py           # Stage 7
 │   ├── nuclei.py          # Stages 4.4 & 8
+│   ├── report.py          # Final HTML/MD/JSON report builder
+│   ├── hackerone.py       # HackerOne scope integration (--h1-*)
 │   ├── telegram.py        # Notifications
+│   ├── progress.py        # Progress bar (sequential + parallel phases)
 │   ├── console.py         # Terminal formatting (colors, status icons)
 │   └── sensitive_ext.py   # Shared extension lists
-├── tests/                 # Pytest unit tests
-│   ├── test_console.py
-│   ├── test_url_dedup.py
-│   ├── test_js_extraction.py
-│   ├── test_dynamic_url.py
-│   ├── test_dirsearch_normalize.py
-│   ├── test_dirsearch_wordlists.py
-│   ├── test_telegram_notify.py
-│   ├── test_setup.py
-│   ├── test_resume.py
-│   ├── test_output_structure.py   # v2 output layout
-│   └── test_arjun_cap.py
+├── tests/                 # Pytest unit tests (see `pytest tests/`)
+├── web/                   # Optional Flask UI (live xterm.js terminal)
 └── outputs/               # Created per-run (see below)
 ```
 
@@ -189,9 +187,11 @@ of grepping through a flat 50-file dir.
 outputs/<domain>/
 ├── raw/                                # tool outputs grouped per stage
 │   ├── subdomain/                      # subfinder.txt, amass.txt, chaos.txt
+│   ├── puredns/                        # resolvers.txt (validation resolver list)
 │   ├── content_discovery/              # katana_urls.txt, urlfinder_urls.txt
-│   ├── dirsearch/                      # dirsearch_raw.txt, merged_wordlists.txt
+│   ├── dirsearch/                      # merged_wordlists.txt
 │   ├── waymore/                        # waymore_raw.txt
+│   ├── jsluice/                        # NNNN.js (fetched JS, one per URL)
 │   └── arjun/                          # input_subset.txt
 ├── processed/                          # cleaned + merged (flat, single source of truth)
 │   ├── subdomains.txt
@@ -201,13 +201,16 @@ outputs/<domain>/
 │   ├── dirsearch_urls.txt, waymore_urls.txt
 │   ├── all_urls.txt, dynamic_urls.txt
 │   ├── xnlinkfinder_endpoints.txt, xnlinkfinder_urls.txt
+│   ├── jsluice_endpoints.txt, jsluice_urls.txt, jsluice_params.json
 │   ├── alive_urls.txt, alive_urls_detail.json
 │   └── arjun_params.txt, parameterized_urls.txt
-├── findings/                           # nuclei only, grouped per kind
+├── findings/                           # nuclei + jsluice secrets
 │   ├── default/                        # nuclei.json, nuclei.txt
-│   └── dynamic/                        # nuclei.json, nuclei.txt
+│   ├── dynamic/                        # nuclei.json, nuclei.txt
+│   └── jsluice_secrets.json            # secrets found in JS (kind/severity/url)
 ├── logs/
 │   ├── commands.log                    # cumulative command history (UTC ts + argv)
+│   ├── <stage>.log                     # per-stage stdout/stderr (sub-stages merged)
 │   └── stages.json                     # per-stage structured result
 └── report/
     ├── final_report.html
@@ -383,6 +386,43 @@ If you want to run dirsearch *sequentially* per wordlist instead,
 either repeat the stage with different configs (using `--resume`) or
 set `combine: true` to fuzz each word against every extension.
 
+## JavaScript analysis — xnLinkFinder (regex) + jsluice (AST)
+
+Stage 6 runs **two** JS analysers in parallel; they complement each other:
+
+| Tool | Technique | Strengths |
+|------|-----------|-----------|
+| xnLinkFinder (6.2) | regex over JS text | broad, fast, catches loose string patterns |
+| **jsluice (6.3)** | **tree-sitter AST** | resolves dynamically-built URLs (`BASE + "/api/" + id`, template literals), extracts **secrets** with context, reports method + query/body params |
+
+**Why AST matters:** regex can't follow how a URL is *assembled* in code. On a
+real target with 135 JS files, xnLinkFinder returned **0** endpoints while
+jsluice recovered **21** real routes (e.g. `/docs/src/routes/users.php`).
+
+**Flow.** jsluice does not fetch JS itself, so the framework:
+
+1. Downloads every URL in `js_urls.txt` → `raw/jsluice/NNNN.js`
+   (concurrent, size-capped at 5 MB, dependency-free).
+2. Runs `jsluice urls <files…>` and `jsluice secrets <files…>`.
+3. Resolves relative URLs against each file's *original* URL and
+   scope-filters to the target domain (drops CDN/tracker noise).
+4. Writes `processed/jsluice_{urls,endpoints}.txt` +
+   `processed/jsluice_params.json` + `findings/jsluice_secrets.json`.
+5. Endpoints/URLs are merged back into `all_urls.txt` (→ httpx → nuclei);
+   parameterised ones flow on to arjun. Secrets fire a Telegram alert.
+
+```yaml
+jsluice:
+  enabled: true
+  mode: [urls, secrets]   # drop either to run only one analysis
+  fetch_timeout: 10       # per-file download timeout (s)
+  max_js: 500             # cap JS files fetched+parsed (0 = no cap)
+  timeout: 1200           # overall stage budget
+```
+
+Skip it entirely with `--skip-jsluice`. If the `jsluice` binary is missing
+the stage is skipped with a warning (optional stage), like the other JS tools.
+
 ## Arjun tunables (input capping)
 
 `arjun` is a parameter fuzzer — given an unbounded list of dynamic URLs
@@ -459,15 +499,17 @@ use a production WSGI server (`gunicorn web.app:app`).
 | dirsearch    | 4.2         | `pip install dirsearch` (Python)                  |
 | waymore      | 4.3         | `pip install waymore` (Python)                    |
 | xnLinkFinder | 6.2         | `go install -v github.com/xnl-h4ck3r/xnLinkFinder@latest` |
+| jsluice      | 6.3         | `go install github.com/BishopFox/jsluice/cmd/jsluice@latest` |
 | arjun        | 7           | `pip install arjun` (Python)                      |
 | nuclei       | 4.4, 8      | `brew install nuclei` / `go install ...nuclei`     |
 
 ## Notes
 
-* All raw outputs (`raw/*.txt`) are never deleted.
+* All raw outputs (`raw/<stage>/*.txt`) are never deleted.
 * Every external command is logged to `outputs/<domain>/logs/commands.log`.
-* Stdout / stderr are persisted to `outputs/<domain>/logs/<stage>.stdout` /
-  `.stderr` for post-mortem analysis.
+* Each stage's stdout/stderr is persisted to a single
+  `outputs/<domain>/logs/<stage>.log` (sub-stages merged with section
+  headers) for post-mortem analysis.
 * This tool is for **authorized recon only** — do not use it against systems
   you do not own or have explicit permission to test.
 # recon2win

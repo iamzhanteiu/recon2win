@@ -165,6 +165,35 @@ xnlinkfinder:
   enabled: true
   timeout: 1200
 
+# ---------- jsluice (AST-based JS analysis) ----------
+# Runs in parallel with xnLinkFinder (stage 6). Where xnLinkFinder greps
+# JS with regex, jsluice parses each file into a tree-sitter AST — so it
+# resolves URLs built dynamically (BASE + path, template literals) and
+# extracts secrets (API keys/tokens) with context.
+#
+# jsluice does NOT fetch JS itself: the framework downloads every URL in
+# js_urls.txt into raw/jsluice/ first, then runs jsluice over the local
+# files. Discovered URLs/endpoints are merged back into all_urls.txt (so
+# they get httpx-probed + nuclei-scanned); secrets land in
+# findings/jsluice_secrets.json and fire a Telegram alert if configured.
+#
+# Install:  go install github.com/BishopFox/jsluice/cmd/jsluice@latest
+jsluice:
+  enabled: true
+  # Which analyses to run. Drop "secrets" to only harvest endpoints, or
+  # "urls" to only scan for leaked credentials.
+  mode:
+    - urls
+    - secrets
+  # Per-file HTTP timeout when downloading each JS bundle (seconds).
+  fetch_timeout: 10
+  # Cap how many JS files to fetch+parse. A crawl-heavy target can yield
+  # thousands of .js URLs; the top N (discovery order) keeps the stage
+  # bounded. 0 = no cap.
+  max_js: 500
+  # Overall stage budget (fetch + both jsluice passes).
+  timeout: 1200
+
 # ---------- Arjun ----------
 arjun:
   enabled: true

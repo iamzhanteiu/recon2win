@@ -101,9 +101,9 @@ def test_phase_color_mapping():
 # phase_number
 # ----------------------------------------------------------------------
 def test_phase_number_known_stage():
-    assert console.phase_number("subdomain") == "[01/14]"
-    assert console.phase_number("dnsx") == "[02/14]"
-    assert console.phase_number("nuclei_dynamic") == "[13/14]"
+    assert console.phase_number("subdomain") == "[01/15]"
+    assert console.phase_number("dnsx") == "[02/15]"
+    assert console.phase_number("nuclei_dynamic") == "[14/15]"
 
 
 def test_phase_number_unknown_stage_returns_empty():
@@ -112,7 +112,7 @@ def test_phase_number_unknown_stage_returns_empty():
 
 def test_phase_number_zero_pads():
     console.set_enabled(True)
-    assert console.phase_number("arjun").startswith("[12/")
+    assert console.phase_number("arjun").startswith("[13/")
 
 
 # ----------------------------------------------------------------------
@@ -124,7 +124,7 @@ def test_phase_header_has_label_when_enabled():
     assert "subdomain" in out
     # Wide rule
     assert "━" in out
-    assert "[01/14]" in out
+    assert "[01/15]" in out
     # Colored bright_cyan + bold
     assert "\033[96m" in out  # bright_cyan
     assert "\033[1m" in out   # bold

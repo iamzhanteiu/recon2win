@@ -221,6 +221,7 @@ _PHASE_NOUN: dict[str, str] = {
     "url_merge_append":  "urls",
     "httpx_urls":        "alive urls",
     "xnlinkfinder":      "endpoints",
+    "jsluice":           "endpoints+secrets",
     "arjun":             "parameterized urls",
     "nuclei_dynamic":    "findings",
     "report":            "artifacts",
