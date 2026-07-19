@@ -28,6 +28,7 @@ from modules import (
     httpx as httpx_mod,
     jsluice as jsluice_mod,
     nuclei as nuclei_mod,
+    priority as priority_mod,
     progress as progress_mod,
     report as report_mod,
     subdomain as sub_mod,
@@ -468,6 +469,11 @@ def main() -> int:
         results.append(report_result)
         prog.finish_phase(report_result, num=11)
 
+        # ---- 10.post: distil everything into a ranked priority list ----
+        # One file the operator opens first: report/priority_targets.txt.
+        prio = priority_mod.build_priority_targets(output_dir, domain)
+        results.append(prio)
+
     # Final Telegram message includes the HTML report path
     _send_summary("final", domain, results, cfg, output_dir, report_info=report_info)
 
@@ -480,7 +486,21 @@ def main() -> int:
     print(console.kv("HTML report ", str(report_info["html"]), value_color="bright_cyan"))
     print(console.kv("Markdown    ", str(report_info["md"]), value_color="bright_cyan"))
     print(console.kv("JSON summary", str(report_info["json"]), value_color="bright_cyan"))
+    print(console.kv("priority    ", str(output_dir / "report" / "priority_targets.txt"),
+                     value_color="bright_cyan"))
     print(console.kv("output dir  ", str(output_dir), value_color="bright_cyan"))
+
+    # Echo the top priority targets so the operator sees "test these first"
+    # without opening a file. Full ranked list is in priority_targets.txt.
+    top = (prio.get("extra") or {}).get("top") or []
+    if top:
+        print()
+        print(console.phase_header("top priority targets"))
+        for t in top:
+            reasons = "; ".join(t["reasons"][:3])
+            print(console.c(f"  [{t['score']:>5}] ", "bright_yellow")
+                  + console.c(t["url"], "bright_white")
+                  + console.c(f"  — {reasons}", "bright_black"))
     return 0
 
 
