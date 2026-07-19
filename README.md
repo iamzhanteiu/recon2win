@@ -410,6 +410,12 @@ jsluice recovered **21** real routes (e.g. `/docs/src/routes/users.php`).
    `processed/jsluice_params.json` + `findings/jsluice_secrets.json`.
 5. Endpoints/URLs are merged back into `all_urls.txt` (→ httpx → nuclei);
    parameterised ones flow on to arjun. Secrets fire a Telegram alert.
+6. **Param intel → nuclei_dynamic:** between arjun (7) and nuclei_dynamic
+   (8), `jsluice_params.json` (`{url, method, queryParams, bodyParams}`) is
+   turned into fuzzable URLs (`base?p1=&p2=`) and merged into
+   `parameterized_urls.txt`. This gives nuclei the **POST/JSON body params
+   arjun never sees** (arjun is GET-only + capped) — and still works when
+   arjun is skipped, since jsluice params alone can drive the dynamic scan.
 
 ```yaml
 jsluice:
