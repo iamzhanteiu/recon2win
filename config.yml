@@ -99,6 +99,13 @@ content_discovery:
   urlfinder:
     enabled: true
     timeout: 1800
+  # gau — archived URLs (wayback/commoncrawl/otx/urlscan). Complements
+  # waymore with a different provider mix; ``--subs`` spans all subdomains
+  # of the target. Skipped gracefully if the gau binary is missing.
+  gau:
+    enabled: true
+    threads: 5
+    timeout: 600
 
 # ---------- Dirsearch ----------
 dirsearch:

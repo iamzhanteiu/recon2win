@@ -408,6 +408,16 @@ def main() -> int:
                 num=7,
             )
 
+        # ---- 6.post.b: mine new in-scope subdomains from collected URLs ----
+        # Archived/crawled URLs often reference hosts passive enum missed.
+        subs = url_merge_mod.derive_subdomains_from_urls(output_dir, domain)
+        results.append(subs)
+        if subs["count"]:
+            print(console.phase_info_line(
+                f"url-derived: +{subs['count']} new in-scope subdomain(s) "
+                f"→ processed/url_derived_subdomains.txt"
+            ))
+
         # Telegram summary after stage 6
         _send_summary("stage-6", domain, results, cfg, output_dir)
 
