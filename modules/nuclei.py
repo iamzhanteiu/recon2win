@@ -27,6 +27,47 @@ from .telegram import notify_finding, notify_stage_result
 SEV_ORDER = ["info", "low", "medium", "high", "critical"]
 
 
+def update_templates(
+    output_dir: Path,
+    cfg: dict,
+    *,
+    skip: bool = False,
+    dry_run: bool = False,
+) -> dict:
+    """Refresh the nuclei template store before scanning.
+
+    Stale templates miss recently-published CVEs — the single biggest
+    silent quality drain on a scanner. Runs ``nuclei -update-templates``
+    once at the start of a run (fast no-op when already current).
+
+    Opt-out via ``nuclei.update_templates: false`` (e.g. air-gapped hosts
+    or when you pin a template version). Skipped on ``--skip-nuclei``,
+    ``--dry-run``, missing binary, or when disabled.
+    """
+    stage = "nuclei_update"
+    n_cfg = cfg.get("nuclei") or {}
+    if skip:
+        return make_result(stage, "skipped", count=0, error="--skip-nuclei")
+    if dry_run:
+        return make_result(stage, "skipped", count=0, error="dry-run")
+    if not n_cfg.get("update_templates", True):
+        return make_result(stage, "skipped", count=0, error="disabled in config")
+    if not runner.tool_available("nuclei"):
+        return make_result(stage, "skipped", count=0,
+                           error="nuclei binary not found (optional, skipped)")
+
+    r = runner.run(
+        ["nuclei", "-update-templates", "-silent"],
+        stage=stage, output_dir=output_dir,
+        timeout=int(n_cfg.get("update_timeout", 600)),
+    )
+    if not r["success"] and not r["missing_binary"]:
+        # A failed update is non-fatal — scan proceeds with existing templates.
+        return make_result(stage, "failed", count=0,
+                           error=(r["stderr"] or "")[:200])
+    return make_result(stage, "success", count=0)
+
+
 def _outputs_exist(out_dir: Path, kind: str) -> bool:
     j = findings_dir(out_dir, kind) / "nuclei.json"
     return j.exists() and j.stat().st_size > 0

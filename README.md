@@ -492,6 +492,21 @@ jsluice:
 Skip it entirely with `--skip-jsluice`. If the `jsluice` binary is missing
 the stage is skipped with a warning (optional stage), like the other JS tools.
 
+## Nuclei — three passes + fresh templates
+
+Nuclei runs against three target sets so coverage isn't limited to root hosts:
+
+| Pass | Input | Templates | Findings dir |
+|---|---|---|---|
+| default | alive hosts | full set | `findings/default/` |
+| endpoints | discovered live URLs (`alive_urls.txt`) | critical/high/medium | `findings/endpoints/` |
+| dynamic | parameterized URLs | fuzz/sqli/xss/lfi/… | `findings/dynamic/` |
+
+Before any pass, `nuclei -update-templates` refreshes the template store
+once per run (stale templates miss recent CVEs — the biggest silent quality
+drain on a scanner). It's a fast no-op when already current; disable with
+`nuclei.update_templates: false` (air-gapped hosts / pinned versions).
+
 ## What nuclei_dynamic actually scans
 
 `nuclei_dynamic` (stage 8) fuzzes injection templates (sqli/xss/lfi/ssrf/…)
