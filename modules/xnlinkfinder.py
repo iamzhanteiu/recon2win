@@ -83,12 +83,29 @@ def scan(
     #
     # `-o cli` writes results to stdout (so our in-memory parser can
     # split URLs vs endpoints). `-d 1` follows 1 link deep. `-sf` is
-    # the scope filter — we derive it from the first JS URL's host so
-    # out-of-scope links (CDNs, third-party trackers) are excluded.
+    # the (now mandatory) scope filter.
+    #
+    # Scope = the TARGET ROOT DOMAIN (output_dir is outputs/<domain>), NOT
+    # the first JS URL's host. xnLinkFinder's filter matches any link whose
+    # host *contains* the scope string, so ``vulnweb.com`` keeps links on
+    # every ``*.vulnweb.com`` subdomain. The old ``domain_only(js_lines[0])``
+    # pinned scope to just the FIRST JS file's host (e.g. rest.vulnweb.com),
+    # silently dropping in-scope links found in JS served from any other
+    # subdomain (testasp.vulnweb.com, …).
     js_lines = read_lines(js_urls_file)
-    cmd = ["xnlinkfinder", "-i", str(js_urls_file), "-o", "cli", "-d", "1"]
-    if js_lines:
-        cmd.extend(["-sf", domain_only(js_lines[0])])
+    if not js_lines:
+        ep_out.write_text("")
+        url_out.write_text("")
+        return make_result(
+            stage, "skipped", input_path=js_urls_file,
+            outputs=[ep_out, url_out], count=0, error="no JS URLs to scan",
+        )
+
+    scope = output_dir.name
+    cmd = [
+        "xnlinkfinder", "-i", str(js_urls_file),
+        "-o", "cli", "-d", "1", "-sf", scope,
+    ]
 
     r = runner.run(cmd, stage=stage, output_dir=output_dir, timeout=timeout)
 
@@ -111,12 +128,3 @@ def scan(
         outputs=[ep_out, url_out], count=n_url + n_ep,
         extra={"endpoints": n_ep, "urls": n_url},
     )
-
-
-def domain_only(url: str) -> str:
-    """Extract the host (no scheme, no path) for xnLinkFinder's -sf flag."""
-    try:
-        from urllib.parse import urlsplit
-        return urlsplit(url).netloc or url
-    except Exception:  # noqa: BLE001
-        return url
