@@ -213,6 +213,12 @@ arjun:
 
 # ---------- Nuclei ----------
 nuclei:
+  # Refresh the nuclei template store (``nuclei -update-templates``) once
+  # at the start of each run. Stale templates miss recently-published CVEs
+  # — the biggest silent quality drain on a scanner. Fast no-op when
+  # already current. Set false on air-gapped hosts or to pin a version.
+  update_templates: true
+  update_timeout: 600
   # ------------------------------------------------------------------
   # exclude_tags — passed to nuclei as ``-etags``. Filters out
   # templates whose tags match this list. Useful for cutting noise:

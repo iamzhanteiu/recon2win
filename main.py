@@ -222,6 +222,14 @@ def main() -> int:
     scan_start = datetime.now(timezone.utc)
     tool_versions = report_mod.capture_tool_versions()
 
+    # Refresh nuclei templates once, before any nuclei scan runs (stale
+    # templates miss recent CVEs). Non-fatal; opt-out via config / --skip-nuclei.
+    tpl = nuclei_mod.update_templates(output_dir, cfg, skip=args.skip_nuclei)
+    if tpl["status"] == "success":
+        print(console.phase_info_line("nuclei: templates updated"))
+    elif tpl.get("error") and tpl["status"] == "failed":
+        print(console.phase_info_line(f"nuclei: template update failed — {tpl['error']}"))
+
     # Total phases for the progress bar. Counts every distinct step the
     # operator sees in the workflow — sequential phases plus each parallel
     # group counted as one (the sub-stages are reported as rows within
