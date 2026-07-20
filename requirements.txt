@@ -1,10 +1,15 @@
 pyyaml>=6.0
 requests>=2.31.0
-# setuptools ships ``pkg_resources``. dirsearch imports it from the
-# stdlib at module load — Python 3.12+ removed it from the stdlib, so
-# without this dep dirsearch crashes with ModuleNotFoundError the
-# instant you run it (count=0, 0.73s in the wild).
-setuptools>=68.0
+# setuptools ships ``pkg_resources``. dirsearch imports it at module load —
+# Python 3.12+ removed pkg_resources from the stdlib, so without setuptools
+# dirsearch crashes with ModuleNotFoundError the instant you run it
+# (count=0, 0.73s in the wild).
+#
+# The UPPER bound matters: setuptools 81.0.0 (2025) *removed* the bundled
+# pkg_resources, so a bare ``>=68`` now resolves to a version that DOESN'T
+# ship it and dirsearch breaks again. Pin below 81 until dirsearch drops
+# its pkg_resources import.
+setuptools>=68.0,<81
 # rich powers the per-stage progress bar at the bottom of the terminal
 # when stdout is a TTY. Falls back to a no-op (no import, no bar) when
 # rich is missing OR when output is piped — log files stay clean.
