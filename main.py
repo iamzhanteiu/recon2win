@@ -480,6 +480,12 @@ def main() -> int:
             resume=args.resume, dry_run=False, skip=args.skip_nuclei,
         )
         results.append(r)
+        pf = (r.get("extra") or {}).get("param_filter")
+        if pf and pf.get("dropped"):
+            print(console.phase_info_line(
+                f"nuclei_dynamic: dropped {pf['dropped']} non-param URL(s) "
+                f"({pf['kept']} parameterised URL(s) scanned)"
+            ))
         prog.finish_phase(r, num=10)
 
         # ---- 10. final summary (no _run_stage wrapper — synthesised) ----
