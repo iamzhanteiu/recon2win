@@ -155,6 +155,32 @@ def crawl(
         (raw_cd / "urlfinder_urls.txt").write_text("")
         outputs.append(raw_cd / "urlfinder_urls.txt")
 
+    # 4.1.c — gau (archived URLs from wayback / commoncrawl / otx / urlscan).
+    # Complements waymore (different provider mix + faster) and, with
+    # ``--subs``, pulls URLs across every subdomain of the target — often
+    # surfacing endpoints and hosts passive enum + active crawl both miss.
+    if cd_cfg.get("gau", {}).get("enabled", True):
+        out = raw_cd / "gau_urls.txt"
+        if runner.tool_available("gau"):
+            to = int(cd_cfg.get("gau", {}).get("timeout", 600))
+            threads = int(cd_cfg.get("gau", {}).get("threads", 5))
+            r = runner.run(
+                ["gau", "--subs", "--threads", str(threads),
+                 "--o", str(out), output_dir.name],
+                stage="content_discovery_gau", log_name=stage,
+                output_dir=output_dir, timeout=to,
+            )
+            if not r["success"] and not r["missing_binary"]:
+                print(f"[{stage}] gau failed: {r['stderr'][:200]}")
+        else:
+            print(f"[{stage}] gau not installed — skipping")
+            out.write_text("")
+        outputs.append(out)
+        all_urls.extend(read_lines(out))
+    else:
+        (raw_cd / "gau_urls.txt").write_text("")
+        outputs.append(raw_cd / "gau_urls.txt")
+
     crawler_txt = proc / "crawler_urls.txt"
     js_txt = proc / "js_urls.txt"
     n_crawl = write_lines(crawler_txt, all_urls)

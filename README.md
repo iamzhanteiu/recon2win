@@ -11,12 +11,13 @@ Automated recon framework that follows a strict 9-stage workflow
 2. DNS resolution        (dnsx)                      → processed/resolved.txt + resolved_detail.json
 3. HTTP alive check      (httpx)                     → processed/alive.txt + alive_detail.{json,csv}
 4. PARALLEL
-   ├─ 4.1  katana + urlfinder crawling              → raw/katana_urls.txt + raw/urlfinder_urls.txt
+   ├─ 4.1  katana + urlfinder + gau collection       → raw/{katana,urlfinder,gau}_urls.txt
    ├─ 4.2  dirsearch (SecLists wordlists +/or sensitive ext) → processed/dirsearch_urls.txt
    ├─ 4.3  waymore (archived URLs + JS)              → processed/waymore_urls.txt
    └─ 4.4  nuclei default scan                      → findings/default/nuclei.{txt,json}
 5. Merge                                                    → processed/all_urls.txt
    + processed/js_urls.txt, processed/dynamic_urls.txt
+   + mine new in-scope subdomains from URLs → processed/url_derived_subdomains.txt
 6. PARALLEL
    ├─ 6.1  httpx on all_urls.txt                    → processed/alive_urls.txt
    ├─ 6.2  xnLinkFinder on js_urls.txt (regex)      → processed/xnlinkfinder_{endpoints,urls}.txt
@@ -190,13 +191,14 @@ outputs/<domain>/
 ├── raw/                                # tool outputs grouped per stage
 │   ├── subdomain/                      # subfinder.txt, amass.txt, chaos.txt
 │   ├── puredns/                        # resolvers.txt (validation resolver list)
-│   ├── content_discovery/              # katana_urls.txt, urlfinder_urls.txt
+│   ├── content_discovery/              # katana_urls.txt, urlfinder_urls.txt, gau_urls.txt
 │   ├── dirsearch/                      # merged_wordlists.txt
 │   ├── waymore/                        # waymore_raw.txt
 │   ├── jsluice/                        # NNNN.js (fetched JS, one per URL)
 │   └── arjun/                          # input_subset.txt
 ├── processed/                          # cleaned + merged (flat, single source of truth)
 │   ├── subdomains.txt
+│   ├── url_derived_subdomains.txt      # in-scope hosts mined from collected URLs
 │   ├── resolved.txt, resolved_detail.json
 │   ├── alive.txt, alive_detail.json
 │   ├── crawler_urls.txt, js_urls.txt
@@ -599,6 +601,7 @@ use a production WSGI server (`gunicorn web.app:app`).
 | httpx        | 3, 6.1      | `brew install httpx` / `go install ...httpx`      |
 | katana       | 4.1         | `go install -v github.com/projectdiscovery/katana/cmd/katana@latest` |
 | urlfinder    | 4.1         | `pip install urlfinder` (Python)                  |
+| gau          | 4.1         | `go install github.com/lc/gau/v2/cmd/gau@latest`  |
 | dirsearch    | 4.2         | `pip install dirsearch` (Python)                  |
 | waymore      | 4.3         | `pip install waymore` (Python)                    |
 | xnLinkFinder | 6.2         | `go install -v github.com/xnl-h4ck3r/xnLinkFinder@latest` |

@@ -210,6 +210,58 @@ def append_urls(output_dir: Path, extra_files: list[Path]) -> dict:
     )
 
 
+def extract_in_scope_hosts(urls: Iterable[str], root_domain: str) -> list[str]:
+    """Unique in-scope hostnames from a list of URLs (sorted).
+
+    A host is in scope if it equals ``root_domain`` or is a subdomain of it.
+    Pure helper — used to mine subdomains out of collected URLs.
+    """
+    root = (root_domain or "").lower().strip().lstrip(".")
+    if not root:
+        return []
+    seen: set[str] = set()
+    out: list[str] = []
+    for u in urls:
+        s = (u or "").strip()
+        if "://" not in s:
+            s = "http://" + s
+        try:
+            host = (urlsplit(s).hostname or "").lower()
+        except ValueError:
+            continue
+        if host and (host == root or host.endswith("." + root)) and host not in seen:
+            seen.add(host)
+            out.append(host)
+    return sorted(out)
+
+
+def derive_subdomains_from_urls(output_dir: Path, domain: str) -> dict:
+    """Mine NEW in-scope subdomains out of the collected URLs.
+
+    Archived + crawled URLs (waymore/gau/katana/JS) routinely reference
+    hosts that passive subdomain enum (subfinder/amass/chaos) never found.
+    This surfaces those: it extracts in-scope hosts from ``all_urls.txt``,
+    drops the ones already in ``subdomains.txt``, and writes the remainder
+    to ``processed/url_derived_subdomains.txt``.
+
+    Informational only — these hosts are NOT merged into the resolved
+    inventory (they weren't dnsx/httpx-verified this run). Feed the file
+    into the next scan's input, or resolve them ad hoc. The count is echoed
+    so the operator knows the discovery surface grew.
+    """
+    proc = output_dir / "processed"
+    hosts = extract_in_scope_hosts(read_lines(proc / "all_urls.txt"), domain)
+    known = set(read_lines(proc / "subdomains.txt"))
+    new = [h for h in hosts if h not in known]
+    out_path = proc / "url_derived_subdomains.txt"
+    write_lines(out_path, new)
+    return make_result(
+        "url_subdomains", "success", input_path=str(proc / "all_urls.txt"),
+        outputs=[out_path], count=len(new),
+        extra={"in_scope_hosts": len(hosts), "new": len(new)},
+    )
+
+
 def seed_parameterized_urls(output_dir: Path) -> dict:
     """Seed ``parameterized_urls.txt`` with URLs that ALREADY carry params.
 
