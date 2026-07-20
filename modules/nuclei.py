@@ -220,6 +220,55 @@ def default_scan(
     )
 
 
+def endpoints_scan(
+    alive_urls_file: Path,
+    output_dir: Path,
+    cfg: dict,
+    *,
+    resume: bool = False,
+    dry_run: bool = False,
+    skip: bool = False,
+) -> dict:
+    """Scan the discovered live endpoints (alive_urls.txt) with nuclei.
+
+    Fills the biggest coverage gap in the pipeline: ``default_scan`` only
+    sees ``alive.txt`` (the root hosts), because it runs in parallel with
+    content discovery. The thousands of endpoints that crawling + dirsearch
+    + jsluice + waymore surface — the whole point of discovery — otherwise
+    never get a nuclei pass. This scan runs *after* discovery on the
+    live-verified URL list.
+
+    Defaults to ``critical,high,medium`` (skips info/low): 1000+ endpoints
+    at all-severity would bury real findings under detection noise.
+    """
+    n_cfg = (cfg.get("nuclei") or {}).get("endpoints") or {}
+    fdir = findings_dir(output_dir, "endpoints")
+    outputs = [fdir / "nuclei.txt", fdir / "nuclei.json"]
+    if resume and _outputs_exist(output_dir, "endpoints"):
+        return make_result(
+            "nuclei_endpoints", "success", input_path=alive_urls_file,
+            outputs=outputs,
+            count=len(read_lines(fdir / "nuclei.txt")),
+        )
+    if dry_run:
+        return make_result(
+            "nuclei_endpoints", "skipped", input_path=alive_urls_file,
+            outputs=outputs, count=0, error="dry-run",
+        )
+    if not n_cfg.get("enabled", True):
+        return make_result(
+            "nuclei_endpoints", "skipped", input_path=alive_urls_file,
+            outputs=outputs, count=0, error="disabled in config",
+        )
+    return _run(
+        alive_urls_file, "endpoints", cfg, output_dir,
+        severity=n_cfg.get("severity", ["critical", "high", "medium"]),
+        tags=n_cfg.get("tags"),
+        timeout=int(n_cfg.get("timeout", 7200)),
+        skip=skip,
+    )
+
+
 def dynamic_scan(
     parameterized_urls_file: Path,
     output_dir: Path,

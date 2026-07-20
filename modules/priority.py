@@ -171,7 +171,7 @@ def build_priority_targets(output_dir: Path, domain: str, *, limit: int = 200) -
     findings = output_dir / "findings"
 
     nuclei: list[dict] = []
-    for kind in ("default", "dynamic"):
+    for kind in ("default", "endpoints", "dynamic"):
         data = load_json(findings / kind / "nuclei.json") or {}
         nuclei.extend(data.get("findings", []) if isinstance(data, dict) else [])
 

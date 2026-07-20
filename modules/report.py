@@ -417,6 +417,8 @@ class ReportBuilder:
         # findings/<kind>/
         ("findings/default/nuclei.txt",  "findings",  "nuclei default matched URLs"),
         ("findings/default/nuclei.json", "findings",  "nuclei default findings"),
+        ("findings/endpoints/nuclei.txt", "findings", "nuclei endpoints matched URLs"),
+        ("findings/endpoints/nuclei.json","findings", "nuclei endpoints findings"),
         ("findings/dynamic/nuclei.txt",  "findings",  "nuclei dynamic matched URLs"),
         ("findings/dynamic/nuclei.json", "findings",  "nuclei dynamic findings"),
         ("findings/jsluice_secrets.json","findings",  "secrets extracted from JS"),
@@ -491,14 +493,18 @@ class ReportBuilder:
                 assets_dedup.append(a)
         assets = assets_dedup
 
-        # nuclei — v2 layout puts the two scans under findings/<kind>/
+        # nuclei — v2 layout puts the scans under findings/<kind>/
         n_def_findings, n_def_sev = parse_nuclei_summary(
             findings / "default" / "nuclei.json"
+        )
+        n_end_findings, n_end_sev = parse_nuclei_summary(
+            findings / "endpoints" / "nuclei.json"
         )
         n_dyn_findings, n_dyn_sev = parse_nuclei_summary(
             findings / "dynamic" / "nuclei.json"
         )
         counts["nuclei_default_findings"] = len(n_def_findings)
+        counts["nuclei_endpoints_findings"] = len(n_end_findings)
         counts["nuclei_dynamic_findings"] = len(n_dyn_findings)
 
         # jsluice secrets — API keys/tokens extracted from JS (findings/jsluice_secrets.json)
@@ -563,6 +569,10 @@ class ReportBuilder:
                 "default": {
                     "findings": n_def_findings,
                     "severity_count": n_def_sev,
+                },
+                "endpoints": {
+                    "findings": n_end_findings,
+                    "severity_count": n_end_sev,
                 },
                 "dynamic": {
                     "findings": n_dyn_findings,
@@ -817,7 +827,11 @@ class ReportBuilder:
 
         # Nuclei
         out.append("## 8. Nuclei Findings\n")
-        for kind, label in [("default", "Default scan"), ("dynamic", "Dynamic scan")]:
+        for kind, label in [
+            ("default", "Default scan (hosts)"),
+            ("endpoints", "Endpoints scan (discovered URLs)"),
+            ("dynamic", "Dynamic scan (params)"),
+        ]:
             blk = data["nuclei"][kind]
             out.append(f"### {label}\n")
             sc = blk["severity_count"] or {}
@@ -1238,7 +1252,11 @@ class ReportBuilder:
 
     def _html_section_nuclei(self, data: dict) -> str:
         out = ["<h2>8. Nuclei Findings</h2>"]
-        for kind, label in [("default", "Default scan"), ("dynamic", "Dynamic scan")]:
+        for kind, label in [
+            ("default", "Default scan (hosts)"),
+            ("endpoints", "Endpoints scan (discovered URLs)"),
+            ("dynamic", "Dynamic scan (params)"),
+        ]:
             blk = data["nuclei"][kind]
             sc = blk["severity_count"] or {}
             sev_cells = "".join(

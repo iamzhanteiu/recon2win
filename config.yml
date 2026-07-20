@@ -241,6 +241,23 @@ nuclei:
       - low
       - info
     timeout: 7200
+  # ------------------------------------------------------------------
+  # endpoints scan — runs AFTER content discovery on alive_urls.txt (the
+  # live-verified discovered URLs). default_scan only sees alive.txt (the
+  # root hosts) because it runs in parallel with discovery, so the
+  # thousands of crawled/dirsearch/jsluice/waymore endpoints would never
+  # be nuclei-scanned without this pass.
+  #
+  # Defaults to critical,high,medium (NO info/low): scanning 1000+
+  # endpoints at all-severity buries real findings under detection noise.
+  # ------------------------------------------------------------------
+  endpoints:
+    enabled: true
+    severity:
+      - critical
+      - high
+      - medium
+    timeout: 7200
   dynamic:
     enabled: true
     tags:

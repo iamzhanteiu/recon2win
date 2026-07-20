@@ -67,6 +67,7 @@ def create_output_structure(domain: str, root: str = "outputs") -> Path:
         "processed",
         "findings",
         "findings/default",
+        "findings/endpoints",
         "findings/dynamic",
         "logs",
         "tests_input",
@@ -96,10 +97,10 @@ def raw_dir(output_dir: Path, stage: str) -> Path:
 def findings_dir(output_dir: Path, kind: str) -> Path:
     """Return ``<output_dir>/findings/<kind>/`` and create it if missing.
 
-    ``kind`` is one of ``"default"`` or ``"dynamic"`` (the two nuclei
-    scan modes).
+    ``kind`` is one of ``"default"``, ``"endpoints"`` or ``"dynamic"``
+    (the three nuclei scan modes).
     """
-    valid = {"default", "dynamic"}
+    valid = {"default", "endpoints", "dynamic"}
     if kind not in valid:
         raise ValueError(
             f"unknown findings subfolder {kind!r} — valid options: {sorted(valid)}"

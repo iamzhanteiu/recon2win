@@ -25,9 +25,10 @@ Automated recon framework that follows a strict 9-stage workflow
        re-merge xnlinkfinder + jsluice output back into all_urls.txt
 7. Arjun on dynamic_urls.txt                        → processed/parameterized_urls.txt
    + seed already-param URLs (arjun-independent) + jsluice params
-8. Nuclei dynamic scan                              → findings/dynamic/nuclei.{txt,json}
-9. Final Telegram summary  (HTML report path included)
-10. Generate final report   → report/final_report.{html,md} + summary.json
+8. Nuclei endpoints scan (discovered alive URLs)    → findings/endpoints/nuclei.{txt,json}
+9. Nuclei dynamic scan                              → findings/dynamic/nuclei.{txt,json}
+10. Final Telegram summary  (HTML report path included)
+11. Generate final report   → report/final_report.{html,md} + summary.json + priority_targets.txt + delta.md
 ```
 
 ## Quick start
@@ -206,8 +207,9 @@ outputs/<domain>/
 │   ├── alive_urls.txt, alive_urls_detail.json
 │   └── arjun_params.txt, parameterized_urls.txt
 ├── findings/                           # nuclei + jsluice secrets
-│   ├── default/                        # nuclei.json, nuclei.txt
-│   ├── dynamic/                        # nuclei.json, nuclei.txt
+│   ├── default/                        # nuclei.json, nuclei.txt (root hosts)
+│   ├── endpoints/                      # nuclei.json, nuclei.txt (discovered URLs)
+│   ├── dynamic/                        # nuclei.json, nuclei.txt (param URLs)
 │   └── jsluice_secrets.json            # secrets found in JS (kind/severity/url)
 ├── logs/
 │   ├── commands.log                    # cumulative command history (UTC ts + argv)

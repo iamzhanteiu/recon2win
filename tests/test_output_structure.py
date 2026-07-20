@@ -34,7 +34,7 @@ def test_create_output_structure_creates_per_stage_raw_subdirs(tmp_path: Path):
 
 def test_create_output_structure_creates_findings_per_kind(tmp_path: Path):
     base = create_output_structure("example.com", root=str(tmp_path))
-    for kind in ("default", "dynamic"):
+    for kind in ("default", "endpoints", "dynamic"):
         assert (base / "findings" / kind).is_dir(), \
             f"missing findings/{kind} subdir"
 

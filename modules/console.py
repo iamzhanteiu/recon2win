@@ -74,6 +74,7 @@ PHASE_COLORS: dict[str, str] = {
     "xnlinkfinder":       "bright_green",
     "jsluice":            "magenta",
     "arjun":              "green",
+    "nuclei_endpoints":   "red",
     "nuclei_dynamic":     "red",
     "report":             "bright_white",
 }
@@ -95,6 +96,7 @@ _PHASE_ORDER: list[str] = [
     "jsluice",
     "url_merge_append",
     "arjun",
+    "nuclei_endpoints",
     "nuclei_dynamic",
     "report",
 ]
