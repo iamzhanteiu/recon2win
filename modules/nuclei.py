@@ -17,6 +17,7 @@ from . import runner
 from .utils import (
     findings_dir,
     make_result,
+    raw_dir,
     read_lines,
     write_json,
     write_lines,
@@ -25,6 +26,35 @@ from .telegram import notify_finding, notify_stage_result
 
 
 SEV_ORDER = ["info", "low", "medium", "high", "critical"]
+
+
+def _has_param(url: str) -> bool:
+    """True when the URL carries at least one query parameter (``?name=``).
+
+    The dynamic scan is meant to fuzz *parameterised* endpoints only, so a
+    bare ``https://x.com/api`` with no ``?...=`` is nothing to fuzz. We
+    require both a ``?`` and a ``name=`` pair so a trailing ``?`` with an
+    empty query string doesn't slip through.
+    """
+    q = url.split("?", 1)
+    return len(q) == 2 and "=" in q[1]
+
+
+def _filter_param_urls(input_file: Path, output_dir: Path) -> tuple[Path, int, int]:
+    """Keep only URLs with a query param and write them to a derived input
+    under ``raw/nuclei_dynamic/param_urls.txt``.
+
+    Returns ``(file_to_scan, kept, dropped)``. When nothing is dropped we
+    return the original file untouched so the common case stays a no-op.
+    """
+    urls = read_lines(input_file)
+    kept = [u for u in urls if _has_param(u)]
+    dropped = len(urls) - len(kept)
+    if dropped == 0:
+        return input_file, len(kept), 0
+    filtered = raw_dir(output_dir, "nuclei_dynamic") / "param_urls.txt"
+    write_lines(filtered, kept)
+    return filtered, len(kept), dropped
 
 
 def _outputs_exist(out_dir: Path, kind: str) -> bool:
@@ -248,10 +278,24 @@ def dynamic_scan(
             "nuclei_dynamic", "skipped", input_path=parameterized_urls_file,
             outputs=outputs, count=0, error="disabled in config",
         )
-    return _run(
-        parameterized_urls_file, "dynamic", cfg, output_dir,
+
+    # Enforce "parameterised endpoints only" at the scan boundary. Upstream
+    # (arjun + jsluice) already produce ``?p=&q=`` URLs, but this guards the
+    # stage against any bare URL that leaks into parameterized_urls.txt —
+    # nuclei should never spend budget on a non-parameterised endpoint here.
+    scan_file, kept, dropped = _filter_param_urls(
+        parameterized_urls_file, output_dir
+    )
+
+    result = _run(
+        scan_file, "dynamic", cfg, output_dir,
         severity=n_cfg.get("severity", ["critical", "high", "medium", "low","info"]),
         tags=n_cfg.get("tags"),
         timeout=int(n_cfg.get("timeout", 7200)),
         skip=skip,
     )
+    if dropped:
+        (result.setdefault("extra", {}))["param_filter"] = {
+            "kept": kept, "dropped": dropped,
+        }
+    return result

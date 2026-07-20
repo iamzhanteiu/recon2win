@@ -83,7 +83,8 @@ def raw_dir(output_dir: Path, stage: str) -> Path:
     accidentally write to the old flat ``raw/`` root. Raises if *stage*
     is not a known subfolder (catches typos at write time).
     """
-    valid = {"subdomain", "content_discovery", "dirsearch", "waymore", "arjun"}
+    valid = {"subdomain", "content_discovery", "dirsearch", "waymore", "arjun",
+             "nuclei_dynamic"}
     if stage not in valid:
         raise ValueError(
             f"unknown raw subfolder {stage!r} — valid options: {sorted(valid)}"
