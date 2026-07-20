@@ -50,7 +50,7 @@ python3 main.py -d example.com --config config.yml
 
 | Symptom (from `stages.json`) | Root cause | Fix |
 |---|---|---|
-| `dirsearch` → `failed (count=0, <1s)` with `ModuleNotFoundError: No module named 'pkg_resources'` | dirsearch imports `pkg_resources` from the stdlib; Python 3.12+ removed it | `pip install -r requirements.txt` (adds `setuptools>=68`) |
+| `dirsearch` → `failed (count=0, <1s)` with `ModuleNotFoundError: No module named 'pkg_resources'` | dirsearch imports `pkg_resources`, which Python 3.12+ dropped from the stdlib **and** setuptools 81+ dropped from its bundle | Same venv: `pip install -r requirements.txt` (pins `setuptools>=68,<81`). **pipx install** (dirsearch in its own venv): `pipx inject dirsearch "setuptools<81" --force` |
 | `arjun` → `failed (count=0, 3600s)` with `timeout after 3600s` | Stage budget exceeded because too many dynamic URLs were fed to arjun | Lower `arjun.max_urls` in `config.yml` (default 200) or raise `arjun.timeout` |
 | `xnlinkfinder` → `failed (count=0, 1200s)` | xnLinkFinder hangs on a single slow JS URL | Lower `xnlinkfinder.timeout` *or* pre-filter `js_urls.txt` |
 | `nuclei_dynamic` → `skipped (input file empty or missing)` | Cascade from `arjun` failing | Fix arjun (above) and the cascade clears |
