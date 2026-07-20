@@ -165,6 +165,17 @@ def fake_outputs(tmp_path: Path) -> Path:
         "severity_count": {"critical": 1, "high": 0, "medium": 0, "low": 0, "info": 0},
     }))
 
+    # findings/jsluice_secrets.json (findings root, not per-kind)
+    (base / "findings" / "jsluice_secrets.json").write_text(json.dumps({
+        "findings": [
+            {"kind": "AWSAccessKey", "severity": "high",
+             "url": "https://example.com/app.js", "data": {"key": "AKIAEXAMPLE123"}},
+            {"kind": "GenericToken", "severity": "low",
+             "url": "https://example.com/vendor.js", "data": {"token": "abc123"}},
+        ],
+        "severity_count": {"high": 1, "low": 1},
+    }))
+
     # logs
     (logs / "commands.log").write_text(
         "[2026-06-23T10:00:00Z] [subdomain] subfinder -d example.com -all\n"
@@ -688,6 +699,7 @@ def test_render_html_includes_all_required_sections(fake_outputs: Path):
         "4. DNS Inventory",
         "5. Content Discovery",
         "6. JavaScript Analysis",
+        "6.1 JavaScript Secrets",
         "7. Parameter Discovery",
         "8. Nuclei Findings",
         "9. High-Value Targets",
@@ -696,6 +708,40 @@ def test_render_html_includes_all_required_sections(fake_outputs: Path):
         "12. Appendix",
     ]:
         assert section in html, f"missing section: {section}"
+
+
+def test_html_secrets_section_lists_findings(fake_outputs: Path):
+    builder = ReportBuilder(_make_inputs(fake_outputs))
+    html = builder.render_html(builder.collect())
+    assert "6.1 JavaScript Secrets" in html
+    assert "AWSAccessKey" in html
+    assert "AKIAEXAMPLE123" in html
+    assert "https://example.com/app.js" in html
+    # high severity should render before low (sorted by severity)
+    assert html.index("AWSAccessKey") < html.index("GenericToken")
+
+
+def test_collect_counts_jsluice_secrets(fake_outputs: Path):
+    data = ReportBuilder(_make_inputs(fake_outputs)).collect()
+    assert data["counts"]["jsluice_secrets"] == 2
+    assert len(data["jsluice_secrets"]["findings"]) == 2
+
+
+def test_html_secrets_section_empty_when_none(tmp_path: Path):
+    # No jsluice_secrets.json → section renders a graceful "no secrets" note.
+    for sub in ("findings", "processed", "report", "logs"):
+        (tmp_path / sub).mkdir(parents=True, exist_ok=True)
+    builder = ReportBuilder(_make_inputs(tmp_path))
+    html = builder.render_html(builder.collect())
+    assert "6.1 JavaScript Secrets" in html
+    assert "No secrets found" in html
+
+
+def test_markdown_secrets_section(fake_outputs: Path):
+    builder = ReportBuilder(_make_inputs(fake_outputs))
+    md = builder.render_markdown(builder.collect())
+    assert "## 6.1 JavaScript Secrets" in md
+    assert "AWSAccessKey" in md
 
 
 def test_render_html_uses_clickable_links(fake_outputs: Path):

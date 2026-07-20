@@ -299,6 +299,7 @@ The report has 12 sections:
 4. DNS Inventory — search/filterable table of resolved subdomains
 5. Content Discovery — katana / urlfinder / dirsearch / waymore summary
 6. JavaScript Analysis — JS file count, xnLinkFinder endpoints, interesting API paths
+   6.1 JavaScript Secrets — API keys/tokens jsluice extracted from JS, grouped by severity
 7. Parameter Discovery — Arjun + parameterized URLs
 8. Nuclei Findings — **grouped by severity**, with template / name / URL / matcher / evidence
 9. High-Value Targets — auto-detected admin / login / API / env / git / backups
