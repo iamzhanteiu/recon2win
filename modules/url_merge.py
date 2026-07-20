@@ -100,6 +100,20 @@ def is_dynamic_url(url: str) -> bool:
     return True
 
 
+def has_query_params(url: str) -> bool:
+    """True if the URL already carries a non-empty query string (``?a=1``).
+
+    These URLs are prime injection targets — they show their parameters
+    right in the crawl/waymore output, no discovery needed.
+    """
+    if not url:
+        return False
+    try:
+        return bool(urlsplit(url).query)
+    except ValueError:
+        return False
+
+
 def dedupe_urls(urls: Iterable[str]) -> list[str]:
     """De-duplicate URLs (case-insensitive on scheme+host, exact on path+query)."""
     seen: set[str] = set()
@@ -193,4 +207,48 @@ def append_urls(output_dir: Path, extra_files: list[Path]) -> dict:
         stage, "success", input_path=",".join(str(f) for f in extra_files),
         outputs=[out_all, out_js, out_dyn],
         count=n_all, extra={"js": n_js, "dynamic": n_dyn},
+    )
+
+
+def seed_parameterized_urls(output_dir: Path) -> dict:
+    """Seed ``parameterized_urls.txt`` with URLs that ALREADY carry params.
+
+    ``nuclei_dynamic`` scans only ``parameterized_urls.txt`` — which is
+    built from arjun's discoveries + jsluice params. But URLs that already
+    show ``?id=1`` in the crawl/waymore results are prime injection targets
+    that reach the dynamic scan *only if arjun happens to re-discover them*.
+    When arjun is skipped, capped (``max_urls``), or fails, those obvious
+    param URLs get **zero** dynamic coverage — even though they were sitting
+    in ``dynamic_urls.txt`` the whole time.
+
+    This step reads ``dynamic_urls.txt``, keeps the ones with a query string,
+    and merges them (deduped) into ``parameterized_urls.txt`` — independent
+    of arjun. Runs between arjun (stage 7) and nuclei_dynamic (stage 8), so
+    the final input is::
+
+        parameterized_urls.txt = {already-param URLs}
+                               ∪ {arjun-discovered}
+                               ∪ {jsluice params}
+
+    Additive and safe: creates the file if missing, so even a run with
+    ``--skip-arjun`` and no jsluice hits still gives nuclei_dynamic the
+    visible-param URLs to scan.
+    """
+    proc = output_dir / "processed"
+    dyn_file = proc / "dynamic_urls.txt"
+    target = proc / "parameterized_urls.txt"
+
+    existing = read_lines(target)
+    existing_set = set(existing)
+    seeded = [
+        u for u in read_lines(dyn_file)
+        if has_query_params(u) and u not in existing_set
+    ]
+    if seeded:
+        write_lines(target, existing + seeded)
+
+    return make_result(
+        "param_seed", "success", input_path=str(dyn_file),
+        outputs=[target], count=len(seeded),
+        extra={"seeded": len(seeded), "total": len(existing) + len(seeded)},
     )

@@ -24,6 +24,7 @@ Automated recon framework that follows a strict 9-stage workflow
                                                        + findings/jsluice_secrets.json
        re-merge xnlinkfinder + jsluice output back into all_urls.txt
 7. Arjun on dynamic_urls.txt                        → processed/parameterized_urls.txt
+   + seed already-param URLs (arjun-independent) + jsluice params
 8. Nuclei dynamic scan                              → findings/dynamic/nuclei.{txt,json}
 9. Final Telegram summary  (HTML report path included)
 10. Generate final report   → report/final_report.{html,md} + summary.json
@@ -487,6 +488,25 @@ jsluice:
 
 Skip it entirely with `--skip-jsluice`. If the `jsluice` binary is missing
 the stage is skipped with a warning (optional stage), like the other JS tools.
+
+## What nuclei_dynamic actually scans
+
+`nuclei_dynamic` (stage 8) fuzzes injection templates (sqli/xss/lfi/ssrf/…)
+against `parameterized_urls.txt`. That file is the **union** of three sources,
+so an endpoint reaches the dynamic scan if *any* of them has a param for it:
+
+```
+parameterized_urls.txt = {URLs that already carry ?a=1 in the crawl output}
+                       ∪ {params arjun discovered on param-less endpoints}
+                       ∪ {params jsluice extracted from JS (incl. POST/JSON body)}
+```
+
+The first set is seeded **independently of arjun** (from `dynamic_urls.txt`).
+This matters: arjun is capped (`max_urls`) and optional (`--skip-arjun`), so
+without the seed, obvious injection targets like `/list?id=1` would be dropped
+from the dynamic scan whenever arjun is skipped, capped, or fails — even though
+they were sitting in the crawl results. On the `vulnweb.com` test target this
+is the difference between nuclei_dynamic scanning **0** URLs and **752**.
 
 ## Arjun tunables (input capping)
 

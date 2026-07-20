@@ -426,6 +426,18 @@ def main() -> int:
                 f"(now {merged['extra']['total']} total)"
             ))
 
+        # ---- 7.post.b: seed already-parameterized URLs (arjun-independent) ----
+        # URLs that already carry ?a=1 in the crawl/waymore output are prime
+        # injection targets; without this they only reach nuclei_dynamic if
+        # arjun re-discovers them (so --skip-arjun / cap / failure = no scan).
+        seeded = url_merge_mod.seed_parameterized_urls(output_dir)
+        results.append(seeded)
+        if seeded["count"]:
+            print(console.phase_info_line(
+                f"seed: +{seeded['count']} already-param URL(s) → nuclei_dynamic "
+                f"(now {seeded['extra']['total']} total)"
+            ))
+
         # ---- 8. nuclei dynamic ----
         prog.start_phase("nuclei_dynamic", num=9)
         param_urls_file = output_dir / "processed" / "parameterized_urls.txt"
