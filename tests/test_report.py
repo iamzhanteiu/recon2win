@@ -52,10 +52,11 @@ def fake_outputs(tmp_path: Path) -> Path:
     raw_ar = base / "raw" / "arjun"
     proc = base / "processed"
     fnd_def = base / "findings" / "default"
+    fnd_end = base / "findings" / "endpoints"
     fnd_dyn = base / "findings" / "dynamic"
     logs = base / "logs"
     for d in (raw_sub, raw_cd, raw_ds, raw_wm, raw_ar,
-              proc, fnd_def, fnd_dyn, logs):
+              proc, fnd_def, fnd_end, fnd_dyn, logs):
         d.mkdir(parents=True, exist_ok=True)
 
     # raw/subdomain/
@@ -154,6 +155,14 @@ def fake_outputs(tmp_path: Path) -> Path:
              "matcher-name": "env-file", "extracted-results": ["DB_PASS=hunter2"]},
         ],
         "severity_count": {"info": 1, "high": 1, "medium": 0, "low": 0, "critical": 0},
+    }))
+    (fnd_end / "nuclei.txt").write_text("https://example.com/backup.zip\n")
+    (fnd_end / "nuclei.json").write_text(json.dumps({
+        "findings": [
+            {"template-id": "backup-file", "info": {"name": "Backup file",
+             "severity": "medium"}, "matched-at": "https://example.com/backup.zip"},
+        ],
+        "severity_count": {"medium": 1, "critical": 0, "high": 0, "low": 0, "info": 0},
     }))
     (fnd_dyn / "nuclei.txt").write_text("https://example.com/login?id=\n")
     (fnd_dyn / "nuclei.json").write_text(json.dumps({

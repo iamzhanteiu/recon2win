@@ -35,7 +35,7 @@ _URL_CAP = 100  # cap how many new URLs we list (findings/subs are never capped)
 def _finding_keys(output_dir: Path) -> list[str]:
     """Stable ``<template>@<location>`` keys for every nuclei finding."""
     keys: list[str] = []
-    for kind in ("default", "dynamic"):
+    for kind in ("default", "endpoints", "dynamic"):
         data = load_json(output_dir / "findings" / kind / "nuclei.json") or {}
         if not isinstance(data, dict):
             continue

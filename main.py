@@ -63,6 +63,7 @@ _STAGE_NOUN: dict[str, str] = {
     "xnlinkfinder":      "endpoints+urls",
     "jsluice":           "endpoints+urls",
     "arjun":             "parameterized urls",
+    "nuclei_endpoints":  "findings",
     "nuclei_dynamic":    "findings",
     "report":            "artifacts",
 }
@@ -225,7 +226,7 @@ def main() -> int:
     # operator sees in the workflow — sequential phases plus each parallel
     # group counted as one (the sub-stages are reported as rows within
     # the parallel() context manager).
-    prog = progress_mod.ReconProgress(n_phases=11)
+    prog = progress_mod.ReconProgress(n_phases=12)
 
     results: list[dict] = []
 
@@ -438,8 +439,22 @@ def main() -> int:
                 f"(now {seeded['extra']['total']} total)"
             ))
 
-        # ---- 8. nuclei dynamic ----
-        prog.start_phase("nuclei_dynamic", num=9)
+        # ---- 8. nuclei on discovered endpoints (alive_urls.txt) ----
+        # Closes the coverage gap: default_scan only saw the root hosts
+        # (it ran in parallel with discovery). Scan the live-verified
+        # discovered URLs so crawled/dirsearch/jsluice endpoints get a pass.
+        prog.start_phase("nuclei_endpoints", num=9)
+        alive_urls_file = output_dir / "processed" / "alive_urls.txt"
+        r = _run_stage(
+            "nuclei_endpoints", nuclei_mod.endpoints_scan,
+            alive_urls_file, output_dir, cfg,
+            resume=args.resume, dry_run=False, skip=args.skip_nuclei,
+        )
+        results.append(r)
+        prog.finish_phase(r, num=9)
+
+        # ---- 9. nuclei dynamic ----
+        prog.start_phase("nuclei_dynamic", num=10)
         param_urls_file = output_dir / "processed" / "parameterized_urls.txt"
         r = _run_stage(
             "nuclei_dynamic", nuclei_mod.dynamic_scan,
@@ -447,16 +462,16 @@ def main() -> int:
             resume=args.resume, dry_run=False, skip=args.skip_nuclei,
         )
         results.append(r)
-        prog.finish_phase(r, num=9)
+        prog.finish_phase(r, num=10)
 
-        # ---- 9. final summary (no _run_stage wrapper — synthesised) ----
-        prog.start_phase("summary", num=10)
+        # ---- 10. final summary (no _run_stage wrapper — synthesised) ----
+        prog.start_phase("summary", num=11)
         summary = _build_final_summary(domain, output_dir)
         results.append(summary)
-        prog.finish_phase(summary, num=10)
+        prog.finish_phase(summary, num=11)
 
-        # ---- 10. generate the final report (HTML + MD + JSON) ----
-        prog.start_phase("report", num=11)
+        # ---- 11. generate the final report (HTML + MD + JSON) ----
+        prog.start_phase("report", num=12)
         scan_end = datetime.now(timezone.utc)
         cfg_text = ""
         try:
@@ -480,7 +495,7 @@ def main() -> int:
             count=3, extra=report_info,
         )
         results.append(report_result)
-        prog.finish_phase(report_result, num=11)
+        prog.finish_phase(report_result, num=12)
 
         # ---- 10.post: distil everything into a ranked priority list ----
         # One file the operator opens first: report/priority_targets.txt.
@@ -654,9 +669,10 @@ def _print_plan(domain: str, output_dir: Path, cfg: dict, args: argparse.Namespa
         "  4  PARALLEL: katana/urlfinder + dirsearch + waymore + nuclei-default",
         "  5  url_merge (crawler + dirsearch + waymore -> all_urls / js_urls / dynamic_urls)",
         "  6  PARALLEL: httpx url check + xnLinkFinder + jsluice -> re-merge",
-        "  7  arjun on dynamic_urls",
-        "  8  nuclei dynamic on parameterized_urls",
-        "  9  final telegram summary",
+        "  7  arjun on dynamic_urls (+ seed already-param + jsluice params)",
+        "  8  nuclei endpoints on alive_urls (discovered)",
+        "  9  nuclei dynamic on parameterized_urls",
+        " 10  final telegram summary + report + priority + delta",
     ]:
         print(console.c(step, "white"))
 
@@ -693,6 +709,7 @@ def _send_summary(
 
 def _build_final_summary(domain: str, output_dir: Path) -> dict:
     findings_default = load_json(output_dir / "findings" / "default" / "nuclei.json") or {}
+    findings_endpoints = load_json(output_dir / "findings" / "endpoints" / "nuclei.json") or {}
     findings_dynamic = load_json(output_dir / "findings" / "dynamic" / "nuclei.json") or {}
     return make_result(
         "summary", "success", input_path=domain,
@@ -710,6 +727,8 @@ def _build_final_summary(domain: str, output_dir: Path) -> dict:
             ),
             "nuclei_default_findings_by_severity":
                 findings_default.get("severity_count", {}),
+            "nuclei_endpoints_findings_by_severity":
+                findings_endpoints.get("severity_count", {}),
             "nuclei_dynamic_findings_by_severity":
                 findings_dynamic.get("severity_count", {}),
             "output_folder": str(output_dir),
