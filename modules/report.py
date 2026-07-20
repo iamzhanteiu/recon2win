@@ -419,6 +419,7 @@ class ReportBuilder:
         ("findings/default/nuclei.json", "findings",  "nuclei default findings"),
         ("findings/dynamic/nuclei.txt",  "findings",  "nuclei dynamic matched URLs"),
         ("findings/dynamic/nuclei.json", "findings",  "nuclei dynamic findings"),
+        ("findings/jsluice_secrets.json","findings",  "secrets extracted from JS"),
         # logs/
         ("logs/commands.log",            "logs",      "every command ever run"),
         ("logs/stages.json",             "logs",      "per-stage structured result"),
@@ -500,6 +501,14 @@ class ReportBuilder:
         counts["nuclei_default_findings"] = len(n_def_findings)
         counts["nuclei_dynamic_findings"] = len(n_dyn_findings)
 
+        # jsluice secrets — API keys/tokens extracted from JS (findings/jsluice_secrets.json)
+        jsl = load_json_safe(findings / "jsluice_secrets.json") or {}
+        jsluice_secrets = jsl.get("findings", []) if isinstance(jsl, dict) else []
+        if not isinstance(jsluice_secrets, list):
+            jsluice_secrets = []
+        jsluice_sev = jsl.get("severity_count", {}) if isinstance(jsl, dict) else {}
+        counts["jsluice_secrets"] = len(jsluice_secrets)
+
         # high-value targets — scan the union of alive URLs + parameterized
         candidate_urls: list[str] = []
         candidate_urls.extend(read_lines(proc / "alive_urls.txt"))
@@ -559,6 +568,10 @@ class ReportBuilder:
                     "findings": n_dyn_findings,
                     "severity_count": n_dyn_sev,
                 },
+            },
+            "jsluice_secrets": {
+                "findings": jsluice_secrets,
+                "severity_count": jsluice_sev,
             },
             "high_value_targets": high_value,
             "interesting_api_paths": api_paths,
@@ -631,6 +644,7 @@ class ReportBuilder:
         body.append(self._html_section_assets(data))
         body.append(self._html_section_content_discovery(data))
         body.append(self._html_section_js(data))
+        body.append(self._html_section_secrets(data))
         body.append(self._html_section_params(data))
         body.append(self._html_section_nuclei(data))
         body.append(self._html_section_high_value(data))
@@ -763,6 +777,33 @@ class ReportBuilder:
             for p in data["interesting_api_paths"][:30]:
                 out.append(f"- `{escape(p)}`")
             out.append("\n</details>\n")
+
+        # JS secrets (jsluice)
+        out.append("## 6.1 JavaScript Secrets\n")
+        _secrets = (data.get("jsluice_secrets") or {}).get("findings") or []
+        if not _secrets:
+            out.append("_No secrets found in JS by jsluice._\n")
+        else:
+            out.append(f"Total: `{len(_secrets)}` — verify before reporting.\n")
+            out.append("| Severity | Kind | Value | JS URL |")
+            out.append("|----------|------|-------|--------|")
+            _ordered = sorted(
+                _secrets,
+                key=lambda s: -severity_rank((s.get("severity") or "info").lower()),
+            )
+            for s in _ordered[:100]:
+                raw = s.get("data")
+                val = (", ".join(f"{k}={v}" for k, v in raw.items())
+                       if isinstance(raw, dict) else str(raw or ""))
+                out.append(
+                    f"| {(s.get('severity') or 'info').upper()} "
+                    f"| `{escape(str(s.get('kind', '?')))}` "
+                    f"| `{escape(val[:120])}` "
+                    f"| `{escape(str(s.get('url', '')))}` |"
+                )
+            if len(_ordered) > 100:
+                out.append(f"\n_… {len(_ordered) - 100} more in jsluice_secrets.json._\n")
+            out.append("")
 
         # Parameter discovery
         out.append("## 7. Parameter Discovery\n")
@@ -1127,6 +1168,58 @@ class ReportBuilder:
             "</table>\n"
             "<details><summary>Interesting API paths (top 80)</summary>\n"
             f"<ul>{api_html}</ul>{more}"
+            "</details>"
+        )
+
+    def _html_section_secrets(self, data: dict) -> str:
+        blk = data.get("jsluice_secrets") or {}
+        secrets = blk.get("findings") or []
+        if not secrets:
+            return (
+                "<h2>6.1 JavaScript Secrets</h2>\n"
+                '<p class="small">No secrets found in JS by jsluice.</p>'
+            )
+        sc = blk.get("severity_count") or {}
+        sev_headers = "".join(f"<th>{s}</th>" for s in self.SEV_ORDER)
+        sev_cells = "".join(
+            f"<td><code>{sc.get(s, 0):,}</code></td>" for s in self.SEV_ORDER
+        )
+        # Highest-severity first so the scary ones sit at the top.
+        ordered = sorted(
+            secrets,
+            key=lambda s: -severity_rank((s.get("severity") or "info").lower()),
+        )
+        rows = []
+        for s in ordered[:200]:
+            sev = (s.get("severity") or "info").lower()
+            # ``data`` may be a dict of {name: value}; render compactly + escaped.
+            raw = s.get("data")
+            if isinstance(raw, dict):
+                val = ", ".join(f"{k}={v}" for k, v in raw.items())
+            else:
+                val = str(raw or "")
+            rows.append(
+                "<tr>"
+                f"<td>{severity_badge(sev)}</td>"
+                f"<td><code>{escape(str(s.get('kind', '?')))}</code></td>"
+                f"<td><span class=\"small\"><code>{escape(val[:160])}</code></span></td>"
+                f"<td><code>{escape(str(s.get('url', '')))}</code></td>"
+                "</tr>"
+            )
+        extra = ""
+        if len(ordered) > 200:
+            extra = f'<p class="small">… {len(ordered) - 200} more in jsluice_secrets.json</p>'
+        return (
+            "<h2>6.1 JavaScript Secrets</h2>\n"
+            '<p class="small">API keys / tokens extracted from JavaScript by '
+            "jsluice (AST). Verify before reporting — some are low-risk or "
+            "false positives.</p>\n"
+            f"<table><tr>{sev_headers}</tr><tr>{sev_cells}</tr></table>\n"
+            f"<details open><summary><strong>{len(secrets):,} secret(s)</strong></summary>\n"
+            "<table><thead><tr>"
+            "<th>Severity</th><th>Kind</th><th>Value</th><th>JS URL</th>"
+            "</tr></thead>"
+            f"<tbody>{''.join(rows)}</tbody></table>{extra}"
             "</details>"
         )
 
