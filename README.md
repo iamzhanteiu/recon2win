@@ -13,8 +13,9 @@ Automated recon framework that follows a strict 9-stage workflow
 4. PARALLEL
    ├─ 4.1  katana + urlfinder + gau collection       → raw/{katana,urlfinder,gau}_urls.txt
    ├─ 4.2  dirsearch (SecLists wordlists +/or sensitive ext) → processed/dirsearch_urls.txt
-   ├─ 4.3  waymore (archived URLs + JS)              → processed/waymore_urls.txt
-   └─ 4.4  nuclei default scan                      → findings/default/nuclei.{txt,json}
+   ├─ 4.3  ffuf (-ac/-ach + recursive dirs, per host) → processed/ffuf_urls.txt
+   ├─ 4.4  waymore (archived URLs + JS)              → processed/waymore_urls.txt
+   └─ 4.5  nuclei default scan                      → findings/default/nuclei.{txt,json}
 5. Merge                                                    → processed/all_urls.txt
    + processed/js_urls.txt, processed/dynamic_urls.txt
    + mine new in-scope subdomains from URLs → processed/url_derived_subdomains.txt
@@ -62,7 +63,7 @@ python3 main.py -d example.com --config config.yml
 `setup.py` is a self-contained script that:
 
 1. **Verifies** every external tool (subfinder, amass, chaos, dnsx, httpx,
-   katana, urlfinder, dirsearch, waymore, xnLinkFinder, arjun, nuclei) and
+   katana, urlfinder, dirsearch, ffuf, waymore, xnLinkFinder, arjun, nuclei) and
    prints their versions.
 2. **Optionally installs** missing tools via the platform's package manager
    (`brew` on macOS, `apt` on Linux, `go install` for Go tools, `pip3` for
@@ -96,6 +97,7 @@ python3 setup.py --no-color            # disable ANSI colors
 | `--dry-run`            | Print the plan and exit — never invokes external tools    |
 | `--skip-nuclei`        | Skip both nuclei default and nuclei dynamic scans         |
 | `--skip-dirsearch`     | Skip the dirsearch sensitive-extension scan               |
+| `--skip-ffuf`          | Skip the ffuf recursive fuzzing stage                     |
 | `--skip-waymore`       | Skip the waymore archived-URL collection                  |
 | `--skip-arjun`         | Skip the arjun parameter discovery                        |
 | `--skip-xnlinkfinder`  | Skip the xnLinkFinder JS scan                             |
@@ -107,7 +109,7 @@ python3 setup.py --no-color            # disable ANSI colors
 
 Every recon stage gets a distinct color so the output is scannable
 at a glance, especially when parallel stages interleave (stage 4 runs
-4 stages concurrently, stage 6 runs 2):
+5 stages concurrently, stage 6 runs 2):
 
 | Stage                | Color          |
 |----------------------|----------------|
@@ -116,6 +118,7 @@ at a glance, especially when parallel stages interleave (stage 4 runs
 | `httpx_alive`        | bright blue    |
 | `content_discovery`  | bright magenta |
 | `dirsearch`          | bright yellow  |
+| `ffuf`               | orange         |
 | `waymore`            | yellow         |
 | `nuclei_default`     | bright red     |
 | `url_merge`          | white          |
@@ -162,7 +165,8 @@ recon-agent/
 │   ├── httpx.py           # Stages 3 & 6.1
 │   ├── content_discovery.py  # Stage 4.1
 │   ├── dirsearch.py       # Stage 4.2
-│   ├── waymore.py         # Stage 4.3
+│   ├── ffuf.py            # Stage 4.3 (-ac/-ach + recursive dirs)
+│   ├── waymore.py         # Stage 4.4
 │   ├── url_merge.py       # Stage 5 (+ 6.post re-merge)
 │   ├── xnlinkfinder.py    # Stage 6.2 (regex JS link extraction)
 │   ├── jsluice.py         # Stage 6.3 (AST JS endpoints + secrets)
@@ -193,6 +197,7 @@ outputs/<domain>/
 │   ├── puredns/                        # resolvers.txt (validation resolver list)
 │   ├── content_discovery/              # katana_urls.txt, urlfinder_urls.txt, gau_urls.txt
 │   ├── dirsearch/                      # merged_wordlists.txt
+│   ├── ffuf/                           # <host>.json, ffuf_raw.txt, merged_wordlists.txt
 │   ├── waymore/                        # waymore_raw.txt
 │   ├── jsluice/                        # NNNN.js (fetched JS, one per URL)
 │   └── arjun/                          # input_subset.txt
@@ -202,7 +207,7 @@ outputs/<domain>/
 │   ├── resolved.txt, resolved_detail.json
 │   ├── alive.txt, alive_detail.json
 │   ├── crawler_urls.txt, js_urls.txt
-│   ├── dirsearch_urls.txt, waymore_urls.txt
+│   ├── dirsearch_urls.txt, ffuf_urls.txt, waymore_urls.txt
 │   ├── all_urls.txt, dynamic_urls.txt
 │   ├── xnlinkfinder_endpoints.txt, xnlinkfinder_urls.txt
 │   ├── jsluice_endpoints.txt, jsluice_urls.txt, jsluice_params.json
@@ -247,7 +252,7 @@ tools land in `logs/subdomain.log` with section headers).
 
 **Required:** `subdomain`, `dnsx`, `httpx_alive`, `url_merge`.
 **Optional** (skipped with a clear warning when the binary is missing):
-`dirsearch`, `waymore`, `nuclei`, `arjun`, `xnLinkFinder`.
+`dirsearch`, `ffuf`, `waymore`, `nuclei`, `arjun`, `xnLinkFinder`.
 
 ## Output schema (per stage)
 
@@ -301,7 +306,7 @@ The report has 12 sections:
 2. Recon Coverage Summary — KPI cards + clickable source counts
 3. Asset Inventory — search/filterable table of every alive host
 4. DNS Inventory — search/filterable table of resolved subdomains
-5. Content Discovery — katana / urlfinder / dirsearch / waymore summary
+5. Content Discovery — katana / urlfinder / dirsearch / ffuf / waymore summary
 6. JavaScript Analysis — JS file count, xnLinkFinder endpoints, interesting API paths
    6.1 JavaScript Secrets — API keys/tokens jsluice extracted from JS, grouped by severity
 7. Parameter Discovery — Arjun + parameterized URLs
@@ -397,6 +402,59 @@ If you want to run dirsearch *sequentially* per wordlist instead,
 either repeat the stage with different configs (using `--resume`) or
 set `combine: true` to fuzz each word against every extension.
 
+## ffuf — auto-calibration + recursive fuzzing (stage 4.3)
+
+`ffuf` runs **in parallel with dirsearch**, not instead of it: the two
+disagree often enough that the union is worth the wall clock. What ffuf
+adds is auto-calibration and real recursion.
+
+```yaml
+ffuf:
+  enabled: true
+  threads: 40                 # -t, per ffuf process
+  timeout: 1800               # per-host wall clock
+  max_hosts: 50               # cap targets taken from alive.txt (0 = no cap)
+  concurrency: 3              # ffuf processes running at once
+  autocalibration: true            # -ac
+  autocalibration_per_host: true   # -ach
+  autocalibration_strategy: ""     # -acs ("basic" | "advanced")
+  recursion: true                  # -recursion
+  recursion_depth: 2               # -recursion-depth
+  recursion_strategy: ""           # -recursion-strategy ("default" | "greedy")
+  follow_redirects: false          # -r  (see the warning below)
+  rate: 0                          # -rate, req/s (0 = unlimited)
+  match_status: [200, 204, 301, 302, 307, 401, 403, 405, 500]   # -mc
+  filter_status: [404, 429]                                     # -fc
+  wordlists: [...]                 # same rules as dirsearch.wordlists
+  extensions: []                   # -e, ".php,.bak"
+```
+
+**`-ac` / `-ach` — auto-calibration.** Before fuzzing, ffuf requests a
+batch of random paths and derives filters from what comes back. A host
+that answers `200` + identical body to everything (SPA fallback,
+soft-404, WAF landing page) yields 0 hits instead of your entire
+wordlist. `-ach` recomputes that calibration per host; it implies `-ac`
+inside ffuf, and the stage emits both so the argv in `commands.log`
+says what it does.
+
+**`-recursion` — recursive directories.** Every matched directory is
+queued and fuzzed again, up to `recursion_depth` levels.
+
+> ⚠️ ffuf spots a directory via the **redirect** a matched response
+> points at, so `follow_redirects: true` (`-r`) breaks recursion — the
+> redirect gets consumed before ffuf can read it. Keep it `false` while
+> recursion is on, and keep `301`/`302` in `match_status`, or nothing
+> is ever queued for the next level.
+
+**Fan-out.** ffuf takes one URL per process (`-u <base>/FUZZ`), not a
+host list, so the stage walks `alive.txt` itself: the first `max_hosts`
+targets, `concurrency` processes at a time, `timeout` seconds each. One
+host timing out costs you that host's results, not the stage. Each
+target gets its own `raw/ffuf/<host>.json`; the hits are merged into
+`processed/ffuf_urls.txt` and flow into `all_urls.txt` from there.
+
+Turn it off with `--skip-ffuf` for one run, or `enabled: false` for good.
+
 ## Scan delta — "what changed since last time"
 
 Recon is run against the same target again and again; 95% of each run is
@@ -440,6 +498,7 @@ Each URL accumulates a score + reasons from every source it appears in:
 | jsluice secret | severity score + 100 |
 | parameterized URL (arjun + jsluice) | 300 (injection surface) |
 | dirsearch hit | 220 (exists + passed status filter) |
+| ffuf hit | 220 (exists + survived auto-calibration) |
 | high-value path (`.env` `.git` `.sql` `actuator` `graphql` `admin` `/api/` …) | 120–350 |
 
 The top 10 are also echoed to the console at the end of the run. On the
@@ -603,11 +662,12 @@ use a production WSGI server (`gunicorn web.app:app`).
 | urlfinder    | 4.1         | `pip install urlfinder` (Python)                  |
 | gau          | 4.1         | `go install github.com/lc/gau/v2/cmd/gau@latest`  |
 | dirsearch    | 4.2         | `pip install dirsearch` (Python)                  |
-| waymore      | 4.3         | `pip install waymore` (Python)                    |
+| ffuf         | 4.3         | `brew install ffuf` / `go install github.com/ffuf/ffuf/v2@latest` |
+| waymore      | 4.4         | `pip install waymore` (Python)                    |
 | xnLinkFinder | 6.2         | `go install -v github.com/xnl-h4ck3r/xnLinkFinder@latest` |
 | jsluice      | 6.3         | `go install github.com/BishopFox/jsluice/cmd/jsluice@latest` |
 | arjun        | 7           | `pip install arjun` (Python)                      |
-| nuclei       | 4.4, 8      | `brew install nuclei` / `go install ...nuclei`     |
+| nuclei       | 4.5, 8      | `brew install nuclei` / `go install ...nuclei`     |
 
 ## Notes
 

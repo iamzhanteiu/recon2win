@@ -11,7 +11,7 @@ Signals combined (a URL accumulates score + reasons from every source):
   * nuclei findings   — by severity (critical/high/medium worth the most)
   * jsluice secrets   — the JS file that leaked a key/token
   * parameterized URLs — injection candidates (arjun + jsluice params)
-  * dirsearch hits     — endpoints that passed the status filter (200/401/403/500)
+  * dirsearch/ffuf hits— endpoints that passed the status filter (200/401/403/500)
   * high-value paths   — admin / login / api / graphql / upload / .env / .git / …
 
 Everything here is deterministic and unit-tested: ``score_targets`` is a
@@ -65,6 +65,7 @@ _PATH_HINTS: tuple[tuple[str, int, str], ...] = (
 
 _PARAM_SCORE = 300       # a URL carrying params = injection surface
 _DIRSEARCH_SCORE = 220   # passed dirsearch's status filter = exists + interesting
+_FFUF_SCORE = 220        # same signal from ffuf (auto-calibrated, so soft-404s are already gone)
 
 
 def _norm(url: str) -> str:
@@ -91,6 +92,7 @@ def score_targets(
     secrets: list[dict] | None = None,
     parameterized_urls: list[str] | None = None,
     dirsearch_urls: list[str] | None = None,
+    ffuf_urls: list[str] | None = None,
     extra_urls: list[str] | None = None,
     limit: int = 200,
 ) -> list[dict]:
@@ -123,6 +125,9 @@ def score_targets(
 
     for u in dirsearch_urls or []:
         _add(bucket, u, _DIRSEARCH_SCORE, "dirsearch hit")
+
+    for u in ffuf_urls or []:
+        _add(bucket, u, _FFUF_SCORE, "ffuf hit")
 
     for u in extra_urls or []:
         # extra_urls only contribute via their path hints, not a base score.
@@ -182,6 +187,7 @@ def build_priority_targets(output_dir: Path, domain: str, *, limit: int = 200) -
         secrets=secrets,
         parameterized_urls=read_lines(proc / "parameterized_urls.txt"),
         dirsearch_urls=read_lines(proc / "dirsearch_urls.txt"),
+        ffuf_urls=read_lines(proc / "ffuf_urls.txt"),
         extra_urls=(read_lines(proc / "jsluice_endpoints.txt")
                     + read_lines(proc / "jsluice_urls.txt")),
         limit=limit,

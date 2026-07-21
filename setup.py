@@ -4,15 +4,15 @@
 This script helps you get a fresh machine ready to run the framework. It:
 
   1. Verifies which external tools (subfinder, amass, chaos, dnsx, httpx,
-     katana, urlfinder, dirsearch, waymore, xnLinkFinder, arjun, nuclei, …)
-     are on ``$PATH`` and prints their versions.
+     katana, urlfinder, dirsearch, ffuf, waymore, xnLinkFinder, arjun,
+     nuclei, …) are on ``$PATH`` and prints their versions.
   2. Optionally installs missing tools via the platform's package manager
      (``brew`` on macOS, ``apt`` on Linux, ``go install`` for Go tools,
      ``pip3`` for Python tools).
   3. Clones ``danielmiessler/SecLists`` into ``<repo>/wordlists/SecLists``
      (i.e. the ``wordlists/`` folder right next to this script) so every
-     ``dirsearch.wordlists`` path in ``config.yml`` resolves out of the
-     box. Override with ``--wordlists-dir PATH`` to clone elsewhere.
+     ``dirsearch.wordlists`` / ``ffuf.wordlists`` path in ``config.yml``
+     resolves out of the box. Override with ``--wordlists-dir PATH``.
   4. Creates the ``outputs/`` directory used by every run.
   5. Prints a summary so you can see at a glance what is ready and what is
      missing.
@@ -171,6 +171,17 @@ TOOLS: dict[str, dict] = {
             "Windows": ["pip", "install", "xnLinkFinder"],
         },
     },
+    "ffuf": {
+        "label": "ffuf",
+        "category": "go",
+        # ffuf prints its banner on -V; -h also works but is noisier.
+        "version_args": [["-V"], ["-h"]],
+        "install": {
+            "Darwin": ["brew", "install", "ffuf"],
+            "Linux": ["go", "install", "-v",
+                      "github.com/ffuf/ffuf/v2@latest"],
+        },
+    },
     # Python-based recon tools
     "urlfinder": {
         "label": "urlfinder",
@@ -214,6 +225,7 @@ TOOLS: dict[str, dict] = {
 # Wordlists the framework expects out of the box.
 SECLISTS_PATHS = [
     "Discovery/Web-Content/raft-small-directories.txt",
+    "Discovery/Web-Content/raft-small-files.txt",
     "Discovery/Web-Content/uri-from-top-55-most-popular-apps.txt",
     "Discovery/Web-Content/Service-Specific",
 ]

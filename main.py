@@ -5,7 +5,7 @@ Usage:
   python3 main.py -d example.com --config config.yml
   python3 main.py -d example.com --resume
   python3 main.py -d example.com --dry-run
-  python3 main.py -d example.com --skip-nuclei --skip-dirsearch --skip-waymore --skip-arjun
+  python3 main.py -d example.com --skip-nuclei --skip-dirsearch --skip-ffuf --skip-waymore
 """
 from __future__ import annotations
 
@@ -24,6 +24,7 @@ from modules import (
     console,
     dirsearch as dirsearch_mod,
     dnsx as dnsx_mod,
+    ffuf as ffuf_mod,
     graphgen as graphgen_mod,
     httpx as httpx_mod,
     jsluice as jsluice_mod,
@@ -55,6 +56,7 @@ _STAGE_NOUN: dict[str, str] = {
     "httpx_alive":       "alive hosts",
     "content_discovery": "urls",
     "dirsearch":         "urls",
+    "ffuf":              "urls",
     "waymore":           "urls",
     "nuclei_default":    "findings",
     "url_merge":         "urls",
@@ -162,6 +164,7 @@ def main() -> int:
                    help="Print the plan and exit; never invoke external tools")
     p.add_argument("--skip-nuclei", action="store_true")
     p.add_argument("--skip-dirsearch", action="store_true")
+    p.add_argument("--skip-ffuf", action="store_true")
     p.add_argument("--skip-waymore", action="store_true")
     p.add_argument("--skip-arjun", action="store_true")
     p.add_argument("--skip-xnlinkfinder", action="store_true")
@@ -315,14 +318,15 @@ def main() -> int:
             prog.finish_phase(r, num=3)
             results.append(r)
 
-        # ---- 4. parallel: katana/urlfinder + dirsearch + waymore + nuclei default ----
-        prog.start_phase("content_discovery (and 3 others)", num=4)
+        # ---- 4. parallel: katana/urlfinder + dirsearch + ffuf + waymore + nuclei default ----
+        prog.start_phase("content_discovery (and 4 others)", num=4)
         from concurrent.futures import ThreadPoolExecutor
         par_results: dict[str, dict] = {}
         with prog.parallel(
-            ["content_discovery", "dirsearch", "waymore", "nuclei_default"], num=4,
+            ["content_discovery", "dirsearch", "ffuf", "waymore", "nuclei_default"],
+            num=4,
         ):
-            with ThreadPoolExecutor(max_workers=4) as pool:
+            with ThreadPoolExecutor(max_workers=5) as pool:
                 futures = {
                     pool.submit(_run_stage, "content_discovery", cd_mod.crawl,
                                 alive_file, output_dir, cfg,
@@ -331,6 +335,10 @@ def main() -> int:
                                 alive_file, output_dir, cfg,
                                 resume=args.resume, dry_run=False,
                                 skip=args.skip_dirsearch): "dirsearch",
+                    pool.submit(_run_stage, "ffuf", ffuf_mod.scan,
+                                alive_file, output_dir, cfg,
+                                resume=args.resume, dry_run=False,
+                                skip=args.skip_ffuf): "ffuf",
                     pool.submit(_run_stage, "waymore", waymore_mod.collect,
                                 domain, output_dir, cfg,
                                 resume=args.resume, dry_run=False,
@@ -732,6 +740,7 @@ def _print_plan(domain: str, output_dir: Path, cfg: dict, args: argparse.Namespa
         ("resume        ", args.resume),
         ("skip-nuclei   ", args.skip_nuclei),
         ("skip-dirsearch", args.skip_dirsearch),
+        ("skip-ffuf     ", args.skip_ffuf),
         ("skip-waymore  ", args.skip_waymore),
         ("skip-arjun    ", args.skip_arjun),
         ("color enabled ", console.is_enabled()),
@@ -744,8 +753,8 @@ def _print_plan(domain: str, output_dir: Path, cfg: dict, args: argparse.Namespa
         "  1  subdomain collection (subfinder + amass + chaos)",
         "  2  dnsx resolve",
         "  3  httpx alive check",
-        "  4  PARALLEL: katana/urlfinder + dirsearch + waymore + nuclei-default",
-        "  5  url_merge (crawler + dirsearch + waymore -> all_urls / js_urls / dynamic_urls)",
+        "  4  PARALLEL: katana/urlfinder + dirsearch + ffuf + waymore + nuclei-default",
+        "  5  url_merge (crawler + dirsearch + ffuf + waymore -> all_urls / js_urls / dynamic_urls)",
         "  6  PARALLEL: httpx url check + xnLinkFinder + jsluice -> re-merge",
         "  7  arjun on dynamic_urls (+ seed already-param + jsluice params)",
         "  8  nuclei endpoints on alive_urls (discovered)",
@@ -771,6 +780,7 @@ def _send_summary(
         f"• alive: `{counts.get('httpx_alive', 0)}`\n"
         f"• crawler URLs: `{counts.get('content_discovery', 0)}`\n"
         f"• dirsearch: `{counts.get('dirsearch', 0)}`\n"
+        f"• ffuf: `{counts.get('ffuf', 0)}`\n"
         f"• waymore: `{counts.get('waymore', 0)}`\n"
         f"• all URLs: `{counts.get('url_merge', 0)}`\n"
         f"• httpx urls: `{counts.get('httpx_urls', 0)}`\n"

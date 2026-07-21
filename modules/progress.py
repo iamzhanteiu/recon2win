@@ -215,6 +215,7 @@ _PHASE_NOUN: dict[str, str] = {
     "httpx_alive":       "alive hosts",
     "content_discovery": "urls",
     "dirsearch":         "urls",
+    "ffuf":              "urls",
     "waymore":           "urls",
     "nuclei_default":    "findings",
     "url_merge":         "urls",

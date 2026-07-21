@@ -128,6 +128,7 @@ def build_model(output_dir: Path, domain: str) -> tuple[list[dict], list[tuple[s
     add("alive", "alive hosts", "proc", L("alive.txt"))
     add("crawler", "crawler_urls", "proc", L("crawler_urls.txt"))
     add("dirsearch", "dirsearch", "proc", L("dirsearch_urls.txt"))
+    add("ffuf", "ffuf", "proc", L("ffuf_urls.txt"))
     add("waymore", "waymore", "proc", L("waymore_urls.txt"))
     add("all_urls", "all_urls", "proc", L("all_urls.txt"))
     add("url_subs", "url-derived subs", "proc", L("url_derived_subdomains.txt"))
@@ -162,10 +163,12 @@ def build_model(output_dir: Path, domain: str) -> tuple[list[dict], list[tuple[s
         ("resolved", "alive", "solid"),
         ("alive", "crawler", "solid"),
         ("alive", "dirsearch", "solid"),
+        ("alive", "ffuf", "solid"),
         ("alive", "nuclei_default", "solid"),
         ("domain", "waymore", "solid"),
         ("crawler", "all_urls", "solid"),
         ("dirsearch", "all_urls", "solid"),
+        ("ffuf", "all_urls", "solid"),
         ("waymore", "all_urls", "solid"),
         ("all_urls", "js_urls", "solid"),
         ("all_urls", "dynamic_urls", "solid"),

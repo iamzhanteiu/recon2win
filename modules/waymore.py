@@ -1,4 +1,4 @@
-"""waymore — stage 4.3: archived URLs and JS files.
+"""waymore — stage 4.4: archived URLs and JS files.
 
 waymore writes a single text file of URLs. We post-filter by:
   * file extension (sensitive list)

@@ -46,6 +46,7 @@ def fake_outputs(tmp_path: Path) -> Path:
     raw_sub = base / "raw" / "subdomain"
     raw_cd = base / "raw" / "content_discovery"
     raw_ds = base / "raw" / "dirsearch"
+    raw_ff = base / "raw" / "ffuf"
     raw_wm = base / "raw" / "waymore"
     raw_ar = base / "raw" / "arjun"
     proc = base / "processed"
@@ -53,7 +54,7 @@ def fake_outputs(tmp_path: Path) -> Path:
     fnd_end = base / "findings" / "endpoints"
     fnd_dyn = base / "findings" / "dynamic"
     logs = base / "logs"
-    for d in (raw_sub, raw_cd, raw_ds, raw_wm, raw_ar,
+    for d in (raw_sub, raw_cd, raw_ds, raw_ff, raw_wm, raw_ar,
               proc, fnd_def, fnd_end, fnd_dyn, logs):
         d.mkdir(parents=True, exist_ok=True)
 
@@ -72,6 +73,11 @@ def fake_outputs(tmp_path: Path) -> Path:
         "200   5B  https://example.com/.git/HEAD\n"
     )
     (raw_ds / "merged_wordlists.txt").write_text("/.env\n/.git\n/admin\n")
+    # raw/ffuf/
+    (raw_ff / "ffuf_raw.txt").write_text(
+        "200 https://example.com/admin\n301 https://example.com/api/\n"
+    )
+    (raw_ff / "merged_wordlists.txt").write_text("admin\napi\n")
     # raw/waymore/
     (raw_wm / "waymore_raw.txt").write_text("https://example.com/old/login\n")
     # raw/arjun/
@@ -103,6 +109,9 @@ def fake_outputs(tmp_path: Path) -> Path:
     )
     (proc / "dirsearch_urls.txt").write_text(
         "https://example.com/.env\nhttps://example.com/.git/HEAD\n"
+    )
+    (proc / "ffuf_urls.txt").write_text(
+        "https://example.com/admin\nhttps://example.com/api/\n"
     )
     (proc / "waymore_urls.txt").write_text("https://example.com/old/login\n")
     (proc / "all_urls.txt").write_text(
@@ -771,6 +780,9 @@ def test_render_html_uses_clickable_links(fake_outputs: Path):
         "../raw/dirsearch/dirsearch_raw.txt",
         "../raw/dirsearch/merged_wordlists.txt",
         "../processed/dirsearch_urls.txt",
+        "../raw/ffuf/ffuf_raw.txt",
+        "../raw/ffuf/merged_wordlists.txt",
+        "../processed/ffuf_urls.txt",
         "../raw/waymore/waymore_raw.txt",
         "../processed/waymore_urls.txt",
         "../processed/all_urls.txt",

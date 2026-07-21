@@ -1,4 +1,4 @@
-"""nuclei — stages 4.4 and 8.
+"""nuclei — stages 4.5 and 8.
 
 Used twice:
   1. default_scan(alive_file)            — full template set against alive hosts

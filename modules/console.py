@@ -40,6 +40,9 @@ _COLORS: dict[str, str] = {
     "bright_magenta": "\033[95m",
     "bright_cyan":    "\033[96m",
     "bright_white":   "\033[97m",
+    # 256-color extras — the 16 basic slots are all spoken for and
+    # every parallel stage needs its own hue to stay scannable.
+    "orange":         "\033[38;5;208m",
 }
 
 _STYLES: dict[str, str] = {
@@ -66,6 +69,7 @@ PHASE_COLORS: dict[str, str] = {
     "httpx_alive":        "bright_blue",
     "content_discovery":  "bright_magenta",
     "dirsearch":          "bright_yellow",
+    "ffuf":               "orange",
     "waymore":            "yellow",
     "nuclei_default":     "bright_red",
     "url_merge":          "white",
@@ -88,6 +92,7 @@ _PHASE_ORDER: list[str] = [
     "httpx_alive",
     "content_discovery",
     "dirsearch",
+    "ffuf",
     "waymore",
     "nuclei_default",
     "url_merge",

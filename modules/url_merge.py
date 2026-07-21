@@ -3,6 +3,7 @@
 Inputs:
   processed/crawler_urls.txt
   processed/dirsearch_urls.txt
+  processed/ffuf_urls.txt
   processed/waymore_urls.txt
 
 Outputs:
@@ -141,6 +142,7 @@ def merge(output_dir: Path, *, resume: bool = False, dry_run: bool = False) -> d
     files = [
         proc / "crawler_urls.txt",
         proc / "dirsearch_urls.txt",
+        proc / "ffuf_urls.txt",
         proc / "waymore_urls.txt",
     ]
 

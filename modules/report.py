@@ -294,6 +294,7 @@ VERSION_CMDS: list[tuple[str, list[str]]] = [
     ("xnlinkfinder", ["xnlinkfinder", "-h"]),
     ("urlfinder",  ["urlfinder", "--help"]),
     ("dirsearch",  ["dirsearch", "--help"]),
+    ("ffuf",       ["ffuf", "-V"]),
     ("waymore",    ["waymore", "-h"]),
     ("arjun",      ["arjun", "-h"]),
     ("go",         ["go", "version"]),
@@ -392,6 +393,9 @@ class ReportBuilder:
         # raw/dirsearch/
         ("raw/dirsearch/dirsearch_raw.txt",   "raw",  "dirsearch raw output"),
         ("raw/dirsearch/merged_wordlists.txt","raw",  "merged wordlists (deduped)"),
+        # raw/ffuf/ (plus one <host>.json report per fuzzed target)
+        ("raw/ffuf/ffuf_raw.txt",             "raw",  "ffuf hits (status + url)"),
+        ("raw/ffuf/merged_wordlists.txt",     "raw",  "ffuf merged wordlists (deduped)"),
         # raw/waymore/
         ("raw/waymore/waymore_raw.txt",     "raw",    "waymore raw output"),
         # raw/arjun/
@@ -404,6 +408,7 @@ class ReportBuilder:
         ("processed/alive_detail.json",  "processed", "httpx per-host JSON"),
         ("processed/crawler_urls.txt",   "processed", "crawler union"),
         ("processed/dirsearch_urls.txt", "processed", "dirsearch URL list"),
+        ("processed/ffuf_urls.txt",      "processed", "ffuf URL list"),
         ("processed/waymore_urls.txt",   "processed", "waymore URL list"),
         ("processed/all_urls.txt",       "processed", "merged normalised URLs"),
         ("processed/js_urls.txt",        "processed", "JS URLs (final)"),
@@ -467,6 +472,7 @@ class ReportBuilder:
             "arjun_params":      count_lines(proc / "arjun_params.txt"),
             "crawler_urls":      count_lines(proc / "crawler_urls.txt"),
             "dirsearch_urls":    count_lines(proc / "dirsearch_urls.txt"),
+            "ffuf_urls":         count_lines(proc / "ffuf_urls.txt"),
             "waymore_urls":      count_lines(proc / "waymore_urls.txt"),
             "xnlinkfinder_endpoints": count_lines(proc / "xnlinkfinder_endpoints.txt"),
             "xnlinkfinder_urls": count_lines(proc / "xnlinkfinder_urls.txt"),
@@ -766,6 +772,7 @@ class ReportBuilder:
         for label, key, rel in [
             ("katana + urlfinder (union)", "crawler_urls", "../processed/crawler_urls.txt"),
             ("dirsearch",                  "dirsearch_urls", "../processed/dirsearch_urls.txt"),
+            ("ffuf",                       "ffuf_urls", "../processed/ffuf_urls.txt"),
             ("waymore",                    "waymore_urls", "../processed/waymore_urls.txt"),
         ]:
             out.append(f"| {label} | `{c.get(key,0)}` | [{rel}]({rel}) |")
@@ -1057,6 +1064,7 @@ class ReportBuilder:
             ("Alive hosts",           "alive_hosts",           "../processed/alive.txt"),
             ("Crawler URLs (union)",  "crawler_urls",          "../processed/crawler_urls.txt"),
             ("dirsearch URLs",        "dirsearch_urls",        "../processed/dirsearch_urls.txt"),
+            ("ffuf URLs",             "ffuf_urls",             "../processed/ffuf_urls.txt"),
             ("waymore URLs",          "waymore_urls",          "../processed/waymore_urls.txt"),
             ("All URLs (merged)",     "all_urls",              "../processed/all_urls.txt"),
             ("JS URLs (final)",       "js_urls",               "../processed/js_urls.txt"),
@@ -1147,10 +1155,12 @@ class ReportBuilder:
             for label, key, rel in [
                 ("katana + urlfinder (union)", "crawler_urls",  "../processed/crawler_urls.txt"),
                 ("dirsearch",                  "dirsearch_urls","../processed/dirsearch_urls.txt"),
+                ("ffuf",                       "ffuf_urls",     "../processed/ffuf_urls.txt"),
                 ("waymore",                    "waymore_urls",  "../processed/waymore_urls.txt"),
                 ("raw katana output",          None,            "../raw/content_discovery/katana_urls.txt"),
                 ("raw urlfinder output",       None,            "../raw/content_discovery/urlfinder_urls.txt"),
                 ("raw dirsearch output",       None,            "../raw/dirsearch/dirsearch_raw.txt"),
+                ("raw ffuf output",            None,            "../raw/ffuf/ffuf_raw.txt"),
                 ("raw waymore output",         None,            "../raw/waymore/waymore_raw.txt"),
             ]
         )

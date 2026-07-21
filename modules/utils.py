@@ -51,6 +51,7 @@ def create_output_structure(domain: str, root: str = "outputs") -> Path:
                 subdomain/           # subfinder.txt, amass.txt, chaos.txt
                 content_discovery/   # katana_urls.txt, urlfinder_urls.txt
                 dirsearch/           # dirsearch_raw.txt, merged_wordlists.txt
+                ffuf/                # <host>.json, ffuf_raw.txt, merged_wordlists.txt
                 waymore/             # waymore_raw.txt
                 arjun/               # input_subset.txt
             processed/               # cleaned + merged artefacts, flat
@@ -67,6 +68,7 @@ def create_output_structure(domain: str, root: str = "outputs") -> Path:
         "raw/subdomain",
         "raw/content_discovery",
         "raw/dirsearch",
+        "raw/ffuf",
         "raw/waymore",
         "raw/arjun",
         "processed",
@@ -89,8 +91,8 @@ def raw_dir(output_dir: Path, stage: str) -> Path:
     accidentally write to the old flat ``raw/`` root. Raises if *stage*
     is not a known subfolder (catches typos at write time).
     """
-    valid = {"subdomain", "content_discovery", "dirsearch", "waymore", "arjun",
-             "nuclei_dynamic"}
+    valid = {"subdomain", "content_discovery", "dirsearch", "ffuf", "waymore",
+             "arjun", "nuclei_dynamic"}
     if stage not in valid:
         raise ValueError(
             f"unknown raw subfolder {stage!r} — valid options: {sorted(valid)}"

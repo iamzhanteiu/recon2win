@@ -162,6 +162,63 @@ dirsearch:
   # when no wordlists are configured.
   extensions: []
 
+# ---------- ffuf ----------
+# Stage 4.3 — runs in parallel with dirsearch, not instead of it. ffuf takes
+# ONE url per process (`-u <base>/FUZZ`), so this stage fans out over
+# alive.txt: `max_hosts` targets, `concurrency` ffuf processes at a time,
+# `timeout` seconds each.
+ffuf:
+  enabled: true
+  threads: 40                 # -t, per ffuf process
+  timeout: 1800               # per-host wall clock (seconds)
+  max_hosts: 50               # cap targets from alive.txt (0 = no cap)
+  concurrency: 3              # ffuf processes running at once
+  # ------------------------------------------------------------------
+  # Auto-calibration — the reason ffuf earns its slot next to dirsearch.
+  # Before fuzzing, ffuf requests a batch of random paths and derives
+  # filters from what comes back, so a host that answers 200 + identical
+  # body to everything (SPA fallback, soft-404, WAF landing page) yields
+  # 0 hits instead of the entire wordlist.
+  #   autocalibration         → -ac
+  #   autocalibration_per_host→ -ach  (recalibrate per host; implies -ac)
+  #   autocalibration_strategy→ -acs  (ffuf 2.x: "basic" | "advanced";
+  #                                    leave empty to use ffuf's default)
+  # ------------------------------------------------------------------
+  autocalibration: true
+  autocalibration_per_host: true
+  autocalibration_strategy: ""
+  # ------------------------------------------------------------------
+  # Recursive directory fuzzing — every matched directory is queued and
+  # fuzzed again, up to `recursion_depth` levels.
+  #
+  # IMPORTANT: ffuf spots a directory via the redirect a matched response
+  # points at, so `follow_redirects: true` (-r) breaks recursion — the
+  # redirect is consumed before ffuf can read it. Keep it false while
+  # recursion is on, and keep 301/302 in match_status or nothing ever
+  # gets queued for the next level.
+  #   recursion_strategy → -recursion-strategy ("default" | "greedy";
+  #                        greedy also recurses into non-directory hits)
+  # ------------------------------------------------------------------
+  recursion: true
+  recursion_depth: 2
+  recursion_strategy: ""
+  follow_redirects: false
+  rate: 0                     # -rate, requests/sec (0 = unlimited)
+  # -mc / -fc. Matchers run first, filters trim what survived.
+  #   200 exists · 301/302 needed for recursion · 401/403 exists but
+  #   gated · 405 wrong method (endpoint is real) · 500 often a sink
+  match_status: [200, 204, 301, 302, 307, 401, 403, 405, 500]
+  filter_status: [404, 429]
+  # Same resolution rules as dirsearch.wordlists: file or directory,
+  # `~` expanded, missing paths skipped with a warning, several files
+  # merged into one deduped list under raw/ffuf/merged_wordlists.txt.
+  wordlists:
+    - wordlists/SecLists/Discovery/Web-Content/raft-small-directories.txt
+    - wordlists/SecLists/Discovery/Web-Content/raft-small-files.txt
+  # -e, appended to every word (".php,.bak"). Dotted or bare both work.
+  # Multiplies the request count by len(extensions) + 1 — keep it short.
+  extensions: []
+
 # ---------- Waymore ----------
 waymore:
   enabled: true
