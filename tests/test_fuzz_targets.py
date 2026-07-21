@@ -261,3 +261,46 @@ def test_dirsearch_writes_deduped_target_file(tmp_path: Path, monkeypatch):
     assert seen[0].endswith("targets.txt")
     assert Path(seen[0]).read_text().strip().count("\n") == 0   # đúng 1 host
     assert res["extra"]["selection"]["deduped"] == 19
+
+
+def test_empty_selection_must_not_fall_back_to_full_alive_list(
+    tmp_path: Path, monkeypatch,
+):
+    """Bộ lọc loại hết → dừng, không được quay về alive.txt gốc.
+
+    Fallback kiểu đó làm ngược ý operator: bật skip_waf lại thành scan sạch
+    mọi host WAF — đúng thứ vừa bảo đừng đụng vào.
+    """
+    from modules import dirsearch
+    out = tmp_path / "out"
+    proc = out / "processed"
+    proc.mkdir(parents=True)
+    urls = ["https://a.example.com", "https://b.example.com"]
+    (proc / "alive.txt").write_text("\n".join(urls) + "\n")
+    (proc / "alive_detail.json").write_text(
+        json.dumps([_row(u, cdn_type="waf") for u in urls]))
+    wl = tmp_path / "wl.txt"
+    wl.write_text("admin\n")
+
+    called: list = []
+    monkeypatch.setattr(dirsearch.runner, "tool_available", lambda _b: True)
+    monkeypatch.setattr(
+        dirsearch.runner, "run",
+        lambda cmd, **kw: called.append(cmd) or {
+            "success": True, "stderr": "", "stdout": "", "missing_binary": False},
+    )
+    res = dirsearch.scan(
+        proc / "alive.txt", out,
+        {"dirsearch": {"wordlists": [str(wl)], "skip_waf": True}},
+    )
+    assert called == []                       # dirsearch không được chạy
+    assert res["status"] == "skipped"
+    assert res["extra"]["selection"]["waf_skipped"] == 2
+
+
+def test_waf_seen_reported_even_when_skipping():
+    urls = ["https://a.example.com"]
+    rows = [_row("https://a.example.com", cdn_type="waf")]
+    _, stats = select_targets(urls, rows, max_hosts=50, skip_waf=True)
+    assert stats["waf_seen"] == 1
+    assert stats["waf_skipped"] == 1

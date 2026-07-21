@@ -122,12 +122,12 @@ def select_targets(
     }
 
     candidates = all_urls
-    if skip_waf and by_url:
-        kept = [u for u in candidates if not is_waf(by_url.get(u, {}))]
-        stats["waf_skipped"] = len(candidates) - len(kept)
-        candidates = kept
-    elif by_url:
+    if by_url:
         stats["waf_seen"] = sum(1 for u in candidates if is_waf(by_url.get(u, {})))
+        if skip_waf:
+            kept = [u for u in candidates if not is_waf(by_url.get(u, {}))]
+            stats["waf_skipped"] = len(candidates) - len(kept)
+            candidates = kept
 
     if dedup and by_url:
         groups: dict[tuple, list[str]] = {}

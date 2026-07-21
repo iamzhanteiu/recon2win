@@ -331,8 +331,19 @@ def scan(
         dedup=bool(d_cfg.get("dedup_targets", True)),
         skip_waf=bool(d_cfg.get("skip_waf", False)),
     )
-    if targets:
-        alive_file = fuzz_targets.write_target_file(targets, raw_ds / "targets.txt")
+    # Tập rỗng nghĩa là bộ lọc đã loại hết (vd skip_waf=true và mọi host đều
+    # sau WAF) — phải dừng, KHÔNG được rơi về alive_file gốc. Fallback kiểu đó
+    # làm ngược đúng ý operator: bật skip_waf lại thành scan sạch mọi host WAF.
+    if not targets:
+        raw_out.write_text("")
+        proc_out.write_text("")
+        return make_result(
+            stage, "skipped", input_path=alive_file,
+            outputs=[raw_out, proc_out], count=0,
+            error="không còn target sau khi lọc (dedup/skip_waf/max_hosts)",
+            extra={"selection": sel_stats},
+        )
+    alive_file = fuzz_targets.write_target_file(targets, raw_ds / "targets.txt")
     if sel_stats.get("deduped") or sel_stats.get("capped"):
         print(console.phase_info_line(
             f"[dirsearch] {fuzz_targets.summary_line(sel_stats)}"))
