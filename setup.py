@@ -224,7 +224,8 @@ TOOLS: dict[str, dict] = {
 
 # Wordlists the framework expects out of the box.
 # Phải khớp với `dirsearch.wordlists` + `ffuf.wordlists` trong config.yml —
-# đây là danh sách `--verify` kiểm tra. Lệch nhau thì verify báo xanh trong
+# đây là danh sách `python3 setup.py` (không tham số = verify) kiểm tra.
+# Lệch nhau thì verify báo xanh trong
 # khi file config thật sự cần lại không được kiểm, đúng kiểu lỗi im lặng.
 SECLISTS_PATHS = [
     # ffuf (4.3) — directory, wordlist nhỏ vì recursion nhân nó lên

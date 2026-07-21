@@ -105,7 +105,7 @@ def test_expected_wordlist_paths_matches_catalogue():
 
 
 def test_seclists_paths_match_config_yml():
-    """Bất biến: `--verify` phải kiểm đúng thứ config.yml thật sự dùng.
+    """Bất biến: verify phải kiểm đúng thứ config.yml thật sự dùng.
 
     Lệch nhau thì verify báo xanh trong khi wordlist stage cần lại không hề
     được kiểm — đúng kiểu lỗi im lặng chỉ lộ ra khi đã chạy thật trên VPS.

@@ -10,7 +10,7 @@
 #   5. update nuclei templates
 #   6. create a .venv for recon2win's own deps (pyyaml, requests)
 #   7. symlink Kali's SecLists into the path config.yml expects
-#   8. run setup.py --verify to show what's installed
+#   8. run setup.py (no args = verify only) to show what's installed
 #
 # Review before running — it uses `sudo apt` and `go install`.
 # Run from the repo root:   bash setup_kali.sh
