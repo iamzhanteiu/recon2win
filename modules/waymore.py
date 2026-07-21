@@ -11,12 +11,18 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 from . import runner
-from .sensitive_ext import SENSITIVE_EXT
+from .sensitive_ext import SENSITIVE_EXT, SENSITIVE_FILES
 from .utils import make_result, raw_dir, read_lines, write_lines
 
 
 # All extensions we want to keep, with JS always included
 _KEEP_EXT = set(ext.lstrip(".") for ext in SENSITIVE_EXT) | {"js"}
+
+# Tên file đầy đủ (``.env``, ``docker-compose.yml``) không phải extension nên
+# không khớp được bằng ``endswith("." + ext)``. Từ khi SENSITIVE_EXT tách khỏi
+# SENSITIVE_FILES, thiếu tập này thì waymore sẽ vứt đúng những URL đáng giữ
+# nhất trong kho archive.
+_KEEP_FILES = set(f.lower().lstrip("/") for f in SENSITIVE_FILES)
 
 
 def _should_keep(url: str) -> bool:
@@ -26,6 +32,10 @@ def _should_keep(url: str) -> bool:
         return True
     for ext in _KEEP_EXT:
         if path.endswith("." + ext):
+            return True
+    stripped = path.lstrip("/")
+    for name in _KEEP_FILES:
+        if stripped == name or path.endswith("/" + name):
             return True
     return False
 

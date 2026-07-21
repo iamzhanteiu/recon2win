@@ -525,6 +525,71 @@ body echo lại path nên độ dài đổi mỗi request, `-ac` (lọc theo siz
 tay — thậm chí chính chuỗi thăm dò của calibration bị báo thành hit. Đặt
 `filter_regex: '"error"'` là sạch.
 
+### 6. Extension vs tên file — hai kênh khác nhau
+
+`modules/sensitive_ext.py` tách làm hai danh sách vì chúng đi theo hai
+đường hoàn toàn khác:
+
+| | Ví dụ | Đi qua | Sinh ra |
+|---|---|---|---|
+| `SENSITIVE_EXT` | `.bak` `.sql` `.tar.gz` | `-e` | `admin.bak` |
+| `SENSITIVE_FILES` | `.env` `.git/config` `docker-compose.yml` | wordlist (`-w`) | `/.env` |
+
+Trước đây cả hai nằm chung một list rồi đổ hết vào `-e`, nên dirsearch đi
+thử `admin..env` và `admin.docker-compose.yml` — còn `/.env`, `/.git/config`,
+`/.DS_Store` thì **không bao giờ được chạm tới**. Chế độ extension-fallback
+(chạy khi chưa cấu hình wordlist) vì thế không thể tìm ra bất kỳ dotfile
+nào, đúng nhóm file giá trị nhất khi đi săn.
+
+Giờ fallback dùng cả hai kênh cùng lúc: `-w raw/dirsearch/sensitive_files.txt`
+cộng `-e <extension thật>`.
+
+### 7. Ngân sách thời gian
+
+Hai stage có hai kiểu timeout khác nhau vì cách chạy khác nhau:
+
+```yaml
+ffuf:
+  timeout: 1800          # MỖI HOST
+  budget_seconds: 3600   # trần cho CẢ stage
+dirsearch:
+  timeout_per_host: 300  # ngân sách mỗi host
+  timeout: 3600          # trần cho cả stage
+```
+
+**ffuf** chạy một process mỗi host. Không có trần tổng thì worst case là
+`max_hosts / concurrency × timeout` = 50/3 × 1800 = **8.5 giờ**, trong khi
+3 stage còn lại của phase 4 đã xong từ lâu. Hết `budget_seconds` thì không
+khởi động target mới nữa; target đang chạy được để chạy nốt, và chúng
+không bị tính là thất bại.
+
+**dirsearch** quét các host trong `-l` tuần tự trong một process, nên một
+con số cố định là ngân sách chia đều: 3600s cho 50 host = 72s/host, gần
+như chắc chắn bị cắt giữa chừng. Giờ tính theo số target thật (sau dedup)
+rồi mới chặn trần — và in cảnh báo kèm số giây thực tế mỗi host khi trần
+bị chạm.
+
+### 8. Rate limit đối xứng
+
+`dirsearch.max_rate` (mặc định 30) đối xứng với `ffuf.rate`. Trước đây chỉ
+ffuf bị ghì còn dirsearch 30 thread bắn tự do vào cùng target — ghì một
+nửa thì vẫn ăn ban. Cờ `--max-rate` / `--delay` đã xác minh trên dirsearch
+0.4.3.
+
+### 9. Dedup cho các stage khác
+
+| Stage | Mặc định | Vì sao |
+|---|---|---|
+| dirsearch, ffuf | **bật** | bỏ bản sao chỉ mất thời gian |
+| content_discovery (katana) | **bật** | crawl bản sao cũng lãng phí y hệt |
+| nuclei_default | **tắt** | đánh đổi coverage — xem dưới |
+
+Với nuclei, dedup là đánh đổi coverage chứ không đơn thuần là tiết kiệm:
+hai host cùng trang chủ vẫn có thể khác nhau ở tầng sâu hơn, và bỏ sót một
+finding thật đắt hơn nhiều so với vài phút quét thừa. Bật bằng
+`nuclei.default.dedup_targets: true` khi bạn biết chắc mình đang nhìn
+wildcard.
+
 ### Còn lại: tech-aware wordlist
 
 `alive_detail.json` có field `tech` từ httpx (`["Cloudflare"]`, `PHP`,

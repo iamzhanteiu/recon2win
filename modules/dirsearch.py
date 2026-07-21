@@ -27,7 +27,7 @@ from pathlib import Path
 from typing import Iterable
 
 from . import console, fuzz_targets, runner
-from .sensitive_ext import SENSITIVE_EXT, to_dirsearch_flag
+from .sensitive_ext import SENSITIVE_EXT, to_dirsearch_flag, to_wordlist_lines
 from .utils import make_result, raw_dir, read_lines, write_lines
 
 
@@ -159,6 +159,8 @@ def _build_cmd(
     follow_redirects: bool = True,
     include_status: list[str] | None = None,
     exclude_status: list[str] | None = None,
+    max_rate: int = 0,
+    delay: float = 0,
 ) -> list[str]:
     """Build the dirsearch argv.
 
@@ -194,6 +196,15 @@ def _build_cmd(
         cmd.append("-r")
     if follow_redirects:
         cmd.append("--follow-redirects")
+
+    # Ghì tốc độ. Không có cái này thì ffuf bị giới hạn 30 req/s còn dirsearch
+    # 30 thread bắn tự do vào cùng target — ghì một nửa thì vẫn ăn ban.
+    # Cả hai cờ đã xác minh trên dirsearch 0.4.3: `--max-rate=RATE` (req/s)
+    # và `--delay=DELAY` (giây giữa các request).
+    if max_rate and int(max_rate) > 0:
+        cmd.append(f"--max-rate={int(max_rate)}")
+    if delay and float(delay) > 0:
+        cmd.append(f"--delay={delay}")
 
     # Status-code filtering. Both flags are optional — empty lists mean
     # "no filter". -i / -x are comma-separated status codes
@@ -288,6 +299,8 @@ def scan(
             follow_redirects=bool(d_cfg.get("follow_redirects", True)),
             include_status=d_cfg.get("include_status") or [],
             exclude_status=d_cfg.get("exclude_status") or [],
+            max_rate=int(d_cfg.get("max_rate", 0) or 0),
+            delay=float(d_cfg.get("delay", 0) or 0),
         )
         return make_result(
             stage, "skipped", input_path=alive_file,
@@ -349,7 +362,19 @@ def scan(
             f"[dirsearch] {fuzz_targets.summary_line(sel_stats)}"))
 
     threads = int(d_cfg.get("threads", 30))
-    timeout = int(d_cfg.get("timeout", 3600))
+    # dirsearch quét các host trong ``-l`` TUẦN TỰ trong một process, nên một
+    # con số timeout cố định là ngân sách chia đều cho tất cả: 3600s cho 50
+    # host = 72s/host, gần như chắc chắn bị cắt giữa chừng và mất các host
+    # cuối danh sách. Tính theo số target thật (đã dedup) rồi mới chặn trần.
+    per_host = int(d_cfg.get("timeout_per_host", 300))
+    ceiling = int(d_cfg.get("timeout", 3600))
+    wanted = per_host * max(1, len(targets))
+    timeout = max(60, min(ceiling, wanted))
+    if wanted > ceiling:
+        print(console.phase_info_line(
+            f"[dirsearch] {len(targets)} host × {per_host}s = {wanted}s vượt trần "
+            f"{ceiling}s → thực tế {timeout // max(1, len(targets))}s/host. "
+            f"Tăng dirsearch.timeout hoặc giảm max_hosts."))
     recursive = bool(d_cfg.get("recursive", True))
     combine = bool(d_cfg.get("combine", False))
     extensions = d_cfg.get("extensions")  # if None we fall back to SENSITIVE_EXT
@@ -358,11 +383,16 @@ def scan(
         d_cfg.get("wordlists", []) or [], missing_callback=print,
     )
 
-    # Fallback to the curated extension list when no extensions are configured
-    # AND no wordlists are configured. Operators who provide either an explicit
-    # extensions list OR wordlists are presumed to know what they want.
+    # Fallback khi chưa cấu hình gì: dùng CẢ HAI kênh.
+    #   * ``-e <SENSITIVE_EXT>``  → admin.bak, admin.sql, …
+    #   * ``-w <SENSITIVE_FILES>`` → /.env, /.git/config, /docker-compose.yml
+    # Trước đây chỉ có ``-e`` và cả tên file cũng bị nhét vào đó, nên dirsearch
+    # đi thử ``admin..env`` còn ``/.env`` thì không bao giờ được chạm tới.
+    fallback_wordlist: Path | None = None
     if not wl_paths and not extensions:
         extensions = SENSITIVE_EXT
+        fallback_wordlist = raw_ds / "sensitive_files.txt"
+        write_lines(fallback_wordlist, to_wordlist_lines())
 
     # dirsearch accepts only one ``-w`` flag. If we resolved multiple
     # wordlists (very common — one big raft-small-directories.txt
@@ -393,6 +423,12 @@ def scan(
                 )
             )
 
+    # Ở chế độ fallback, ``-w`` là danh sách file nhạy cảm và ``-e`` là
+    # extension — cần cả hai cùng lúc, nên combine phải bật.
+    if fallback_wordlist is not None:
+        wordlist_file = fallback_wordlist
+        combine = True
+
     cmd = _build_cmd(
         alive_file, raw_out, wordlist_file,
         extensions=extensions,
@@ -402,6 +438,8 @@ def scan(
         follow_redirects=bool(d_cfg.get("follow_redirects", True)),
         include_status=d_cfg.get("include_status") or [],
         exclude_status=d_cfg.get("exclude_status") or [],
+        max_rate=int(d_cfg.get("max_rate", 0) or 0),
+        delay=float(d_cfg.get("delay", 0) or 0),
     )
 
     r = runner.run(cmd, stage=stage, output_dir=output_dir, timeout=timeout)

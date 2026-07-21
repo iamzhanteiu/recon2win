@@ -39,6 +39,7 @@ from __future__ import annotations
 
 import json
 import re
+import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Iterable
@@ -46,7 +47,7 @@ from urllib.parse import urlsplit
 
 from . import console, fuzz_targets, runner
 from .dirsearch import _merge_wordlists, _resolve_wordlists
-from .sensitive_ext import SENSITIVE_EXT
+from .sensitive_ext import SENSITIVE_EXT, to_wordlist_lines
 from .utils import make_result, raw_dir, read_lines, write_lines
 
 
@@ -384,26 +385,42 @@ def scan(
         )
 
     wordlist, wl_paths, merge_stats = _cfg_wordlist(f_cfg, merged_wl_path)
-    # ffuf has no extension-only mode (there is nothing to append the
-    # extension *to* without a wordlist), so a run with no wordlists
-    # configured still needs words. The curated sensitive-extension list
-    # doubles as one: ffuf fuzzes ".env", ".git/config" and friends
-    # directly as paths.
+    # ffuf không có chế độ chỉ-extension (không có gì để nối extension vào
+    # nếu thiếu wordlist), nên khi chưa cấu hình wordlist ta tự dựng một cái
+    # từ SENSITIVE_FILES — đó là các path thật (``.env``, ``.git/config``),
+    # nối thẳng vào base URL. SENSITIVE_EXT đi kèm qua ``-e`` để phủ thêm
+    # ``<từ>.bak`` / ``<từ>.sql``.
     if wordlist is None and not extensions:
-        extensions = []
         wordlist = merged_wl_path
-        write_lines(merged_wl_path, ["." + e.lstrip(".") for e in SENSITIVE_EXT])
+        write_lines(merged_wl_path, to_wordlist_lines())
+        extensions = SENSITIVE_EXT
         merge_stats = {"files": 0, "path": str(merged_wl_path),
-                       "source": "sensitive_ext fallback"}
+                       "source": "sensitive_files fallback"}
 
     results: dict[str, list[tuple[int, str]]] = {}
     failures: list[str] = []
+    skipped_over_budget: list[str] = []
+
+    # ``timeout`` là ngân sách MỖI HOST. Không có trần tổng thì worst case là
+    # ``max_hosts / concurrency × timeout`` — với mặc định 50/3×1800 là 8.5
+    # giờ, trong khi 3 stage còn lại của phase 4 đã xong từ lâu và cả pipeline
+    # ngồi chờ. ``budget_seconds`` chặn việc khởi động target mới khi đã hết
+    # giờ; target đang chạy vẫn được để chạy nốt.
+    budget = int(f_cfg.get("budget_seconds", 3600) or 0)
+    deadline = time.monotonic() + budget if budget > 0 else None
 
     def _run_one(target: str) -> None:
+        if deadline is not None and time.monotonic() >= deadline:
+            skipped_over_budget.append(target)
+            return
         report_path = raw_ff / report_name(target)
+        # Không để một host đơn lẻ vượt quá phần ngân sách còn lại.
+        host_timeout = timeout
+        if deadline is not None:
+            host_timeout = max(30, min(timeout, int(deadline - time.monotonic())))
         r = runner.run(
             _build(target, wordlist), stage=stage, output_dir=output_dir,
-            timeout=timeout, log_name=stage,
+            timeout=host_timeout, log_name=stage,
         )
         # ffuf exits non-zero on a timeout or a dead host. That is one
         # target's problem — record it and keep the other hits.
@@ -429,9 +446,16 @@ def scan(
     write_lines(raw_out, raw_lines)
     n = write_lines(proc_out, urls)
 
-    # Every target failing means something systemic (bad wordlist, no
-    # network) — surface it as a failure instead of a silent 0 hits.
-    status = "failed" if len(failures) == len(capped) else "success"
+    if skipped_over_budget:
+        print(console.phase_info_line(
+            f"[ffuf] hết ngân sách {budget}s — bỏ qua "
+            f"{len(skipped_over_budget)} target còn lại"))
+
+    # Mọi target đều lỗi nghĩa là có gì đó hệ thống (wordlist hỏng, mất
+    # mạng) — báo failed thay vì im lặng trả 0 hit. Target bị bỏ vì hết
+    # ngân sách KHÔNG tính là lỗi: đó là quyết định có chủ ý.
+    attempted = len(capped) - len(skipped_over_budget)
+    status = "failed" if attempted and len(failures) == attempted else "success"
     return make_result(
         stage, status, input_path=alive_file,
         outputs=[raw_out, proc_out], count=n,
@@ -440,6 +464,8 @@ def scan(
             "targets": len(capped),
             "targets_total": len(targets),
             "failed_targets": len(failures),
+            "skipped_over_budget": len(skipped_over_budget),
+            "budget_seconds": budget,
             "selection": sel_stats,
             "wordlists": [str(p) for p in wl_paths],
             "merge": merge_stats,

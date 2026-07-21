@@ -99,6 +99,13 @@ content_discovery:
   urlfinder:
     enabled: true
     timeout: 1800
+  # Gom host trả về cùng một response trước khi crawl — crawl 200 host
+  # wildcard cùng phục vụ một app lãng phí y như fuzz chúng. max_hosts: 0 =
+  # không cap (crawl rẻ hơn fuzz nhiều nên mặc định không giới hạn số host).
+  dedup_targets: true
+  max_hosts: 0
+  skip_waf: false
+
   # gau — archived URLs (wayback/commoncrawl/otx/urlscan). Complements
   # waymore with a different provider mix; ``--subs`` spans all subdomains
   # of the target. Skipped gracefully if the gau binary is missing.
@@ -111,6 +118,12 @@ content_discovery:
 dirsearch:
   enabled: true
   threads: 30
+  # dirsearch quét các host trong -l TUẦN TỰ trong một process. `timeout` là
+  # TRẦN cho cả stage; ngân sách thật = timeout_per_host × số target (sau
+  # dedup). Trước đây chỉ có một con số cố định: 3600s cho 50 host = 72s/host,
+  # gần như chắc chắn bị cắt giữa chừng. Khi ngân sách mong muốn vượt trần,
+  # stage in cảnh báo kèm số giây thực tế mỗi host.
+  timeout_per_host: 300
   timeout: 3600
   # ------------------------------------------------------------------
   # Phân vai với ffuf (4.3) để không đào trùng cùng một cây thư mục:
@@ -135,6 +148,12 @@ dirsearch:
   dedup_targets: true
   max_hosts: 50
   skip_waf: false
+  # Ghì tốc độ — đối xứng với ffuf.rate. Không có nó thì ffuf bị giới hạn
+  # 30 req/s còn dirsearch 30 thread bắn tự do vào cùng target, ghì một nửa
+  # thì vẫn ăn ban. `--max-rate` = req/s, `--delay` = giây giữa các request
+  # (0 = tắt). Chỉnh theo policy req/s của chương trình.
+  max_rate: 30
+  delay: 0
   # ------------------------------------------------------------------
   # Status-code filtering (dirsearch v3.x — `-i` and `-x`).
   #   include_status: only show these status codes (empty = show all)
@@ -195,7 +214,12 @@ dirsearch:
 ffuf:
   enabled: true
   threads: 40                 # -t, per ffuf process
-  timeout: 1800               # per-host wall clock (seconds)
+  timeout: 1800               # ngân sách MỖI HOST (giây)
+  # Trần cho CẢ stage. Không có nó thì worst case là
+  # max_hosts / concurrency × timeout = 50/3 × 1800 = 8.5 giờ, trong khi 3
+  # stage còn lại của phase 4 đã xong từ lâu. Hết giờ thì không khởi động
+  # target mới nữa; target đang chạy được để chạy nốt.
+  budget_seconds: 3600
   max_hosts: 50               # cap SAU khi dedup + xếp hạng (0 = không cap)
   concurrency: 3              # ffuf processes running at once
   # Giống dirsearch — xem giải thích ở khối dirsearch phía trên.

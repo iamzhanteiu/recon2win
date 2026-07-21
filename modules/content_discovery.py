@@ -13,7 +13,7 @@ import tempfile
 from pathlib import Path
 from urllib.parse import urlsplit
 
-from . import runner
+from . import console, fuzz_targets, runner
 from .telegram import notify_stage_result
 from .utils import (
     make_result,
@@ -84,6 +84,23 @@ def crawl(
     cd_cfg = cfg.get("content_discovery", {})
     outputs: list[Path] = []
     all_urls: list[str] = []
+
+    # Cùng bước chọn target với hai stage fuzzing: crawl 200 host wildcard
+    # cùng phục vụ một app cũng lãng phí y như fuzz chúng. Tắt bằng
+    # ``content_discovery.dedup_targets: false``.
+    sel_stats: dict = {}
+    if cd_cfg.get("dedup_targets", True):
+        targets, sel_stats = fuzz_targets.load_targets(
+            alive_file, output_dir,
+            max_hosts=int(cd_cfg.get("max_hosts", 0)),   # 0 = không cap
+            dedup=True,
+            skip_waf=bool(cd_cfg.get("skip_waf", False)),
+        )
+        if targets and sel_stats.get("deduped"):
+            alive_file = fuzz_targets.write_target_file(
+                targets, raw_cd / "targets.txt")
+            print(console.phase_info_line(
+                f"[content_discovery] {fuzz_targets.summary_line(sel_stats)}"))
 
     # 4.1.a — katana
     if cd_cfg.get("katana", {}).get("enabled", True):
@@ -193,7 +210,7 @@ def crawl(
     result = make_result(
         stage, "success", input_path=alive_file,
         outputs=outputs + [crawler_txt, js_txt],
-        count=n_crawl, extra={"js_urls": n_js},
+        count=n_crawl, extra={"js_urls": n_js, "selection": sel_stats},
     )
 
     # stage-complete summary — only fires when URLs > 0

@@ -13,7 +13,7 @@ import json
 from pathlib import Path
 from typing import Optional
 
-from . import runner
+from . import console, fuzz_targets, runner
 from .utils import (
     findings_dir,
     make_result,
@@ -283,6 +283,23 @@ def default_scan(
             "nuclei_default", "skipped", input_path=alive_file,
             outputs=outputs, count=0, error="disabled in config",
         )
+    # Gom host trùng response giống hai stage fuzzing — nhưng MẶC ĐỊNH TẮT.
+    # Với fuzzing, bỏ qua bản sao chỉ mất thời gian; với quét lỗ hổng thì đó
+    # là đánh đổi coverage: hai host có cùng trang chủ vẫn có thể khác nhau ở
+    # tầng sâu hơn, và bỏ sót một finding thật đắt hơn nhiều so với vài phút
+    # quét thừa. Operator tự bật khi biết chắc mình đang nhìn wildcard.
+    if n_cfg.get("dedup_targets", False):
+        targets, sel_stats = fuzz_targets.load_targets(
+            alive_file, output_dir,
+            max_hosts=int(n_cfg.get("max_hosts", 0)),
+            dedup=True,
+        )
+        if targets and sel_stats.get("deduped"):
+            alive_file = fuzz_targets.write_target_file(
+                targets, fdir / "targets.txt")
+            print(console.phase_info_line(
+                f"[nuclei_default] {fuzz_targets.summary_line(sel_stats)}"))
+
     return _run(
         alive_file, "default", cfg, output_dir,
         severity=n_cfg.get("severity", SEV_ORDER),
