@@ -34,8 +34,11 @@ dist/
 *.log
 !logs/.gitkeep
 
-# Per-run outputs (kept local; one folder per scan target)
-outputs/
+# Per-run outputs (kept local; one folder per scan target). Ignore the
+# contents but keep the folder itself (via .gitkeep) so the layout is
+# visible on a fresh clone — a bare `outputs/` would also swallow the
+# .gitkeep, so we ignore `outputs/*` instead.
+outputs/*
 !outputs/.gitkeep
 
 # SecLists / wordlists clone target — populated by `setup.py --wordlists`.
@@ -53,3 +56,8 @@ wordlists/**/SecLists/
 # Local config overrides
 config.local.yml
 *.local.yml
+
+# Local scratch / WIP (kept out of the repo, not deliverables)
+parameters.txt
+demo_*.py
+OUTPUT_CLEANUP_GUIDE.md
