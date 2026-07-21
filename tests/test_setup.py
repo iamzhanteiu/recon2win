@@ -99,9 +99,30 @@ def test_expected_wordlist_paths_matches_catalogue():
     """The list of expected paths is what the framework ships in config.yml."""
     paths = expected_wordlist_paths()
     assert paths == SECLISTS_PATHS
-    assert "Discovery/Web-Content/raft-small-directories.txt" in paths
-    assert "Discovery/Web-Content/uri-from-top-55-most-popular-apps.txt" in paths
-    assert "Discovery/Web-Content/Service-Specific" in paths
+    assert "Discovery/Web-Content/common.txt" in paths
+    assert "Discovery/Web-Content/quickhits.txt" in paths
+    assert "Discovery/Web-Content/raft-small-files.txt" in paths
+
+
+def test_seclists_paths_match_config_yml():
+    """Bất biến: `--verify` phải kiểm đúng thứ config.yml thật sự dùng.
+
+    Lệch nhau thì verify báo xanh trong khi wordlist stage cần lại không hề
+    được kiểm — đúng kiểu lỗi im lặng chỉ lộ ra khi đã chạy thật trên VPS.
+    """
+    import yaml
+
+    cfg = yaml.safe_load(
+        (Path(__file__).resolve().parents[1] / "config.yml").read_text())
+    used = {
+        w.replace("wordlists/SecLists/", "")
+        for stage in ("dirsearch", "ffuf")
+        for w in (cfg[stage].get("wordlists") or [])
+    }
+    assert used == set(SECLISTS_PATHS), (
+        f"config.yml dùng {sorted(used)} nhưng setup.py kiểm "
+        f"{sorted(SECLISTS_PATHS)}"
+    )
 
 
 def test_verify_wordlists_marks_missing_paths(tmp_path: Path):
@@ -113,22 +134,22 @@ def test_verify_wordlists_marks_missing_paths(tmp_path: Path):
 def test_verify_wordlists_marks_existing_paths(tmp_path: Path):
     root = tmp_path / "SecLists"
     (root / "Discovery" / "Web-Content").mkdir(parents=True)
-    (root / "Discovery" / "Web-Content" / "raft-small-directories.txt").write_text("/admin\n")
-    (root / "Discovery" / "Web-Content" / "Service-Specific").mkdir()
+    (root / "Discovery" / "Web-Content" / "common.txt").write_text("/admin\n")
+    (root / "Discovery" / "Web-Content" / "quickhits.txt").write_text(".env\n")
     res = verify_wordlists(root)
-    assert res["Discovery/Web-Content/raft-small-directories.txt"] is True
-    assert res["Discovery/Web-Content/Service-Specific"] is True
-    assert res["Discovery/Web-Content/uri-from-top-55-most-popular-apps.txt"] is False
+    assert res["Discovery/Web-Content/common.txt"] is True
+    assert res["Discovery/Web-Content/quickhits.txt"] is True
+    assert res["Discovery/Web-Content/raft-small-files.txt"] is False
 
 
 def test_missing_wordlists_returns_only_missing(tmp_path: Path):
     root = tmp_path / "SecLists"
     (root / "Discovery" / "Web-Content").mkdir(parents=True)
-    (root / "Discovery" / "Web-Content" / "raft-small-directories.txt").write_text("/admin\n")
+    (root / "Discovery" / "Web-Content" / "common.txt").write_text("/admin\n")
     missing = missing_wordlists(root)
-    assert "Discovery/Web-Content/raft-small-directories.txt" not in missing
-    assert "Discovery/Web-Content/uri-from-top-55-most-popular-apps.txt" in missing
-    assert "Discovery/Web-Content/Service-Specific" in missing
+    assert "Discovery/Web-Content/common.txt" not in missing
+    assert "Discovery/Web-Content/quickhits.txt" in missing
+    assert "Discovery/Web-Content/raft-small-files.txt" in missing
 
 
 def test_verify_wordlists_expands_user(tmp_path: Path, monkeypatch):
@@ -136,9 +157,9 @@ def test_verify_wordlists_expands_user(tmp_path: Path, monkeypatch):
     monkeypatch.setenv("HOME", str(tmp_path))
     (tmp_path / "SecLists" / "Discovery" / "Web-Content").mkdir(parents=True)
     (tmp_path / "SecLists" / "Discovery" / "Web-Content"
-        / "raft-small-directories.txt").write_text("x")
+        / "common.txt").write_text("x")
     res = verify_wordlists(Path("~/SecLists"))
-    assert res["Discovery/Web-Content/raft-small-directories.txt"] is True
+    assert res["Discovery/Web-Content/common.txt"] is True
 
 
 # ----------------------------------------------------------------------
