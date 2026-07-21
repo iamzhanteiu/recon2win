@@ -15,7 +15,6 @@ import sys
 import time
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
 
 import yaml
 
@@ -25,6 +24,7 @@ from modules import (
     console,
     dirsearch as dirsearch_mod,
     dnsx as dnsx_mod,
+    graphgen as graphgen_mod,
     httpx as httpx_mod,
     jsluice as jsluice_mod,
     nuclei as nuclei_mod,
@@ -531,6 +531,11 @@ def main() -> int:
         delta = scandiff_mod.build_scan_diff(output_dir, domain)
         results.append(delta)
 
+        # ---- 10.post.c: provenance graph → report/graph.mmd + SVG in HTML ----
+        # One picture of the whole funnel with real counts on every node.
+        graph = graphgen_mod.build_output_graph(output_dir, domain)
+        results.append(graph)
+
     # Final Telegram message includes the HTML report path
     _send_summary("final", domain, results, cfg, output_dir, report_info=report_info)
 
@@ -546,6 +551,8 @@ def main() -> int:
     print(console.kv("priority    ", str(output_dir / "report" / "priority_targets.txt"),
                      value_color="bright_cyan"))
     print(console.kv("delta       ", str(output_dir / "report" / "delta.md"),
+                     value_color="bright_cyan"))
+    print(console.kv("graph       ", str(output_dir / "report" / "graph.mmd"),
                      value_color="bright_cyan"))
     print(console.kv("output dir  ", str(output_dir), value_color="bright_cyan"))
 
