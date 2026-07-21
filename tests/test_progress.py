@@ -9,12 +9,8 @@ Coverage:
 """
 from __future__ import annotations
 
-import os
-import sys
-from contextlib import redirect_stdout
 from io import StringIO
 
-import pytest
 
 from modules import progress as progress_mod
 

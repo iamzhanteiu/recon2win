@@ -21,7 +21,6 @@ thin I/O wrapper that reads the canonical files and writes the report.
 from __future__ import annotations
 
 from pathlib import Path
-from urllib.parse import urlsplit
 
 from .utils import load_json, make_result, read_lines
 

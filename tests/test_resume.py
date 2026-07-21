@@ -9,9 +9,8 @@ that `subdomain.collect()` honours the resume flag.
 """
 from pathlib import Path
 
-import pytest
 
-from modules import arjun, content_discovery, dirsearch, dnsx, httpx, nuclei, url_merge, waymore, xnlinkfinder
+from modules import dnsx, httpx, nuclei, url_merge
 from modules.utils import read_lines, write_lines
 
 

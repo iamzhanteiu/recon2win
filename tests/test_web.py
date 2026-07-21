@@ -9,10 +9,8 @@ without needing real tools installed.
 from __future__ import annotations
 
 import io
-import json
 import threading
 import time
-from pathlib import Path
 
 import pytest
 
@@ -66,7 +64,6 @@ def web_app(monkeypatch, tmp_path):
     # Replace _new_scan so it doesn't actually call Popen — tests
     # inject their own FakeProcess via the helper below.
     def make_scan(domain, args, *, script=None, returncode=0):
-        cmd = [wapp.sys.executable, str(wapp.MAIN_PY), "-d", domain] + list(args)
         fp = FakeProcess(script=script or [], returncode=returncode)
         fake_processes.append(fp)
         # Use the existing _new_scan machinery by swapping subprocess
@@ -134,7 +131,7 @@ def test_index_renders(client):
 # ----------------------------------------------------------------------
 def test_run_starts_scan_and_returns_id(client, web_app):
     wapp, make_scan, _ = web_app
-    scan_id = make_scan("example.com", [], script=["hello", "world"])
+    make_scan("example.com", [], script=["hello", "world"])
     r = client.post("/api/run",
                      json={"domain": "example.com", "args": []})
     assert r.status_code == 200

@@ -12,14 +12,12 @@ report module:
   * includes config snapshot, tool versions, and stage classifications
 """
 import json
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
 
-from modules import report as report_mod
 from modules.report import (
-    HIGH_VALUE_PATTERNS,
     ReportBuilder,
     ReportInputs,
     build_report,

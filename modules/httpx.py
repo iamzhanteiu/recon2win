@@ -17,7 +17,6 @@ from . import runner
 from .utils import (
     load_json,
     make_result,
-    read_lines,
     write_json,
     write_lines,
 )

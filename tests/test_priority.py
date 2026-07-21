@@ -130,7 +130,7 @@ def test_build_reads_files_and_writes_report(tmp_path: Path):
     assert out.exists()
     body = out.read_text()
     # db.sql (high + sql dump path) should rank first
-    first_line = [l for l in body.splitlines() if l.startswith("[")][0]
+    first_line = [ln for ln in body.splitlines() if ln.startswith("[")][0]
     assert "db.sql" in first_line
 
 

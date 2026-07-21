@@ -26,7 +26,6 @@ from __future__ import annotations
 
 import urllib.request
 from pathlib import Path
-from typing import Iterable
 
 from . import runner
 from .utils import (

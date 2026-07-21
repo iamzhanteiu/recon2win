@@ -11,7 +11,6 @@ from pathlib import Path
 
 import pytest
 
-import setup as setup_mod
 from setup import (
     SECLISTS_PATHS,
     TOOLS,

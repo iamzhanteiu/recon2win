@@ -43,7 +43,6 @@ _PROJECT_ROOT = _Path(__file__).resolve().parent
 if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
 import platform
-import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -543,7 +542,7 @@ def print_summary(summary: dict, *, color: bool = True) -> int:
         else:
             print(f"  {_red('✗', color)} {w['path']}  (will be skipped at runtime)")
 
-    print(f"\n[ Output directory ]")
+    print("\n[ Output directory ]")
     print(f"  {_green('✓', color)} {summary['output_dir']}/")
 
     print("\n[ Next steps ]")

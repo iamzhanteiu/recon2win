@@ -10,7 +10,6 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import pytest
 
 from modules import nuclei as nuclei_mod
 
@@ -28,7 +27,6 @@ def _fake_run_for_nuclei(cmd, **kw):
 
 def _nuclei_cmd(cfg):
     """Build the nuclei argv with cfg as the user-supplied config."""
-    from modules.nuclei import _run as nuclei_run_inner
     # We can't easily call _run() directly (it expects a real file path
     # for the input and writes outputs). Instead, replicate the cmd
     # construction logic so the test stays focused on the flag.

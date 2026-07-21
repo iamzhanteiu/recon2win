@@ -175,7 +175,6 @@ def test_returns_post_return_value():
 # ======================================================================
 # notify_phase_complete — per-stage notifications
 # ======================================================================
-from modules.telegram import notify_phase_complete
 
 
 def _cfg_pp(enabled: bool = True, per_phase: bool = True) -> dict:

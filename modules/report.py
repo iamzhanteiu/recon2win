@@ -29,9 +29,9 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from html import escape
 from pathlib import Path
-from typing import Any, Callable, Iterable, Optional
+from typing import Any, Iterable, Optional
 
-from .utils import load_json, now_iso, read_lines, write_json
+from .utils import now_iso, read_lines, write_json
 
 
 # ----------------------------------------------------------------------
@@ -441,7 +441,6 @@ class ReportBuilder:
     def collect(self) -> dict:
         i = self.inputs
         proc = i.output_dir / "processed"
-        raw = i.output_dir / "raw"
         findings = i.output_dir / "findings"
 
         # file inventory — every referenced file with presence flag

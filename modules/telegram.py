@@ -9,7 +9,6 @@ We try to be a good citizen:
 """
 from __future__ import annotations
 
-import json
 import time
 from html import escape
 from pathlib import Path

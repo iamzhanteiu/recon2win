@@ -7,7 +7,6 @@ waymore writes a single text file of URLs. We post-filter by:
 from __future__ import annotations
 
 import os
-import re
 from pathlib import Path
 from urllib.parse import urlparse
 

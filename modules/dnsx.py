@@ -20,7 +20,6 @@ from .utils import (
     load_json,
     make_result,
     prioritize_subdomains,
-    read_lines,
     write_json,
     write_lines,
 )

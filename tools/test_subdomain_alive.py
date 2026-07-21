@@ -48,7 +48,6 @@ from modules import (  # noqa: E402
 )
 from modules.utils import (  # noqa: E402
     create_output_structure,
-    prioritize_subdomains,
     read_lines,
 )
 
@@ -228,13 +227,13 @@ def main() -> int:
 
     sub_result = run_subdomain(args.domain, output_dir, cfg, resume=resume)
     if sub_result["count"] == 0:
-        print(f"⚠  0 subdomains — nothing to resolve. Aborting.")
+        print("⚠  0 subdomains — nothing to resolve. Aborting.")
         return 1
 
     subdomains_file = output_dir / "processed" / "subdomains.txt"
     dnsx_result = run_dnsx(subdomains_file, output_dir, cfg, resume=resume)
     if dnsx_result["count"] == 0:
-        print(f"⚠  0 resolved — nothing to probe. Aborting.")
+        print("⚠  0 resolved — nothing to probe. Aborting.")
         return 1
 
     resolved_file = output_dir / "processed" / "resolved.txt"

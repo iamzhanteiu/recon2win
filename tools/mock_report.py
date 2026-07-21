@@ -23,7 +23,6 @@ import subprocess
 import sys
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Any
 
 # Allow running as a script from the project root.
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -485,17 +484,17 @@ def populate(output_dir: Path, domain: str) -> dict:
     cmd_lines = [
         f"[2026-06-23T10:00:00Z] [subdomain] subfinder -d {domain} -all -silent -o raw/subdomain/subfinder.txt",
         f"[2026-06-23T10:00:05Z] [subdomain] amass enum -passive -d {domain} -o raw/subdomain/amass.txt",
-        f"[2026-06-23T10:00:10Z] [dnsx] dnsx -l processed/subdomains.txt -json -resp -o processed/resolved_detail.json",
-        f"[2026-06-23T10:00:14Z] [httpx_alive] httpx -l processed/resolved.txt -json -o processed/alive_detail.json",
-        f"[2026-06-23T10:00:22Z] [content_discovery_katana] katana -list processed/alive.txt -depth 3 -silent",
-        f"[2026-06-23T10:00:47Z] [content_discovery_urlfinder] urlfinder -i processed/alive.txt -o raw/content_discovery/urlfinder_urls.txt",
-        f"[2026-06-23T10:01:18Z] [dirsearch] dirsearch -l processed/alive.txt -w raw/dirsearch/merged_wordlists.txt",
-        f"[2026-06-23T10:01:49Z] [nuclei_default] nuclei -l processed/alive.txt -severity critical,high,medium,low,info",
-        f"[2026-06-23T10:03:17Z] [url_merge] merging crawler + dirsearch + waymore into processed/all_urls.txt",
-        f"[2026-06-23T10:03:25Z] [httpx_urls] httpx -l processed/all_urls.txt -json",
+        "[2026-06-23T10:00:10Z] [dnsx] dnsx -l processed/subdomains.txt -json -resp -o processed/resolved_detail.json",
+        "[2026-06-23T10:00:14Z] [httpx_alive] httpx -l processed/resolved.txt -json -o processed/alive_detail.json",
+        "[2026-06-23T10:00:22Z] [content_discovery_katana] katana -list processed/alive.txt -depth 3 -silent",
+        "[2026-06-23T10:00:47Z] [content_discovery_urlfinder] urlfinder -i processed/alive.txt -o raw/content_discovery/urlfinder_urls.txt",
+        "[2026-06-23T10:01:18Z] [dirsearch] dirsearch -l processed/alive.txt -w raw/dirsearch/merged_wordlists.txt",
+        "[2026-06-23T10:01:49Z] [nuclei_default] nuclei -l processed/alive.txt -severity critical,high,medium,low,info",
+        "[2026-06-23T10:03:17Z] [url_merge] merging crawler + dirsearch + waymore into processed/all_urls.txt",
+        "[2026-06-23T10:03:25Z] [httpx_urls] httpx -l processed/all_urls.txt -json",
         f"[2026-06-23T10:03:30Z] [xnlinkfinder] xnlinkfinder -i https://{domain}/static/app.js",
-        f"[2026-06-23T10:04:15Z] [arjun] arjun -i processed/dynamic_urls.txt -o processed/arjun_params.txt",
-        f"[2026-06-23T10:04:56Z] [nuclei_dynamic] nuclei -l processed/parameterized_urls.txt -tags sqli,xss,ssrf",
+        "[2026-06-23T10:04:15Z] [arjun] arjun -i processed/dynamic_urls.txt -o processed/arjun_params.txt",
+        "[2026-06-23T10:04:56Z] [nuclei_dynamic] nuclei -l processed/parameterized_urls.txt -tags sqli,xss,ssrf",
     ]
     (logs / "commands.log").write_text("\n".join(cmd_lines) + "\n")
     (logs / "stages.json").write_text(json.dumps([], indent=2))

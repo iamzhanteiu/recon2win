@@ -19,7 +19,6 @@ terminal". For real-world usage, run behind a reverse proxy with auth.
 """
 from __future__ import annotations
 
-import os
 import subprocess
 import sys
 import threading

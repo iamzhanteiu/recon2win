@@ -12,7 +12,6 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-import pytest
 
 # Add tools/ to sys.path so we can import dedup_urls.py
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "tools"))

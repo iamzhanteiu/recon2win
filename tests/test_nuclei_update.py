@@ -1,7 +1,6 @@
 """Tests for nuclei.update_templates — refresh templates before scanning."""
 from __future__ import annotations
 
-from pathlib import Path
 
 from modules import nuclei as nuclei_mod
 from modules.utils import create_output_structure

@@ -9,11 +9,8 @@ Covers:
 """
 from __future__ import annotations
 
-import json
-import sys
 from pathlib import Path
 
-import pytest
 
 from modules import arjun
 from modules.arjun import _score

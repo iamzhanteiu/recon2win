@@ -145,8 +145,10 @@ def main() -> int:
         return 0
 
     print("Sending 3 test messages (1s between each so the chat stays readable)…\n")
-    r1 = _smoke_test(tg_cfg);        time.sleep(1)
-    r2 = _finding_test(tg_cfg);      time.sleep(1)
+    r1 = _smoke_test(tg_cfg)
+    time.sleep(1)
+    r2 = _finding_test(tg_cfg)
+    time.sleep(1)
     r3 = _stage_result_test(tg_cfg)
 
     print()

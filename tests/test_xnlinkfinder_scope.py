@@ -6,7 +6,6 @@ host (the old bug silently dropped links from other subdomains).
 """
 from __future__ import annotations
 
-from pathlib import Path
 
 from modules import xnlinkfinder as xf
 from modules.utils import create_output_structure, write_lines
