@@ -18,6 +18,7 @@ API docs: https://api.hackerone.com/getting-started-hacker-api/
 from __future__ import annotations
 
 import os
+import re
 from typing import Optional
 from urllib.parse import urlsplit
 
@@ -153,9 +154,8 @@ def _asset_to_host(asset_type: str, identifier: str) -> str:
     if not ident:
         return ""
     if asset_type == "WILDCARD":
-        if ident.startswith("*."):
-            ident = ident[2:]
-        ident = ident.lstrip(".")
+        # "*.example.com" → "example.com"; also nested "*.*.example.com".
+        ident = re.sub(r"^(?:\*\.)+", "", ident).lstrip(".")
     if "://" not in ident:
         ident = "http://" + ident  # give urlsplit a scheme to parse
     return (urlsplit(ident).hostname or "").lower()

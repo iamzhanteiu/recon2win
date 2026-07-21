@@ -28,6 +28,11 @@ def validate_domain(domain: str) -> str:
     # strip scheme / path if the user pastes a URL
     d = re.sub(r"^https?://", "", d)
     d = d.split("/", 1)[0]
+    # Strip leading wildcard labels. HackerOne WILDCARD scope is written as
+    # "*.example.com"; recon runs against the registrable root, so the "*."
+    # prefix is meaningless to the pipeline (and would fail the regex).
+    # Handles nested wildcards like "*.*.example.com" too.
+    d = re.sub(r"^(?:\*\.)+", "", d)
     if not DOMAIN_RE.match(d):
         raise ValueError(f"invalid domain: {domain!r}")
     return d
