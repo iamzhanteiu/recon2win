@@ -151,10 +151,11 @@ def main() -> int:
                         "--h1-program (the target comes from the chosen H1 scope).")
     p.add_argument("--config", default="config.yml", help="Path to YAML config")
     p.add_argument("--h1-list", action="store_true",
-                   help="List your HackerOne programs and exit")
+                   help="Browse your HackerOne programs, pick one, then pick an "
+                        "in-scope root and recon it (lists & exits when piped)")
     p.add_argument("--h1-program", metavar="HANDLE",
-                   help="Pull in-scope roots from a HackerOne program handle and "
-                        "pick one to recon (MVP: single root)")
+                   help="Skip the program picker: pull in-scope roots for this "
+                        "handle, pick one, and recon it")
     p.add_argument("--resume", action="store_true",
                    help="Skip stages whose expected outputs already exist")
     p.add_argument("--dry-run", action="store_true",
@@ -185,20 +186,28 @@ def main() -> int:
     cfg = _load_config(cfg_path)
 
     # ---- HackerOne integration (optional) ----
-    # --h1-list just prints programs and exits; --h1-program pulls the
-    # in-scope roots and lets the operator pick one to become the target.
+    # One seamless flow: --h1-list lists your programs, lets you pick one,
+    # then picks an in-scope root and drops straight into recon. --h1-program
+    # skips the program picker (you already know the handle). Either way the
+    # chosen root becomes the recon target, exactly like -d DOMAIN.
+    handle: str | None = args.h1_program
     if args.h1_list:
-        return _h1_list(cfg)
+        handle, rc = _h1_choose_program(cfg)
+        # No handle chosen: either an error (rc=2) or a benign list-and-quit
+        # / non-interactive listing (rc=0). Nothing to recon → exit.
+        if handle is None:
+            return rc
 
-    if args.h1_program:
-        raw_domain = _h1_pick_root(cfg, args.h1_program)
+    if handle:
+        raw_domain = _h1_pick_root(cfg, handle)
         if raw_domain is None:
             return 2
     elif args.domain:
         raw_domain = args.domain
     else:
         print("[!] no target: pass -d DOMAIN, or --h1-program HANDLE, "
-              "or --h1-list to browse your HackerOne programs", file=sys.stderr)
+              "or --h1-list to browse and pick a HackerOne program",
+              file=sys.stderr)
         return 2
 
     try:
@@ -614,26 +623,69 @@ def _load_config(cfg_path: Path) -> dict:
 # ----------------------------------------------------------------------
 # HackerOne helpers
 # ----------------------------------------------------------------------
-def _h1_list(cfg: dict) -> int:
-    """Print the operator's HackerOne programs and exit."""
+def _prompt_index(count: int, prompt: str, *, default: int | None) -> int | None:
+    """Read a 1-based selection from stdin and return the 0-based index.
+
+    ``default`` is returned for empty input / EOF (pass ``None`` to make an
+    empty answer mean "abort", or ``0`` to default to the first item).
+    Returns ``None`` on an invalid or out-of-range answer.
+    """
+    try:
+        choice = input(prompt).strip()
+    except EOFError:
+        choice = ""
+    if not choice:
+        return default
+    try:
+        idx = int(choice) - 1
+    except ValueError:
+        print(f"[!] invalid choice: {choice!r}", file=sys.stderr)
+        return None
+    if not (0 <= idx < count):
+        print(f"[!] choice out of range: {choice}", file=sys.stderr)
+        return None
+    return idx
+
+
+def _h1_choose_program(cfg: dict) -> tuple[str | None, int]:
+    """List the operator's HackerOne programs and (in a TTY) pick one to recon.
+
+    Returns ``(handle, exit_code)``:
+      * ``(handle, 0)``  — a program was chosen; recon it.
+      * ``(None, 0)``    — nothing to recon on purpose: listed & quit, or a
+                           non-interactive shell (piped) so we just print the
+                           list + hint and let the caller exit cleanly.
+      * ``(None, 2)``    — an error (bad credentials / API failure).
+    """
     from modules import hackerone as h1
     try:
         user, token = h1.get_credentials(cfg)
         programs = h1.list_programs(user, token)
     except h1.H1Error as e:
         print(f"[!] {e}", file=sys.stderr)
-        return 2
+        return None, 2
     if not programs:
         print("[!] no programs returned (check your API token / program access).")
-        return 0
+        return None, 0
     print(console.phase_header("hackerone programs"))
-    for pr in programs:
-        print(f"  {pr['handle']:<32} {pr['name']}")
-    print(
-        f"\n{len(programs)} program(s). Recon one with: "
-        f"python3 main.py --h1-program <handle>"
+    for i, pr in enumerate(programs, 1):
+        print(f"  {i:>2}. {pr['handle']:<32} {pr['name']}")
+
+    # Piped / non-interactive: keep the classic list-and-exit behaviour so
+    # scripts can still enumerate programs without blocking on input().
+    if not sys.stdin.isatty():
+        print(f"\n{len(programs)} program(s). Recon one with: "
+              f"python3 main.py --h1-program <handle>")
+        return None, 0
+
+    idx = _prompt_index(
+        len(programs),
+        f"\nPick a program to recon [1-{len(programs)}] (Enter to quit): ",
+        default=None,
     )
-    return 0
+    if idx is None:
+        return None, 0
+    return programs[idx]["handle"], 0
 
 
 def _h1_pick_root(cfg: dict, handle: str) -> str | None:
@@ -655,20 +707,15 @@ def _h1_pick_root(cfg: dict, handle: str) -> str | None:
     print(console.phase_header(f"in-scope roots — {handle}"))
     for i, d in enumerate(roots, 1):
         print(f"  {i:>2}. {d}")
-    try:
-        choice = input(f"\nPick a target [1-{len(roots)}] (default 1): ").strip()
-    except EOFError:
-        choice = ""
-    if not choice:
-        idx = 0
-    else:
-        try:
-            idx = int(choice) - 1
-        except ValueError:
-            print(f"[!] invalid choice: {choice!r}", file=sys.stderr)
-            return None
-    if not (0 <= idx < len(roots)):
-        print(f"[!] choice out of range: {choice}", file=sys.stderr)
+    # A single in-scope root needs no prompt — just recon it.
+    if len(roots) == 1:
+        return roots[0]
+    idx = _prompt_index(
+        len(roots),
+        f"\nPick a target [1-{len(roots)}] (default 1): ",
+        default=0,
+    )
+    if idx is None:
         return None
     return roots[idx]
 
