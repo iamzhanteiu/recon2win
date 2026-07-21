@@ -175,6 +175,22 @@ def safe_append(path: Path, line: str) -> None:
 # ----------------------------------------------------------------------
 # Result factory — every stage must return a dict shaped like this.
 # ----------------------------------------------------------------------
+def filter_existing_outputs(outputs: Optional[List[Path | str]]) -> List[str]:
+    """Filter output paths down to only those that exist on disk.
+
+    Removes "not found" files, keeping the order stable.
+    Returns a list of string paths.
+    """
+    if not outputs:
+        return []
+    existing: List[str] = []
+    for p in outputs:
+        path = Path(p)
+        if path.exists():
+            existing.append(str(p))
+    return existing
+
+
 def make_result(
     stage: str,
     status: str,
@@ -183,12 +199,25 @@ def make_result(
     count: int = 0,
     error: Optional[str] = None,
     extra: Optional[dict] = None,
+    filter_outputs: bool = True,
 ) -> dict:
+    """Create a stage result dict.
+
+    By default (filter_outputs=True), only includes files that actually exist
+    on disk. Set filter_outputs=False to include all listed paths (old behavior).
+    This keeps the output log clean: no "file not found" noise in reports.
+    """
+    output_list = outputs or []
+    if filter_outputs:
+        output_list = filter_existing_outputs(output_list)
+    else:
+        output_list = [str(p) for p in output_list]
+
     res: dict[str, Any] = {
         "stage": stage,
         "status": status,
         "input": str(input_path) if input_path else None,
-        "outputs": [str(p) for p in (outputs or [])],
+        "outputs": output_list,
         "count": count,
         "error": error,
     }

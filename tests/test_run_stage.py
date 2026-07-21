@@ -10,13 +10,9 @@ we don't have to install any of the real tools.
 """
 from __future__ import annotations
 
-import io
-import sys
-from contextlib import redirect_stdout
 from pathlib import Path
 from unittest.mock import patch
 
-import pytest
 
 from main import _run_stage
 from modules.utils import make_result
@@ -36,6 +32,13 @@ def _fake_stage(
     if outputs is None:
         outputs = [output_dir / "processed" / "result.txt",
                   output_dir / "raw" / "stage" / "out.txt"]
+    # make_result() filters out output paths that don't exist on disk, so a
+    # realistic stage must actually create its files. Touch them here so the
+    # paths survive into the result and get printed/notified.
+    for p in outputs:
+        p = Path(p)
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.touch()
     return make_result(
         "fake_stage", status,
         input_path=input_path,
