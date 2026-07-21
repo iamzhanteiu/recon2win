@@ -166,6 +166,7 @@ recon-agent/
 │   ├── content_discovery.py  # Stage 4.1
 │   ├── dirsearch.py       # Stage 4.2
 │   ├── ffuf.py            # Stage 4.3 (-ac/-ach + recursive dirs)
+│   ├── fuzz_targets.py    # Chọn host fuzz (dedup response + rank + cap)
 │   ├── waymore.py         # Stage 4.4
 │   ├── url_merge.py       # Stage 5 (+ 6.post re-merge)
 │   ├── xnlinkfinder.py    # Stage 6.2 (regex JS link extraction)
@@ -196,7 +197,7 @@ outputs/<domain>/
 │   ├── subdomain/                      # subfinder.txt, amass.txt, chaos.txt
 │   ├── puredns/                        # resolvers.txt (validation resolver list)
 │   ├── content_discovery/              # katana_urls.txt, urlfinder_urls.txt, gau_urls.txt
-│   ├── dirsearch/                      # merged_wordlists.txt
+│   ├── dirsearch/                      # merged_wordlists.txt, targets.txt
 │   ├── ffuf/                           # <host>.json, ffuf_raw.txt, merged_wordlists.txt
 │   ├── waymore/                        # waymore_raw.txt
 │   ├── jsluice/                        # NNNN.js (fetched JS, one per URL)
@@ -454,6 +455,81 @@ target gets its own `raw/ffuf/<host>.json`; the hits are merged into
 `processed/ffuf_urls.txt` and flow into `all_urls.txt` from there.
 
 Turn it off with `--skip-ffuf` for one run, or `enabled: false` for good.
+
+## Tối ưu fuzzing — không bắn trùng, không ăn ban
+
+Hai stage fuzzing (dirsearch 4.2 + ffuf 4.3) dùng chung
+`modules/fuzz_targets.py` để chọn host, và được phân vai để không đào
+trùng nhau.
+
+### 1. Gom host trả về cùng một response
+
+Wildcard DNS là chuyện thường: `*.example.com` trỏ về một load balancer,
+httpx báo 200 cho cả 200 host, và nếu cứ thế fuzz thì wordlist bị bắn lại
+200 lần vào **cùng một ứng dụng**.
+
+`alive_detail.json` của httpx đã có sẵn thứ cần để phát hiện —
+`status_code` / `title` / `webserver` / `words` / `lines`. Host nào cùng
+vân tay đó thì gom một nhóm, chỉ fuzz một đại diện:
+
+```
+200 alive -199 trùng response → 1 target
+```
+
+Cố tình **không** dùng `content_length` làm khoá: chỉ cần một nonce CSRF
+hay timestamp trong HTML là byte count lệch, gom nhóm chính xác sẽ hỏng.
+`words`/`lines` chịu được nhiễu đó. Host thiếu dữ liệu để tính vân tay
+được coi là **duy nhất** — thà fuzz thừa còn hơn bỏ sót một app thật.
+
+Đại diện của nhóm chọn theo `score_subdomain`, nên `admin.example.com`
+thắng `cdn-assets-3.example.com` khi cả hai phục vụ cùng nội dung.
+
+### 2. Dedup TRƯỚC, cap SAU
+
+Thứ tự này quan trọng. Có 60 bản sao + 3 app thật, `max_hosts: 5`:
+
+| Thứ tự | Kết quả |
+|---|---|
+| Cap trước | 5 slot bị bản sao chiếm sạch, **3 app thật biến mất** |
+| Dedup trước (đang dùng) | 1 đại diện + 3 app thật = 4 target |
+
+### 3. Phân vai dirsearch / ffuf
+
+Trước đây cả hai cùng chạy `raft-small-directories` **và** cùng bật
+recursion — mọi thư mục tìm được bị quét lại hai lần bởi hai tool.
+
+| Stage | Vai trò | Wordlist | Recursion |
+|---|---|---|---|
+| dirsearch 4.2 | file + extension nhạy cảm | `quickhits.txt`, `raft-small-files.txt` | **tắt** |
+| ffuf 4.3 | directory | `common.txt` (nhỏ) | **bật**, depth 2 |
+
+Wordlist của ffuf phải nhỏ vì recursion nhân nó lên: mỗi directory match
+được sẽ chạy lại toàn bộ wordlist ở tầng sau. `common.txt` (~4.6k) chịu
+được phép nhân đó; `raft-small-directories` (~20k) thì không.
+
+`Service-Specific/` (~50 file) đã bỏ khỏi dirsearch — nạp wordlist Spring
+cho host PHP là request phí. Xem phần tech-aware bên dưới.
+
+### 4. Rate limit
+
+`ffuf.rate` mặc định `30` (× `concurrency: 3` = ~90 req/s tổng), không còn
+`0`. Rate không giới hạn là cách nhanh nhất để ăn ban rồi phải chạy lại từ
+đầu — và nhiều chương trình bug bounty ghi rõ trần req/s trong policy.
+Chỉnh theo policy của target.
+
+### 5. `-fr` cho API soft-404
+
+`ffuf.filter_regex` (`-fr`) lọc theo **nội dung** body thay vì kích thước.
+Cần cho target trả JSON kiểu `{"error":"not found","path":"/<đã-thử>"}`:
+body echo lại path nên độ dài đổi mỗi request, `-ac` (lọc theo size) bó
+tay — thậm chí chính chuỗi thăm dò của calibration bị báo thành hit. Đặt
+`filter_regex: '"error"'` là sạch.
+
+### Còn lại: tech-aware wordlist
+
+`alive_detail.json` có field `tech` từ httpx (`["Cloudflare"]`, `PHP`,
+`Spring`…) nhưng chưa stage nào dùng. Bước tiếp theo đáng làm: map tech →
+wordlist tương ứng thay vì nạp cả `Service-Specific/` cho mọi host.
 
 ## Scan delta — "what changed since last time"
 

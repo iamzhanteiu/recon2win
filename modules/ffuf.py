@@ -44,7 +44,7 @@ from pathlib import Path
 from typing import Iterable
 from urllib.parse import urlsplit
 
-from . import console, runner
+from . import console, fuzz_targets, runner
 from .dirsearch import _merge_wordlists, _resolve_wordlists
 from .sensitive_ext import SENSITIVE_EXT
 from .utils import make_result, raw_dir, read_lines, write_lines
@@ -156,6 +156,7 @@ def _build_cmd(
     rate: int = 0,
     match_status: list[str] | None = None,
     filter_status: list[str] | None = None,
+    filter_regex: str = "",
     extensions: list[str] | None = None,
 ) -> list[str]:
     """Build the ffuf argv for a single target.
@@ -208,6 +209,12 @@ def _build_cmd(
         clean = [str(s).strip() for s in filter_status if str(s).strip()]
         if clean:
             cmd.extend(["-fc", ",".join(clean)])
+    # -fr lọc theo NỘI DUNG body, không theo kích thước. Cần cho API soft-404
+    # kiểu {"error":"not found","path":"/<đã-thử>"}: body echo lại path nên độ
+    # dài đổi theo từng request, -ac (lọc theo size) không gom được và chính
+    # chuỗi thăm dò của calibration bị báo thành hit.
+    if filter_regex:
+        cmd.extend(["-fr", str(filter_regex)])
 
     return cmd
 
@@ -307,8 +314,19 @@ def scan(
     concurrency = max(1, int(f_cfg.get("concurrency", 3)))
     extensions = f_cfg.get("extensions") or []
 
+    # Gom nhóm host trả về cùng một response (wildcard DNS → 200 host, 1 app)
+    # rồi mới xếp hạng + cap. Làm ngược lại thì cap có thể bị 50 bản sao của
+    # cùng một trang chiếm sạch.
+    selected, sel_stats = fuzz_targets.load_targets(
+        alive_file, output_dir,
+        max_hosts=max_hosts,
+        dedup=bool(f_cfg.get("dedup_targets", True)),
+        skip_waf=bool(f_cfg.get("skip_waf", False)),
+    )
     targets = normalize_targets(read_lines(alive_file))
-    capped = targets[:max_hosts] if max_hosts > 0 else targets
+    capped = normalize_targets(selected)
+    if sel_stats.get("deduped") or sel_stats.get("capped"):
+        print(console.phase_info_line(f"[ffuf] {fuzz_targets.summary_line(sel_stats)}"))
 
     def _build(target: str, wordlist: Path | None) -> list[str]:
         return _build_cmd(
@@ -325,6 +343,7 @@ def scan(
             rate=int(f_cfg.get("rate", 0) or 0),
             match_status=f_cfg.get("match_status") or [],
             filter_status=f_cfg.get("filter_status") or [],
+            filter_regex=f_cfg.get("filter_regex") or "",
             extensions=extensions,
         )
 
@@ -332,6 +351,7 @@ def scan(
         wordlist, wl_paths, merge_stats = _cfg_wordlist(
             f_cfg, merged_wl_path, merge=False,
         )
+        sel_stats = {}
         sample = capped[0] if capped else "https://example.com"
         return make_result(
             stage, "skipped", input_path=alive_file,
@@ -339,6 +359,7 @@ def scan(
             extra={
                 "planned_cmd": _build(sample, wordlist),
                 "targets": len(capped),
+                "selection": sel_stats,
                 "wordlists": [str(p) for p in wl_paths],
                 "merge": merge_stats,
             },
@@ -419,6 +440,7 @@ def scan(
             "targets": len(capped),
             "targets_total": len(targets),
             "failed_targets": len(failures),
+            "selection": sel_stats,
             "wordlists": [str(p) for p in wl_paths],
             "merge": merge_stats,
         },

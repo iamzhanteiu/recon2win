@@ -112,8 +112,29 @@ dirsearch:
   enabled: true
   threads: 30
   timeout: 3600
-  recursive: true
+  # ------------------------------------------------------------------
+  # Phân vai với ffuf (4.3) để không đào trùng cùng một cây thư mục:
+  #   dirsearch = FILE + extension nhạy cảm, KHÔNG recursion
+  #   ffuf      = DIRECTORY + recursion
+  # Trước đây cả hai cùng chạy raft-small-directories với recursion bật —
+  # nghĩa là mọi directory tìm được đều bị quét lại hai lần bởi hai tool.
+  # ------------------------------------------------------------------
+  recursive: false
   follow_redirects: true         # follow 3xx so the final status is reported
+  # ------------------------------------------------------------------
+  # Chọn target (dùng chung modules/fuzz_targets.py với ffuf).
+  #   dedup_targets: gom host trả về CÙNG một response (status/title/words/
+  #                  lines/webserver) rồi chỉ fuzz một đại diện. Wildcard DNS
+  #                  cho 200 host trỏ về một app là chuyện thường — không có
+  #                  bước này thì wordlist bị bắn lại 200 lần y hệt.
+  #   max_hosts:     cap sau khi đã dedup + xếp hạng (0 = không cap).
+  #   skip_waf:      bỏ host httpx đánh dấu cdn_type=waf. Mặc định false —
+  #                  phần lớn chương trình đứng sau Cloudflare, bật lên là
+  #                  mất gần hết target.
+  # ------------------------------------------------------------------
+  dedup_targets: true
+  max_hosts: 50
+  skip_waf: false
   # ------------------------------------------------------------------
   # Status-code filtering (dirsearch v3.x — `-i` and `-x`).
   #   include_status: only show these status codes (empty = show all)
@@ -149,10 +170,14 @@ dirsearch:
   # Manual clone (if you skipped setup.py):
   #   git clone --depth 1 https://github.com/danielmiessler/SecLists.git wordlists/SecLists
   # ------------------------------------------------------------------
+  # Vai trò FILE → wordlist thiên về tên file, không phải tên thư mục.
+  # quickhits.txt là file đáng ưu tiên nhất trong SecLists: ~2.4k entry nhưng
+  # toàn .git/config, .env, backup pattern, actuator — tỉ lệ finding/request
+  # cao nhất. Service-Specific/ (~50 file) đã bỏ: nạp wordlist Spring cho host
+  # PHP là request phí; xem ghi chú tech-aware trong README.
   wordlists:
-    - wordlists/SecLists/Discovery/Web-Content/raft-small-directories.txt
-    - wordlists/SecLists/Discovery/Web-Content/uri-from-top-55-most-popular-apps.txt
-    - wordlists/SecLists/Discovery/Web-Content/Service-Specific
+    - wordlists/SecLists/Discovery/Web-Content/quickhits.txt
+    - wordlists/SecLists/Discovery/Web-Content/raft-small-files.txt
   # If true AND wordlists are present, dirsearch also tries each word
   # with each extension (extremely noisy — leave false unless you know
   # what you are doing).
@@ -171,8 +196,11 @@ ffuf:
   enabled: true
   threads: 40                 # -t, per ffuf process
   timeout: 1800               # per-host wall clock (seconds)
-  max_hosts: 50               # cap targets from alive.txt (0 = no cap)
+  max_hosts: 50               # cap SAU khi dedup + xếp hạng (0 = không cap)
   concurrency: 3              # ffuf processes running at once
+  # Giống dirsearch — xem giải thích ở khối dirsearch phía trên.
+  dedup_targets: true
+  skip_waf: false
   # ------------------------------------------------------------------
   # Auto-calibration — the reason ffuf earns its slot next to dirsearch.
   # Before fuzzing, ffuf requests a batch of random paths and derives
@@ -203,18 +231,29 @@ ffuf:
   recursion_depth: 2
   recursion_strategy: ""
   follow_redirects: false
-  rate: 0                     # -rate, requests/sec (0 = unlimited)
+  # -rate. 0 = không giới hạn = cách nhanh nhất để ăn ban rồi phải chạy lại
+  # từ đầu. Nhiều chương trình bug bounty ghi rõ trần req/s trong policy.
+  # 30 req/s × 3 process = 90 req/s tổng — chỉnh theo policy của target.
+  rate: 30
   # -mc / -fc. Matchers run first, filters trim what survived.
   #   200 exists · 301/302 needed for recursion · 401/403 exists but
   #   gated · 405 wrong method (endpoint is real) · 500 often a sink
   match_status: [200, 204, 301, 302, 307, 401, 403, 405, 500]
   filter_status: [404, 429]
+  # -fr: lọc theo NỘI DUNG body thay vì kích thước. Cần cho target trả JSON
+  # soft-404 kiểu {"error":"not found","path":"/<đã-thử>"} — body echo path
+  # nên độ dài đổi mỗi request, -ac (lọc theo size) bó tay. Ví dụ: '"error"'
+  filter_regex: ""
   # Same resolution rules as dirsearch.wordlists: file or directory,
   # `~` expanded, missing paths skipped with a warning, several files
   # merged into one deduped list under raw/ffuf/merged_wordlists.txt.
+  # Vai trò DIRECTORY + recursion → wordlist phải NHỎ. Mỗi directory match
+  # được sẽ chạy lại TOÀN BỘ wordlist ở tầng sau, nên kích thước bị nhân lên
+  # theo số thư mục tìm thấy. common.txt (~4.6k) chịu được phép nhân đó;
+  # raft-small-directories (~20k) thì không: 20k × 50 host × số dir = hàng
+  # chục triệu request.
   wordlists:
-    - wordlists/SecLists/Discovery/Web-Content/raft-small-directories.txt
-    - wordlists/SecLists/Discovery/Web-Content/raft-small-files.txt
+    - wordlists/SecLists/Discovery/Web-Content/common.txt
   # -e, appended to every word (".php,.bak"). Dotted or bare both work.
   # Multiplies the request count by len(extensions) + 1 — keep it short.
   extensions: []

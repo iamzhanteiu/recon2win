@@ -26,7 +26,7 @@ import re
 from pathlib import Path
 from typing import Iterable
 
-from . import console, runner
+from . import console, fuzz_targets, runner
 from .sensitive_ext import SENSITIVE_EXT, to_dirsearch_flag
 from .utils import make_result, raw_dir, read_lines, write_lines
 
@@ -321,6 +321,22 @@ def scan(
         )
 
     d_cfg = cfg.get("dirsearch", {})
+
+    # Cùng bước chọn target với ffuf: gom host trả về response giống hệt nhau
+    # (wildcard DNS), xếp hạng, rồi cap. dirsearch nhận ``-l <file>`` nên ta
+    # ghi tập đã chọn ra đĩa thay vì đưa thẳng alive.txt.
+    targets, sel_stats = fuzz_targets.load_targets(
+        alive_file, output_dir,
+        max_hosts=int(d_cfg.get("max_hosts", 50)),
+        dedup=bool(d_cfg.get("dedup_targets", True)),
+        skip_waf=bool(d_cfg.get("skip_waf", False)),
+    )
+    if targets:
+        alive_file = fuzz_targets.write_target_file(targets, raw_ds / "targets.txt")
+    if sel_stats.get("deduped") or sel_stats.get("capped"):
+        print(console.phase_info_line(
+            f"[dirsearch] {fuzz_targets.summary_line(sel_stats)}"))
+
     threads = int(d_cfg.get("threads", 30))
     timeout = int(d_cfg.get("timeout", 3600))
     recursive = bool(d_cfg.get("recursive", True))
@@ -394,5 +410,6 @@ def scan(
         outputs=[raw_out, proc_out], count=n,
         extra={"wordlists": [str(p) for p in wl_paths],
                "merge": merge_stats,
+               "selection": sel_stats,
                "mode": "wordlist" if wl_paths else "extension"},
     )

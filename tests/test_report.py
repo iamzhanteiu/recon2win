@@ -73,6 +73,7 @@ def fake_outputs(tmp_path: Path) -> Path:
         "200   5B  https://example.com/.git/HEAD\n"
     )
     (raw_ds / "merged_wordlists.txt").write_text("/.env\n/.git\n/admin\n")
+    (raw_ds / "targets.txt").write_text("https://a.example.com\n")
     # raw/ffuf/
     (raw_ff / "ffuf_raw.txt").write_text(
         "200 https://example.com/admin\n301 https://example.com/api/\n"
@@ -779,6 +780,7 @@ def test_render_html_uses_clickable_links(fake_outputs: Path):
         "../processed/crawler_urls.txt",
         "../raw/dirsearch/dirsearch_raw.txt",
         "../raw/dirsearch/merged_wordlists.txt",
+        "../raw/dirsearch/targets.txt",
         "../processed/dirsearch_urls.txt",
         "../raw/ffuf/ffuf_raw.txt",
         "../raw/ffuf/merged_wordlists.txt",

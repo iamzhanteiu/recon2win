@@ -393,6 +393,7 @@ class ReportBuilder:
         # raw/dirsearch/
         ("raw/dirsearch/dirsearch_raw.txt",   "raw",  "dirsearch raw output"),
         ("raw/dirsearch/merged_wordlists.txt","raw",  "merged wordlists (deduped)"),
+        ("raw/dirsearch/targets.txt",          "raw",  "host đã chọn để fuzz (sau dedup)"),
         # raw/ffuf/ (plus one <host>.json report per fuzzed target)
         ("raw/ffuf/ffuf_raw.txt",             "raw",  "ffuf hits (status + url)"),
         ("raw/ffuf/merged_wordlists.txt",     "raw",  "ffuf merged wordlists (deduped)"),
