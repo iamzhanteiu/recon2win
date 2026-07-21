@@ -382,7 +382,11 @@ class ReportBuilder:
     # Paths follow the v2 layout: raw outputs are grouped per stage
     # (``raw/<stage>/...``) and findings are grouped per kind
     # (``findings/<kind>/nuclei.{json,txt}``).
-    OUTPUT_FILES: list[tuple[str, str, Path]] = [
+    # ``(rel_path, kind, label)`` — cả ba đều là str. Annotation cũ ghi
+    # ``Path`` cho phần tử thứ ba, nhưng nó là nhãn mô tả cho báo cáo
+    # (xem vòng lặp ở ``collect()``), không phải đường dẫn. ruff không
+    # type-check nên chỗ này lọt lưới cho tới khi pyright soi ra.
+    OUTPUT_FILES: list[tuple[str, str, str]] = [
         # raw/subdomain/
         ("raw/subdomain/subfinder.txt",  "raw",       "subfinder raw output"),
         ("raw/subdomain/amass.txt",      "raw",       "amass raw output"),

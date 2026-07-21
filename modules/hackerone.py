@@ -66,10 +66,14 @@ def _get_paginated(
     """Follow ``links.next`` until exhausted; return the concatenated ``data``."""
     items: list[dict] = []
     pages = 0
-    while url and pages < max_pages:
+    # Biến riêng cho con trỏ phân trang: tham số ``url`` khai báo là ``str``
+    # nhưng vòng lặp gán lại nó thành ``links.next`` — có thể là None khi hết
+    # trang. Gán None vào một biến khai báo ``str`` là mâu thuẫn kiểu.
+    next_url: str | None = url
+    while next_url and pages < max_pages:
         try:
             resp = requests.get(
-                url, auth=auth,
+                next_url, auth=auth,
                 headers={"Accept": "application/json"}, timeout=timeout,
             )
         except requests.RequestException as e:  # network / DNS / TLS
@@ -89,7 +93,7 @@ def _get_paginated(
         except ValueError as e:
             raise H1Error(f"invalid JSON from HackerOne: {e}") from e
         items.extend(body.get("data", []) or [])
-        url = ((body.get("links") or {}).get("next")) or None
+        next_url = ((body.get("links") or {}).get("next")) or None
         pages += 1
     return items
 

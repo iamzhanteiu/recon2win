@@ -12,7 +12,7 @@ from __future__ import annotations
 import time
 from html import escape
 from pathlib import Path
-from typing import Optional
+from typing import Optional, TypeGuard
 
 import requests
 
@@ -21,8 +21,17 @@ from .utils import now_iso
 API_BASE = "https://api.telegram.org/bot{token}/sendMessage"
 
 
-def _enabled(cfg: dict) -> bool:
-    return bool(cfg and cfg.get("enabled") and cfg.get("bot_token") and cfg.get("chat_id"))
+def _enabled(cfg: Optional[dict]) -> TypeGuard[dict]:
+    """True khi cfg đủ để gửi được — và báo cho type-checker biết điều đó.
+
+    ``TypeGuard`` là phần quan trọng: mọi caller đều viết
+    ``if not _enabled(cfg): return`` rồi sau đó dùng ``cfg["bot_token"]``.
+    Runtime luôn an toàn (hàm này trả False cho None), nhưng nếu chỉ khai
+    báo ``-> bool`` thì type-checker không thu hẹp được kiểu qua lời gọi
+    hàm và sẽ báo "Object of type None is not subscriptable" ở 17 chỗ.
+    """
+    return bool(cfg and cfg.get("enabled") and cfg.get("bot_token")
+                and cfg.get("chat_id"))
 
 
 def _post(token: str, chat_id: str, html_text: str) -> bool:

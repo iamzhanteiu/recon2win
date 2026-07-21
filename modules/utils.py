@@ -9,7 +9,7 @@ import json
 import re
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Iterable, List, Optional
+from typing import Any, Iterable, List, Optional, Sequence
 
 # RFC 1035 / 1123 — pragmatic domain pattern, not a full parser.
 DOMAIN_RE = re.compile(
@@ -177,7 +177,7 @@ def safe_append(path: Path, line: str) -> None:
 # ----------------------------------------------------------------------
 # Result factory — every stage must return a dict shaped like this.
 # ----------------------------------------------------------------------
-def filter_existing_outputs(outputs: Optional[List[Path | str]]) -> List[str]:
+def filter_existing_outputs(outputs: Optional[Sequence[Path | str]]) -> List[str]:
     """Filter output paths down to only those that exist on disk.
 
     Removes "not found" files, keeping the order stable.
@@ -197,7 +197,7 @@ def make_result(
     stage: str,
     status: str,
     input_path: Optional[Path | str] = None,
-    outputs: Optional[List[Path | str]] = None,
+    outputs: Optional[Sequence[Path | str]] = None,
     count: int = 0,
     error: Optional[str] = None,
     extra: Optional[dict] = None,

@@ -17,20 +17,21 @@ from __future__ import annotations
 import os
 import sys
 from contextlib import contextmanager
-from typing import Iterator, Optional
+from typing import TYPE_CHECKING, Iterator, Literal, Optional
 
+# rich là dependency optional: thiếu nó thì bar tắt hẳn, framework vẫn chạy.
+# Ở module level chỉ cần biết CÓ hay KHÔNG — các lớp cụ thể được import cục
+# bộ trong ``__enter__`` (nơi đã chắc chắn rich tồn tại). Import ở đây rồi
+# dùng ở dưới sẽ khiến type-checker coi mọi tên là "possibly unbound", vì
+# nó không nối được ``_RICH_AVAILABLE`` với việc tên đã bind hay chưa.
 try:
-    from rich.progress import (
-        Progress,
-        SpinnerColumn,
-        BarColumn,
-        TextColumn,
-        TimeElapsedColumn,
-        TaskID,
-    )
+    import rich.progress  # noqa: F401
     _RICH_AVAILABLE = True
 except ImportError:
     _RICH_AVAILABLE = False
+
+if TYPE_CHECKING:                      # chỉ dùng cho annotation
+    from rich.progress import Progress, TaskID
 
 
 # Status → (icon, rich color)
@@ -90,8 +91,21 @@ class ReconProgress:
     # context manager
     # ------------------------------------------------------------------
     def __enter__(self) -> "ReconProgress":
+        # KHÔNG kiểm ``self._progress is None`` ở đây như các method khác:
+        # tại thời điểm này nó LUÔN là None (vừa gán trong __init__) và đây
+        # chính là chỗ khởi tạo nó.
         if not self.enabled:
             return self
+        # self.enabled chỉ True khi _RICH_AVAILABLE — import cục bộ ở đây vừa
+        # an toàn vừa cho type-checker thấy tên đã bind.
+        from rich.progress import (
+            BarColumn,
+            Progress,
+            SpinnerColumn,
+            TextColumn,
+            TimeElapsedColumn,
+        )
+
         self._progress = Progress(
             SpinnerColumn(),
             TextColumn("{task.description}"),
@@ -106,7 +120,12 @@ class ReconProgress:
         )
         return self
 
-    def __exit__(self, *exc_info) -> bool:
+    def __exit__(self, *exc_info) -> Literal[False]:
+        # Literal[False] chứ không phải bool: nó nói rằng context manager này
+        # KHÔNG BAO GIỜ nuốt exception. Với ``-> bool``, type-checker phải giả
+        # định nó có thể trả True — tức là luồng có thể chạy tiếp sau khối
+        # ``with`` dù thân khối đã văng giữa chừng — nên mọi biến gán bên
+        # trong đều bị coi là "possibly unbound" ở main.py.
         if self._progress:
             self._progress.__exit__(*exc_info)
         return False
@@ -121,7 +140,7 @@ class ReconProgress:
         running. The bar does NOT advance yet — call ``finish_phase()``
         when the stage completes.
         """
-        if not self.enabled:
+        if not self.enabled or self._progress is None or self._overall is None:
             return
         desc = f"[cyan][{num:02d}/{self.n_phases:02d}][/cyan] {name}"
         self._progress.update(self._overall, description=desc)
@@ -132,7 +151,7 @@ class ReconProgress:
         Updates the bar description with the result (icon + count) and
         advances the bar by one.
         """
-        if not self.enabled:
+        if not self.enabled or self._progress is None or self._overall is None:
             return
         name = result.get("stage") or "?"
         status = result.get("status") or "skipped"
@@ -160,7 +179,7 @@ class ReconProgress:
                 p.subphase_done("cd", r_cd)
                 p.subphase_done("dirsearch", r_dirsearch)
         """
-        if not self.enabled:
+        if not self.enabled or self._progress is None or self._overall is None:
             yield self
             return
         names_str = ", ".join(names)
@@ -185,7 +204,7 @@ class ReconProgress:
 
     def subphase_done(self, name: str, result: dict) -> None:
         """Mark one sub-phase within a ``parallel`` group as complete."""
-        if not self.enabled:
+        if not self.enabled or self._progress is None or self._overall is None:
             return
         tid = self._parallel_tasks.get(name)
         if tid is None:
@@ -198,7 +217,7 @@ class ReconProgress:
 
     def finish_parallel(self, num: int) -> None:
         """Mark a parallel group as done — advance the overall bar by 1."""
-        if not self.enabled:
+        if not self.enabled or self._progress is None or self._overall is None:
             return
         desc = (
             f"[magenta][{num:02d}/{self.n_phases:02d}][/magenta] "

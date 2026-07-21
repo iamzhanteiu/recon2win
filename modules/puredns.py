@@ -24,6 +24,10 @@ simple and puredns failures don't poison the dnsx stage.
 """
 from __future__ import annotations
 
+# urllib.error phải import tường minh: chỉ ``import urllib.request`` thì
+# ``urllib.error`` chỉ truy cập được nhờ request tự import nó bên trong —
+# chi tiết cài đặt của stdlib, không phải hợp đồng.
+import urllib.error
 import urllib.request
 from pathlib import Path
 
