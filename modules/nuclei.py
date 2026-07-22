@@ -81,21 +81,81 @@ def _has_param(url: str) -> bool:
     return len(q) == 2 and "=" in q[1]
 
 
-def _filter_param_urls(input_file: Path, output_dir: Path) -> tuple[Path, int, int]:
-    """Keep only URLs with a query param and write them to a derived input
-    under ``raw/nuclei_dynamic/param_urls.txt``.
+# High-value markers used to rank parameterised URLs before the
+# ``nuclei.dynamic.max_urls`` cap — keep the URLs most likely to yield a
+# fuzzing hit (auth / api / write paths, id-like params) over archive noise.
+_DYN_HINTS = (
+    "/api/", "/v1/", "/v2/", "/v3/", "/graphql", "/query", "/search",
+    "/login", "/admin", "/user", "/account", "/auth", "/oauth",
+    "/upload", "/download", "/file", "/redirect", "/proxy",
+    "id=", "url=", "path=", "file=", "redirect=", "next=", "cmd=", "q=",
+)
 
-    Returns ``(file_to_scan, kept, dropped)``. When nothing is dropped we
+
+def _score_dynamic(url: str) -> int:
+    """Higher = keep first when capping. Ties break on shorter URL."""
+    lo = url.lower()
+    score = sum(1 for h in _DYN_HINTS if h in lo)
+    if "web.archive.org" in lo or "webcache.googleusercontent" in lo:
+        score -= 3
+    return score
+
+
+def _param_signature(url: str) -> tuple:
+    """Collapse near-identical URLs to one representative.
+
+    ``?id=1`` and ``?id=2`` fuzz identically, so we key on
+    scheme+host+path+*param names* (values ignored). A crawl of a large
+    target is mostly the same handful of endpoints with different ids;
+    this is what turns 100k+ URLs into a few thousand distinct shapes.
+    """
+    from urllib.parse import parse_qsl, urlsplit
+    s = urlsplit(url)
+    names = tuple(sorted(k for k, _ in parse_qsl(s.query, keep_blank_values=True)))
+    return (s.scheme, s.netloc, s.path, names)
+
+
+def _filter_param_urls(
+    input_file: Path, output_dir: Path, max_urls: int = 0,
+) -> tuple[Path, dict]:
+    """Prepare the dynamic-scan input: keep only parameterised URLs, dedup
+    near-identical param shapes, then cap to ``max_urls`` highest-value.
+
+    Returns ``(file_to_scan, stats)``. When nothing needs changing we
     return the original file untouched so the common case stays a no-op.
+    ``max_urls <= 0`` disables the cap.
     """
     urls = read_lines(input_file)
+    total = len(urls)
     kept = [u for u in urls if _has_param(u)]
-    dropped = len(urls) - len(kept)
-    if dropped == 0:
-        return input_file, len(kept), 0
+    dropped = total - len(kept)
+
+    # Dedup by param signature, preserving first-seen order for stable runs.
+    seen: set[tuple] = set()
+    unique: list[str] = []
+    for u in kept:
+        sig = _param_signature(u)
+        if sig in seen:
+            continue
+        seen.add(sig)
+        unique.append(u)
+    deduped = len(kept) - len(unique)
+
+    selected = unique
+    capped = 0
+    if max_urls and max_urls > 0 and len(unique) > max_urls:
+        selected = sorted(unique, key=lambda u: (-_score_dynamic(u), len(u), u))[:max_urls]
+        capped = len(unique) - len(selected)
+
+    stats = {
+        "input": total, "dropped_no_param": dropped,
+        "deduped": deduped, "capped": capped, "selected": len(selected),
+    }
+    if dropped == 0 and deduped == 0 and capped == 0:
+        return input_file, stats
     filtered = raw_dir(output_dir, "nuclei_dynamic") / "param_urls.txt"
-    write_lines(filtered, kept)
-    return filtered, len(kept), dropped
+    write_lines(filtered, selected)
+    return filtered, stats
 
 
 def _outputs_exist(out_dir: Path, kind: str) -> bool:
@@ -187,7 +247,14 @@ def _run(
 
     r = runner.run(cmd, stage=stage, log_name=stage,
                    output_dir=output_dir, timeout=timeout)
-    if not r["success"] and not r["missing_binary"]:
+    # nuclei streams findings to ``-json-export`` as it matches, so on a
+    # timeout the partial file on disk holds real findings. Fall through
+    # and parse them (salvage) instead of throwing the run away — a scan
+    # that walls at 7200s with 3 confirmed highs is far more useful than
+    # a "failed, 0 findings". A hard failure (not a timeout) has nothing
+    # worth salvaging, so bail there as before.
+    timed_out = r.get("timed_out", False)
+    if not r["success"] and not r["missing_binary"] and not timed_out:
         return make_result(
             stage, "failed", input_path=input_file,
             outputs=[txt_out, json_out], count=0,
@@ -243,10 +310,19 @@ def _run(
         if isinstance(f, dict):
             notify_finding(f, stage=stage, cfg=tg_cfg, severity_threshold="high")
 
+    extra: dict = {"severity_count": sev_count}
+    status = "success"
+    error = None
+    if timed_out:
+        status = "failed"
+        error = (f"timeout after {timeout}s — salvaged {len(findings)} "
+                 f"partial findings")
+        extra["timed_out"] = True
+
     result = make_result(
-        stage, "success", input_path=input_file,
+        stage, status, input_path=input_file,
         outputs=[txt_out, json_out], count=len(findings),
-        extra={"severity_count": sev_count},
+        error=error, extra=extra,
     )
 
     # stage-complete summary — only fires when findings > 0
@@ -386,12 +462,15 @@ def dynamic_scan(
             outputs=outputs, count=0, error="disabled in config",
         )
 
-    # Enforce "parameterised endpoints only" at the scan boundary. Upstream
-    # (arjun + jsluice) already produce ``?p=&q=`` URLs, but this guards the
-    # stage against any bare URL that leaks into parameterized_urls.txt —
-    # nuclei should never spend budget on a non-parameterised endpoint here.
-    scan_file, kept, dropped = _filter_param_urls(
-        parameterized_urls_file, output_dir
+    # Enforce "parameterised endpoints only" at the scan boundary and keep
+    # the list to a size nuclei can actually finish. Upstream (arjun +
+    # jsluice) already produce ``?p=&q=`` URLs, but a large crawl can leak
+    # 100k+ of them; without a cap the fuzzing scan walls at its timeout
+    # with 0 findings. Dedup near-identical param shapes, then keep the
+    # top ``max_urls`` highest-value URLs.
+    max_urls = int(n_cfg.get("max_urls", 3000))
+    scan_file, stats = _filter_param_urls(
+        parameterized_urls_file, output_dir, max_urls
     )
 
     result = _run(
@@ -401,8 +480,6 @@ def dynamic_scan(
         timeout=int(n_cfg.get("timeout", 7200)),
         skip=skip,
     )
-    if dropped:
-        (result.setdefault("extra", {}))["param_filter"] = {
-            "kept": kept, "dropped": dropped,
-        }
+    if stats.get("dropped_no_param") or stats.get("deduped") or stats.get("capped"):
+        (result.setdefault("extra", {}))["param_filter"] = stats
     return result

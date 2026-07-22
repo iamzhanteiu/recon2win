@@ -363,8 +363,15 @@ def main() -> int:
         # ---- 5. merge ----
         prog.start_phase("url_merge", num=5)
         r = _run_stage("url_merge", url_merge_mod.merge,
-                       output_dir, resume=args.resume, dry_run=False)
+                       output_dir, domain, cfg,
+                       resume=args.resume, dry_run=False)
         results.append(r)
+        _sd = (r.get("extra") or {}).get("scope_dropped")
+        if _sd:
+            print(console.phase_info_line(
+                f"scope filter: dropped {_sd} out-of-scope URL(s) from "
+                f"all_urls.txt (out-of-scope .js kept for JS analysis)"
+            ))
         prog.finish_phase(r, num=5)
 
         # ---- 6. parallel: httpx URL check + xnLinkFinder + jsluice ----
@@ -414,7 +421,7 @@ def main() -> int:
         if extras:
             r = _run_stage(
                 "url_merge_append", url_merge_mod.append_urls,
-                output_dir, extras,
+                output_dir, extras, domain, cfg,
             )
             results.append(r)
             prog.finish_phase(r, num=7)
@@ -498,10 +505,13 @@ def main() -> int:
         )
         results.append(r)
         pf = (r.get("extra") or {}).get("param_filter")
-        if pf and pf.get("dropped"):
+        if pf and (pf.get("dropped_no_param") or pf.get("deduped") or pf.get("capped")):
             print(console.phase_info_line(
-                f"nuclei_dynamic: dropped {pf['dropped']} non-param URL(s) "
-                f"({pf['kept']} parameterised URL(s) scanned)"
+                f"nuclei_dynamic: {pf.get('input', 0)} URL(s) → "
+                f"-{pf.get('dropped_no_param', 0)} non-param "
+                f"-{pf.get('deduped', 0)} dup-shape "
+                f"-{pf.get('capped', 0)} over-cap → "
+                f"{pf.get('selected', 0)} scanned"
             ))
         prog.finish_phase(r, num=10)
 

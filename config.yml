@@ -5,6 +5,31 @@
 # ---------- Global ----------
 output_root: outputs           # root folder under which <domain>/ is created
 
+# ---------- Scope filtering ----------
+# Content discovery runs katana with ``-do`` (display-out-scope) ON PURPOSE:
+# it emits the out-of-scope JS/assets an in-scope page pulls from a CDN / S3 /
+# static host, so the JS-analysis stages can mine the app's own API endpoints
+# out of those bundles. The side effect is that the merged URL list also picks
+# up pure third-party noise — youtube, facebook, google-analytics, ad/tracking
+# hosts — which would otherwise waste httpx / arjun / nuclei budget.
+#
+# ``filter_urls`` trims ``all_urls.txt`` (and everything downstream) down to
+# in-scope + related hosts. Out-of-scope ``.js`` URLs are DELIBERATELY kept in
+# ``js_urls.txt`` (so JS analysis still works) but are NOT probed/fuzzed.
+scope:
+  # Master switch. When true, only in-scope (root + *.root) and related_roots
+  # URLs survive into all_urls.txt / dynamic_urls.txt. Set false to keep the
+  # old behaviour (everything, including third-party hosts).
+  filter_urls: true
+  # Extra roots that count as "in scope" — the app's own CDN / S3 / static
+  # host, or sister brands you're allowed to test. A host matches if it equals
+  # the root or is a subdomain of it. Accepts ``foo.com``, ``.foo.com`` or
+  # ``*.foo.com`` (all normalised the same). Example for guildwars2.com:
+  #   related_roots:
+  #     - staticwars.com
+  #     - arena.net
+  related_roots: []
+
 # ---------- Subdomain collection ----------
 subdomain:
   tools:
@@ -89,6 +114,13 @@ httpx:
   # apple.com, microsoft.com and similar large targets need.
   timeout: 1800
   follow_redirects: true
+  # Cap the merged URL list fed to the stage-6 URL alive-check. The
+  # crawler + waymore + JS tools can produce 400k+ URLs; probing every
+  # one blows the 1800s timeout and leaves alive_urls.txt EMPTY, which
+  # in turn STARVES nuclei_endpoints (it skips on empty input). We keep
+  # the highest-value URLs first (params / api / admin / auth paths).
+  #   0 → no cap (only for small curated targets)
+  max_url_check: 60000
 
 # ---------- Content discovery ----------
 content_discovery:
@@ -367,12 +399,15 @@ nuclei:
     - udp
   default:
     enabled: true
+    # critical,high,medium only — NO info/low. ``info`` alone is the
+    # bulk of nuclei's ~9k-template set (tech/version detection), so
+    # all-severity made even a 180-host default scan wall at the 7200s
+    # timeout and report 0 findings. Drop info/low and it finishes;
+    # re-add them here for a deep pass on a small curated host list.
     severity:
       - critical
       - high
       - medium
-      - low
-      - info
     timeout: 7200
   # ------------------------------------------------------------------
   # endpoints scan — runs AFTER content discovery on alive_urls.txt (the
@@ -408,6 +443,13 @@ nuclei:
       - high
       - medium
       - low
+    # Cap the parameterised-URL list fed to the fuzzing scan. A crawl of
+    # a large target yields 100k+ ``?a=&b=`` URLs; fuzzing all of them
+    # with sqli/xss/lfi/... templates cannot finish inside 7200s and the
+    # scan walls with 0 findings. We keep the highest-value URLs first
+    # (api / auth / most params) and dedup near-identical param shapes.
+    #   0 → no cap
+    max_urls: 3000
     timeout: 7200
   rate_limit: 100
   bulk_size: 25

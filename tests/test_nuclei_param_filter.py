@@ -49,9 +49,10 @@ def test_filter_drops_bare_urls(tmp_path: Path):
         "https://x.com/bare",
         "https://x.com/b?t=",
     ])
-    scan_file, kept, dropped = _filter_param_urls(inp, tmp_path)
+    scan_file, stats = _filter_param_urls(inp, tmp_path)
 
-    assert (kept, dropped) == (2, 1)
+    assert stats["dropped_no_param"] == 1
+    assert stats["selected"] == 2
     # A derived file under raw/nuclei_dynamic/ — not the original.
     assert scan_file != inp
     assert scan_file.as_posix().endswith("raw/nuclei_dynamic/param_urls.txt")
@@ -67,11 +68,53 @@ def test_filter_is_noop_when_all_have_params(tmp_path: Path):
     inp = tmp_path / "processed" / "parameterized_urls.txt"
     inp.parent.mkdir(parents=True)
     write_lines(inp, ["https://x.com/a?id=", "https://x.com/b?q="])
-    scan_file, kept, dropped = _filter_param_urls(inp, tmp_path)
+    scan_file, stats = _filter_param_urls(inp, tmp_path)
 
-    assert (kept, dropped) == (2, 0)
+    assert stats["selected"] == 2
+    assert stats["dropped_no_param"] == 0
+    assert stats["deduped"] == 0
+    assert stats["capped"] == 0
     assert scan_file == inp
     assert not (tmp_path / "raw" / "nuclei_dynamic" / "param_urls.txt").exists()
+
+
+# ----------------------------------------------------------------------
+# _filter_param_urls — dedup near-identical param shapes + cap
+# ----------------------------------------------------------------------
+def test_filter_dedups_same_param_shape(tmp_path: Path):
+    """``?id=1`` and ``?id=2`` fuzz identically — collapse to one."""
+    inp = tmp_path / "processed" / "parameterized_urls.txt"
+    inp.parent.mkdir(parents=True)
+    write_lines(inp, [
+        "https://x.com/a?id=1",
+        "https://x.com/a?id=2",     # same shape as line 1 → deduped
+        "https://x.com/a?id=3",     # same shape → deduped
+        "https://x.com/b?q=x",      # distinct shape
+    ])
+    scan_file, stats = _filter_param_urls(inp, tmp_path)
+
+    assert stats["deduped"] == 2
+    assert stats["selected"] == 2
+    assert read_lines(scan_file) == [
+        "https://x.com/a?id=1",
+        "https://x.com/b?q=x",
+    ]
+
+
+def test_filter_caps_to_max_urls_keeping_high_value(tmp_path: Path):
+    inp = tmp_path / "processed" / "parameterized_urls.txt"
+    inp.parent.mkdir(parents=True)
+    write_lines(inp, [
+        "https://x.com/blog/1?ref=a",         # low value
+        "https://x.com/blog/2?ref=b",         # low value
+        "https://x.com/api/v1/user?id=7",     # high value (api + id=)
+    ])
+    scan_file, stats = _filter_param_urls(inp, tmp_path, max_urls=1)
+
+    assert stats["capped"] == 2
+    assert stats["selected"] == 1
+    # The high-value api/id URL survives the cap.
+    assert read_lines(scan_file) == ["https://x.com/api/v1/user?id=7"]
 
 
 # ----------------------------------------------------------------------
@@ -116,7 +159,9 @@ def test_dynamic_scan_feeds_only_param_urls_to_nuclei(tmp_path: Path, monkeypatc
     assert scanned == ["https://x.com/a?id=", "https://x.com/b?token="]
 
     # The drop is surfaced for the report.
-    assert res["extra"]["param_filter"] == {"kept": 2, "dropped": 1}
+    pf = res["extra"]["param_filter"]
+    assert pf["dropped_no_param"] == 1
+    assert pf["selected"] == 2
 
 
 def test_dynamic_scan_no_param_filter_key_when_nothing_dropped(tmp_path: Path, monkeypatch):

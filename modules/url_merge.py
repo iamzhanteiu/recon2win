@@ -115,6 +115,64 @@ def has_query_params(url: str) -> bool:
         return False
 
 
+# ----------------------------------------------------------------------
+# Scope filtering — keep in-scope + operator-declared related roots.
+# ----------------------------------------------------------------------
+def _host_of(url: str) -> str:
+    """Lowercased hostname of a URL (``""`` when unparseable)."""
+    s = (url or "").strip()
+    if not s:
+        return ""
+    if "://" not in s:
+        s = "http://" + s
+    try:
+        return (urlsplit(s).hostname or "").lower()
+    except ValueError:
+        return ""
+
+
+def normalize_root(root: str) -> str:
+    """Normalise a scope root to a bare registrable-ish host.
+
+    Accepts ``foo.com``, ``.foo.com``, ``*.foo.com`` or a full URL and
+    returns ``foo.com``. Empty/garbage → ``""`` (ignored by callers).
+    """
+    r = (root or "").strip().lower()
+    if not r:
+        return ""
+    if "://" in r:
+        r = _host_of(r)
+    r = r.replace("*.", "")
+    return r.strip().lstrip(".")
+
+
+def _host_matches_root(host: str, root: str) -> bool:
+    return bool(host) and bool(root) and (host == root or host.endswith("." + root))
+
+
+def is_in_scope(url: str, root: str, related_roots: Iterable[str] = ()) -> bool:
+    """True when ``url``'s host is the target root, a subdomain of it, or a
+    subdomain of any operator-declared related root.
+
+    ``root`` / ``related_roots`` may be passed in any accepted form
+    (``foo.com`` / ``.foo.com`` / ``*.foo.com``) — they're normalised here.
+    """
+    host = _host_of(url)
+    if not host:
+        return False
+    if _host_matches_root(host, normalize_root(root)):
+        return True
+    return any(_host_matches_root(host, normalize_root(r)) for r in related_roots)
+
+
+def filter_in_scope(
+    urls: Iterable[str], root: str, related_roots: Iterable[str] = (),
+) -> list[str]:
+    """Keep only in-scope + related-root URLs. Preserves input order."""
+    related = list(related_roots or [])
+    return [u for u in urls if is_in_scope(u, root, related)]
+
+
 def dedupe_urls(urls: Iterable[str]) -> list[str]:
     """De-duplicate URLs (case-insensitive on scheme+host, exact on path+query)."""
     seen: set[str] = set()
@@ -135,7 +193,28 @@ def dedupe_urls(urls: Iterable[str]) -> list[str]:
 # ----------------------------------------------------------------------
 # Stage orchestration
 # ----------------------------------------------------------------------
-def merge(output_dir: Path, *, resume: bool = False, dry_run: bool = False) -> dict:
+def _scope_params(domain: str, cfg: dict | None) -> tuple[bool, str, list[str]]:
+    """Resolve (filter_on, root, related_roots) from config + domain.
+
+    Filtering is only applied when it's enabled AND we actually know the
+    root — filtering with an empty root would drop *everything*, so we
+    treat "no domain" as "don't filter" (fail-open, never silently empty).
+    """
+    scope_cfg = (cfg or {}).get("scope") or {}
+    filter_on = bool(scope_cfg.get("filter_urls", True))
+    root = normalize_root(domain or "")
+    related = [str(r) for r in (scope_cfg.get("related_roots") or [])]
+    return (filter_on and bool(root)), root, related
+
+
+def merge(
+    output_dir: Path,
+    domain: str = "",
+    cfg: dict | None = None,
+    *,
+    resume: bool = False,
+    dry_run: bool = False,
+) -> dict:
     stage = "url_merge"
     proc = output_dir / "processed"
     proc.mkdir(parents=True, exist_ok=True)
@@ -169,26 +248,46 @@ def merge(output_dir: Path, *, resume: bool = False, dry_run: bool = False) -> d
 
     normalised = [normalize_url(u) for u in dedupe_urls(all_lines)]
     normalised = [u for u in normalised if u]
-    n_all = write_lines(out_all, normalised)
 
+    # js_urls is built from the FULL union — out-of-scope ``.js`` (the app's
+    # own bundles served from a CDN/S3) is kept on purpose so xnLinkFinder +
+    # jsluice can still mine endpoints out of it. Scope filtering only trims
+    # all_urls.txt / dynamic_urls.txt, which feed httpx/arjun/nuclei.
     js_urls = [u for u in normalised if is_js_url(u)]
     n_js = write_lines(out_js, js_urls)
 
-    dyn_urls = [u for u in normalised if is_dynamic_url(u)]
+    filter_on, root, related = _scope_params(domain, cfg)
+    in_scope = filter_in_scope(normalised, root, related) if filter_on else normalised
+    dropped = len(normalised) - len(in_scope)
+    n_all = write_lines(out_all, in_scope)
+
+    dyn_urls = [u for u in in_scope if is_dynamic_url(u)]
     n_dyn = write_lines(out_dyn, dyn_urls)
 
+    extra = {"js": n_js, "dynamic": n_dyn}
+    if filter_on:
+        extra["scope_dropped"] = dropped
+        extra["scope_kept"] = n_all
     return make_result(
         stage, "success", input_path=",".join(str(f) for f in files),
         outputs=[out_all, out_js, out_dyn],
-        count=n_all, extra={"js": n_js, "dynamic": n_dyn},
+        count=n_all, extra=extra,
     )
 
 
-def append_urls(output_dir: Path, extra_files: list[Path]) -> dict:
+def append_urls(
+    output_dir: Path,
+    extra_files: list[Path],
+    domain: str = "",
+    cfg: dict | None = None,
+) -> dict:
     """Re-merge after xnLinkFinder (stage 6.2) and re-classify.
 
     The spec says: "Merge xnLinkFinder URLs back into processed/all_urls.txt.
-    Deduplicate again after merge." We do exactly that.
+    Deduplicate again after merge." We do exactly that, and re-apply the same
+    scope filter so JS-derived endpoints on third-party hosts don't leak back
+    into the scan set. Out-of-scope ``.js`` stays in js_urls.txt (merged with
+    whatever merge() already put there) so nothing that fed JS analysis is lost.
     """
     stage = "url_merge_append"
     proc = output_dir / "processed"
@@ -202,13 +301,29 @@ def append_urls(output_dir: Path, extra_files: list[Path]) -> dict:
         extra.extend(read_lines(f))
     merged = [normalize_url(u) for u in dedupe_urls(existing + extra)]
     merged = [u for u in merged if u]
-    n_all = write_lines(out_all, merged)
-    n_js = write_lines(out_js, [u for u in merged if is_js_url(u)])
-    n_dyn = write_lines(out_dyn, [u for u in merged if is_dynamic_url(u)])
+
+    # Preserve out-of-scope .js: union the existing js_urls.txt (which holds
+    # the out-of-scope bundles from merge()) with any new .js in the extras,
+    # rather than recomputing from the scope-filtered set.
+    existing_js = read_lines(out_js)
+    new_js = [normalize_url(u) for u in extra if is_js_url(u)]
+    js_all = [u for u in dedupe_urls(existing_js + new_js) if u]
+    n_js = write_lines(out_js, js_all)
+
+    filter_on, root, related = _scope_params(domain, cfg)
+    in_scope = filter_in_scope(merged, root, related) if filter_on else merged
+    dropped = len(merged) - len(in_scope)
+    n_all = write_lines(out_all, in_scope)
+    n_dyn = write_lines(out_dyn, [u for u in in_scope if is_dynamic_url(u)])
+
+    extra_meta = {"js": n_js, "dynamic": n_dyn}
+    if filter_on:
+        extra_meta["scope_dropped"] = dropped
+        extra_meta["scope_kept"] = n_all
     return make_result(
         stage, "success", input_path=",".join(str(f) for f in extra_files),
         outputs=[out_all, out_js, out_dyn],
-        count=n_all, extra={"js": n_js, "dynamic": n_dyn},
+        count=n_all, extra=extra_meta,
     )
 
 
