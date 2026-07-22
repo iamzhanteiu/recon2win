@@ -30,6 +30,21 @@ scope:
   #     - arena.net
   related_roots: []
 
+# ---------- URL dedup (param templates) ----------
+# The crawler + waymore emit the SAME endpoint hundreds of times with only the
+# param VALUE changing: ``/e?id=1``, ``/e?id=2``, ... — plus URLs that repeat a
+# param name (``/e?p=a&p=b``). Exact-string dedup keeps them all, so the param
+# list balloons to 100k+ and arjun/nuclei waste budget re-fuzzing one endpoint.
+#
+# ``collapse_params`` collapses URLs that share (host, path, param-name set) to
+# a single representative — but SMART: a param value is kept distinct when it
+# looks like a human keyword (``action=delete`` vs ``action=view``) and only
+# folded when it looks like a machine id (number / uuid / hash / long blob).
+# It fails toward KEEPING, so an ``?action=admin`` style endpoint is never
+# silently dropped. Applies to all_urls.txt + dynamic_urls.txt.
+url_dedup:
+  collapse_params: true
+
 # ---------- Subdomain collection ----------
 subdomain:
   tools:

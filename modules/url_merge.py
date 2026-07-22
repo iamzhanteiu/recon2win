@@ -23,7 +23,7 @@ from __future__ import annotations
 import re
 from pathlib import Path
 from typing import Iterable
-from urllib.parse import urlsplit, urlunsplit
+from urllib.parse import parse_qsl, urlsplit, urlunsplit
 
 from .sensitive_ext import STATIC_EXT
 from .utils import make_result, read_lines, write_lines
@@ -173,6 +173,85 @@ def filter_in_scope(
     return [u for u in urls if is_in_scope(u, root, related)]
 
 
+# ----------------------------------------------------------------------
+# Param-template collapsing — one representative per (host, path, param
+# shape), so a crawl that emits ``/e?id=1 … /e?id=999`` doesn't balloon the
+# scan set. "Smart": a param value is kept distinct when it looks like a
+# human keyword, folded only when it looks like a machine id.
+# ----------------------------------------------------------------------
+_HEXISH_RE = re.compile(r"^[0-9a-fA-F-]{8,}$")
+
+
+def _is_meaningful_value(v: str) -> bool:
+    """True when a param value looks like a human keyword worth keeping
+    distinct (``delete``, ``admin``, ``true``), False when it looks like a
+    machine id (number / uuid / hash / long blob) or is empty.
+
+    Deliberately fails toward *meaningful* on ambiguous short alphabetic
+    values — losing an ``?action=admin`` endpoint is far worse than keeping
+    a couple of near-duplicates.
+    """
+    v = (v or "").strip()
+    if not v:
+        return False                # empty → nothing to distinguish
+    if len(v) > 20:
+        return False                # long → token / hash / encoded blob
+    if v.isdigit():
+        return False                # numeric id / page / epoch
+    if _HEXISH_RE.match(v):
+        return False                # hex id / uuid / md5-ish
+    if not any(c.isalpha() for c in v):
+        return False                # dates / symbols with no letters
+    return True
+
+
+def param_template_key(url: str) -> tuple:
+    """Signature that collapses value-only variants of the same endpoint.
+
+    Keyed on scheme + host + path + a *set* of ``(param_name, {keyword
+    values})``. Using a set makes it order-independent (``?a=&b=`` ==
+    ``?b=&a=``) and folds a repeated param name (``?p=a&p=b`` == ``?p=a``).
+    Only keyword-like values (see ``_is_meaningful_value``) enter the key,
+    so ``?id=1`` and ``?id=2`` share a key but ``?action=delete`` and
+    ``?action=view`` do not.
+    """
+    try:
+        sp = urlsplit(url)
+    except ValueError:
+        return (url,)
+    occur: dict[str, list[str]] = {}
+    for name, val in parse_qsl(sp.query, keep_blank_values=True):
+        occur.setdefault(name, []).append(val)
+    parts: list[tuple[str, str]] = []
+    for name, vals in occur.items():
+        # A single, keyword-like value is kept in the key (so
+        # ``?action=delete`` and ``?action=view`` stay distinct). A repeated
+        # param name (``?p=a&p=b``) or a machine-id value folds to name-only,
+        # collapsing all such value-samples of the same endpoint into one.
+        if len(vals) == 1 and _is_meaningful_value(vals[0]):
+            parts.append((name, vals[0]))
+        else:
+            parts.append((name, ""))
+    return (sp.scheme, sp.netloc.lower(), sp.path, frozenset(parts))
+
+
+def collapse_param_shapes(urls: Iterable[str]) -> list[str]:
+    """Keep one representative per ``param_template_key``. First-seen wins,
+    so the output order is stable across runs. URLs with no query string are
+    unaffected (their key is just scheme+host+path)."""
+    seen: set[tuple] = set()
+    out: list[str] = []
+    for u in urls:
+        if not u:
+            continue
+        k = param_template_key(u)
+        if k in seen:
+            continue
+        seen.add(k)
+        out.append(u)
+    return out
+
+
 def dedupe_urls(urls: Iterable[str]) -> list[str]:
     """De-duplicate URLs (case-insensitive on scheme+host, exact on path+query)."""
     seen: set[str] = set()
@@ -205,6 +284,10 @@ def _scope_params(domain: str, cfg: dict | None) -> tuple[bool, str, list[str]]:
     root = normalize_root(domain or "")
     related = [str(r) for r in (scope_cfg.get("related_roots") or [])]
     return (filter_on and bool(root)), root, related
+
+
+def _collapse_enabled(cfg: dict | None) -> bool:
+    return bool(((cfg or {}).get("url_dedup") or {}).get("collapse_params", True))
 
 
 def merge(
@@ -259,6 +342,15 @@ def merge(
     filter_on, root, related = _scope_params(domain, cfg)
     in_scope = filter_in_scope(normalised, root, related) if filter_on else normalised
     dropped = len(normalised) - len(in_scope)
+
+    # Collapse value-only param variants of the same endpoint (``/e?id=1`` …
+    # ``/e?id=999`` → one URL) before writing the scan set.
+    collapse_on = _collapse_enabled(cfg)
+    kept_before = len(in_scope)
+    if collapse_on:
+        in_scope = collapse_param_shapes(in_scope)
+    collapsed = kept_before - len(in_scope)
+
     n_all = write_lines(out_all, in_scope)
 
     dyn_urls = [u for u in in_scope if is_dynamic_url(u)]
@@ -268,6 +360,8 @@ def merge(
     if filter_on:
         extra["scope_dropped"] = dropped
         extra["scope_kept"] = n_all
+    if collapse_on and collapsed:
+        extra["param_collapsed"] = collapsed
     return make_result(
         stage, "success", input_path=",".join(str(f) for f in files),
         outputs=[out_all, out_js, out_dyn],
@@ -313,6 +407,13 @@ def append_urls(
     filter_on, root, related = _scope_params(domain, cfg)
     in_scope = filter_in_scope(merged, root, related) if filter_on else merged
     dropped = len(merged) - len(in_scope)
+
+    collapse_on = _collapse_enabled(cfg)
+    kept_before = len(in_scope)
+    if collapse_on:
+        in_scope = collapse_param_shapes(in_scope)
+    collapsed = kept_before - len(in_scope)
+
     n_all = write_lines(out_all, in_scope)
     n_dyn = write_lines(out_dyn, [u for u in in_scope if is_dynamic_url(u)])
 
@@ -320,6 +421,8 @@ def append_urls(
     if filter_on:
         extra_meta["scope_dropped"] = dropped
         extra_meta["scope_kept"] = n_all
+    if collapse_on and collapsed:
+        extra_meta["param_collapsed"] = collapsed
     return make_result(
         stage, "success", input_path=",".join(str(f) for f in extra_files),
         outputs=[out_all, out_js, out_dyn],

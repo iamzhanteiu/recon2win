@@ -111,7 +111,9 @@ def _param_signature(url: str) -> tuple:
     """
     from urllib.parse import parse_qsl, urlsplit
     s = urlsplit(url)
-    names = tuple(sorted(k for k, _ in parse_qsl(s.query, keep_blank_values=True)))
+    # ``set`` folds a repeated param name (``?p=a&p=b`` == ``?p=a``) so those
+    # collapse to one shape too — not just distinct-name value variants.
+    names = tuple(sorted({k for k, _ in parse_qsl(s.query, keep_blank_values=True)}))
     return (s.scheme, s.netloc, s.path, names)
 
 

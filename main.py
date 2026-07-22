@@ -372,6 +372,12 @@ def main() -> int:
                 f"scope filter: dropped {_sd} out-of-scope URL(s) from "
                 f"all_urls.txt (out-of-scope .js kept for JS analysis)"
             ))
+        _pc = (r.get("extra") or {}).get("param_collapsed")
+        if _pc:
+            print(console.phase_info_line(
+                f"param collapse: folded {_pc} value-only URL variant(s) "
+                f"(kept keyword values like ?action=delete distinct)"
+            ))
         prog.finish_phase(r, num=5)
 
         # ---- 6. parallel: httpx URL check + xnLinkFinder + jsluice ----
