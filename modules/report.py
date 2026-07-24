@@ -424,6 +424,7 @@ class ReportBuilder:
         ("processed/alive_urls_detail.json","processed","httpx URL check detail"),
         ("processed/arjun_params.txt",   "processed", "Arjun raw output"),
         ("processed/parameterized_urls.txt","processed","parameterized URLs"),
+        ("processed/forms.json",         "processed", "forms/inputs from crawl (POST/upload/login surface)"),
         # findings/<kind>/
         ("findings/default/nuclei.txt",  "findings",  "nuclei default matched URLs"),
         ("findings/default/nuclei.json", "findings",  "nuclei default findings"),
@@ -527,6 +528,11 @@ class ReportBuilder:
             jsluice_secrets = []
         jsluice_sev = jsl.get("severity_count", {}) if isinstance(jsl, dict) else {}
         counts["jsluice_secrets"] = len(jsluice_secrets)
+
+        # forms/inputs mined from the crawl (processed/forms.json)
+        forms_data = load_json_safe(proc / "forms.json") or {}
+        forms_list = forms_data.get("forms", []) if isinstance(forms_data, dict) else []
+        counts["forms"] = len(forms_list) if isinstance(forms_list, list) else 0
 
         # captured responses — full ffuf/dirsearch hit bodies (responses/)
         resp = load_json_safe(i.output_dir / "responses" / "preview.json") or {}

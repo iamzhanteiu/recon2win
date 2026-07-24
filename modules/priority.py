@@ -66,6 +66,7 @@ _PATH_HINTS: tuple[tuple[str, int, str], ...] = (
 _PARAM_SCORE = 300       # a URL carrying params = injection surface
 _DIRSEARCH_SCORE = 220   # passed dirsearch's status filter = exists + interesting
 _FFUF_SCORE = 220        # same signal from ffuf (auto-calibrated, so soft-404s are already gone)
+_FORM_SCORE = 320        # a <form> = real input surface (arjun only sees GET params)
 
 
 def _norm(url: str) -> str:
@@ -90,6 +91,7 @@ def score_targets(
     *,
     nuclei_findings: list[dict] | None = None,
     secrets: list[dict] | None = None,
+    forms: list[dict] | None = None,
     parameterized_urls: list[str] | None = None,
     dirsearch_urls: list[str] | None = None,
     ffuf_urls: list[str] | None = None,
@@ -119,6 +121,33 @@ def score_targets(
         kind = s.get("kind") or "secret"
         _add(bucket, s.get("url") or "", _SEV_SCORE.get(sev, 15) + 100,
              f"secret ({kind})")
+
+    for f in forms or []:
+        if not isinstance(f, dict):
+            continue
+        action = f.get("action") or f.get("url") or ""
+        if not action:
+            continue
+        method = (f.get("method") or "GET").upper()
+        params = [str(p).lower() for p in (f.get("parameters") or [])]
+        enctype = (f.get("enctype") or "").lower()
+        score = _FORM_SCORE
+        tags: list[str] = []
+        if method == "POST":
+            score += 60                    # POST body params arjun never fuzzes
+        if "multipart" in enctype:
+            score += 150                   # file upload → RCE / path traversal
+            tags.append("upload")
+        if any("pass" in p for p in params):
+            score += 80                     # login form → auth attack surface
+            tags.append("login")
+        if any(t in params for t in ("csrf", "authenticity_token", "_token", "token")):
+            tags.append("csrf")
+        label = f"form {method}"
+        if tags:
+            label += f" [{','.join(tags)}]"
+        label += f" ({len(params)} fields)"
+        _add(bucket, action, score, label)
 
     for u in parameterized_urls or []:
         _add(bucket, u, _PARAM_SCORE, "parameterized")
@@ -182,9 +211,13 @@ def build_priority_targets(output_dir: Path, domain: str, *, limit: int = 200) -
     secrets_data = load_json(findings / "jsluice_secrets.json") or {}
     secrets = secrets_data.get("findings", []) if isinstance(secrets_data, dict) else []
 
+    forms_data = load_json(proc / "forms.json") or {}
+    forms = forms_data.get("forms", []) if isinstance(forms_data, dict) else []
+
     targets = score_targets(
         nuclei_findings=nuclei,
         secrets=secrets,
+        forms=forms,
         parameterized_urls=read_lines(proc / "parameterized_urls.txt"),
         dirsearch_urls=read_lines(proc / "dirsearch_urls.txt"),
         ffuf_urls=read_lines(proc / "ffuf_urls.txt"),

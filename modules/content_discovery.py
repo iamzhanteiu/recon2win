@@ -19,6 +19,7 @@ from .utils import (
     make_result,
     raw_dir,
     read_lines,
+    write_json,
     write_lines,
 )
 
@@ -51,6 +52,58 @@ def _hosts_from_urls(url_lines: list[str]) -> list[str]:
 def _outputs_exist(out_dir: Path) -> bool:
     p = out_dir / "processed" / "crawler_urls.txt"
     return p.exists() and p.stat().st_size > 0
+
+
+def _extract_katana_jsonl(jsonl_path: Path, urls_out: Path,
+                          forms_out: Path) -> tuple[int, int]:
+    """Split katana ``-jsonl -fx`` output into two files:
+
+      * ``urls_out``  — plain URL list (one per line), so every downstream
+        consumer that read the old ``katana_urls.txt`` keeps working.
+      * ``forms_out`` — ``{"forms": [...]}`` where each form is
+        ``{url, action, method, enctype, parameters:[names]}`` — the
+        POST/upload/login attack surface arjun's GET-param scan never sees.
+
+    Parses defensively: a partial file from a timed-out crawl still yields
+    whatever completed. Returns ``(url_count, form_count)``.
+    """
+    import json
+
+    urls: list[str] = []
+    forms: list[dict] = []
+    seen_form: set[tuple] = set()
+    for ln in jsonl_path.read_text(errors="ignore").splitlines():
+        ln = ln.strip()
+        if not ln:
+            continue
+        try:
+            obj = json.loads(ln)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(obj, dict):
+            continue
+        req = obj.get("request") or {}
+        url = req.get("endpoint") or ""
+        if url:
+            urls.append(url)
+        resp = obj.get("response") or {}
+        for f in resp.get("forms") or []:
+            if not isinstance(f, dict):
+                continue
+            action = f.get("action") or url
+            method = (f.get("method") or "GET").upper()
+            params = [p for p in (f.get("parameters") or []) if p]
+            key = (method, action, tuple(sorted(params)))
+            if key in seen_form:
+                continue
+            seen_form.add(key)
+            forms.append({
+                "url": url, "action": action, "method": method,
+                "enctype": f.get("enctype") or "", "parameters": params,
+            })
+    n_urls = write_lines(urls_out, urls)   # write_lines dedups
+    write_json(forms_out, {"forms": forms, "count": len(forms)})
+    return n_urls, len(forms)
 
 
 def crawl(
@@ -105,29 +158,59 @@ def crawl(
     # 4.1.a — katana
     if cd_cfg.get("katana", {}).get("enabled", True):
         out = raw_cd / "katana_urls.txt"
+        forms_out = proc / "forms.json"
         if runner.tool_available("katana"):
             depth = int(cd_cfg.get("katana", {}).get("depth", 3))
             to = int(cd_cfg.get("katana", {}).get("timeout", 1800))
+            fx = bool(cd_cfg.get("katana", {}).get("form_extraction", True))
             # -do (-display-out-scope): also emit external endpoints found
             # while crawling in-scope pages — e.g. JS/assets served from a
             # CDN / S3 / static host. These out-of-scope JS URLs feed the
             # JS-analysis stages (xnLinkFinder + jsluice), which parse them
             # for the app's own API endpoints.
-            r = runner.run(
-                ["katana", "-list", str(alive_file), "-do", "-depth", str(depth),
-                 "-silent", "-output", str(out)],
-                stage="content_discovery_katana", log_name=stage,
-                output_dir=output_dir, timeout=to,
-            )
-            if not r["success"] and not r["missing_binary"]:
-                print(f"[{stage}] katana failed: {r['stderr'][:200]}")
+            base_cmd = ["katana", "-list", str(alive_file), "-do",
+                        "-depth", str(depth), "-silent"]
+            if fx:
+                # -fx extracts form/input/textarea/select into the jsonl;
+                # -ob omits the response body so the jsonl stays lean. We
+                # then split it back into a plain URL list (downstream stays
+                # unchanged) + processed/forms.json. Same single crawl — no
+                # extra requests to the target.
+                jsonl = raw_cd / "katana.jsonl"
+                r = runner.run(
+                    base_cmd + ["-jsonl", "-fx", "-ob", "-output", str(jsonl)],
+                    stage="content_discovery_katana", log_name=stage,
+                    output_dir=output_dir, timeout=to,
+                )
+                if not r["success"] and not r["missing_binary"]:
+                    print(f"[{stage}] katana failed: {r['stderr'][:200]}")
+                if jsonl.exists() and jsonl.stat().st_size > 0:
+                    n_u, n_f = _extract_katana_jsonl(jsonl, out, forms_out)
+                    if n_f:
+                        print(console.phase_info_line(
+                            f"[{stage}] katana form-extraction: {n_f} form(s) "
+                            f"→ processed/forms.json"))
+                else:
+                    out.write_text("")
+                    write_json(forms_out, {"forms": [], "count": 0})
+            else:
+                r = runner.run(
+                    base_cmd + ["-output", str(out)],
+                    stage="content_discovery_katana", log_name=stage,
+                    output_dir=output_dir, timeout=to,
+                )
+                if not r["success"] and not r["missing_binary"]:
+                    print(f"[{stage}] katana failed: {r['stderr'][:200]}")
+                write_json(forms_out, {"forms": [], "count": 0})
         else:
             print(f"[{stage}] katana not installed — skipping")
             out.write_text("")
+            write_json(forms_out, {"forms": [], "count": 0})
         outputs.append(out)
         all_urls.extend(read_lines(out))
     else:
         (raw_cd / "katana_urls.txt").write_text("")
+        (proc / "forms.json").write_text('{"forms": [], "count": 0}')
         outputs.append(raw_cd / "katana_urls.txt")
 
     # 4.1.b — urlfinder (projectdiscovery/urlfinder). ``-list`` takes a file of

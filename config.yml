@@ -152,6 +152,13 @@ content_discovery:
     enabled: true
     depth: 3
     timeout: 1800
+    # Extract <form>/<input>/<textarea>/<select> from every crawled page
+    # (katana -fx) into processed/forms.json — the POST/upload/login attack
+    # surface arjun's GET-param scan never sees. Reuses the SAME crawl (no
+    # extra requests): katana runs with -jsonl -fx -ob and we split the
+    # output back into the plain URL list + forms.json. Set false to keep
+    # the old plain-text crawl (e.g. an old katana without -fx).
+    form_extraction: true
   urlfinder:
     enabled: true
     timeout: 1800

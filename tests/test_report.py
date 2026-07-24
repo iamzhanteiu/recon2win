@@ -193,6 +193,16 @@ def fake_outputs(tmp_path: Path) -> Path:
         "severity_count": {"high": 1, "low": 1},
     }))
 
+    # processed/forms.json — forms/inputs mined from the crawl
+    (proc / "forms.json").write_text(json.dumps({
+        "forms": [
+            {"url": "https://example.com/login", "action": "https://example.com/login",
+             "method": "POST", "enctype": "application/x-www-form-urlencoded",
+             "parameters": ["username", "password", "csrf"]},
+        ],
+        "count": 1,
+    }))
+
     # responses/ — full ffuf/dirsearch response capture + preview
     (base / "responses").mkdir(parents=True, exist_ok=True)
     (base / "responses" / "index.md").write_text(
