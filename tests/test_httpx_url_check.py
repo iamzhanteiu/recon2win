@@ -23,8 +23,8 @@ from modules.utils import read_lines, write_lines
 def test_cap_is_noop_when_under_limit(tmp_path: Path):
     inp = tmp_path / "all_urls.txt"
     write_lines(inp, ["https://x.com/a", "https://x.com/b"])
-    scan_file, total, kept = _cap_urls(inp, tmp_path, 60000)
-    assert (total, kept) == (2, 2)
+    scan_file, total, kept, n_static = _cap_urls(inp, tmp_path, 60000)
+    assert (total, kept, n_static) == (2, 2, 0)
     assert scan_file == inp  # original returned untouched
 
 
@@ -35,10 +35,27 @@ def test_cap_keeps_high_value_urls_first(tmp_path: Path):
         "https://x.com/static/img/2.png",
         "https://x.com/api/v1/user?id=7",   # high value
     ])
-    scan_file, total, kept = _cap_urls(inp, tmp_path, 1)
+    scan_file, total, kept, _ = _cap_urls(inp, tmp_path, 1)
     assert (total, kept) == (3, 1)
     assert scan_file != inp
     assert read_lines(scan_file) == ["https://x.com/api/v1/user?id=7"]
+
+
+def test_cap_drops_static_before_probing(tmp_path: Path):
+    inp = tmp_path / "all_urls.txt"
+    write_lines(inp, [
+        "https://x.com/logo.png", "https://x.com/app.css",
+        "https://x.com/font.woff2", "https://x.com/main.js",   # .js is KEPT
+        "https://x.com/api/user?id=1",
+    ])
+    scan_file, total, kept, n_static = _cap_urls(
+        inp, tmp_path, 60000, drop_static=True)
+    assert total == 5
+    assert n_static == 3            # png + css + woff2 dropped
+    survivors = read_lines(scan_file)
+    assert "https://x.com/main.js" in survivors       # JS kept for analysis
+    assert "https://x.com/api/user?id=1" in survivors
+    assert not any(u.endswith((".png", ".css", ".woff2")) for u in survivors)
 
 
 def test_score_prefers_params_and_api():

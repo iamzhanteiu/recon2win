@@ -100,10 +100,39 @@ SENSITIVE_FILES: list[str] = [
 # Static asset — loại khỏi danh sách "dynamic URL"
 # ----------------------------------------------------------------------
 STATIC_EXT: list[str] = [
-    ".png", ".jpg", ".jpeg", ".gif", ".svg",
-    ".css", ".woff", ".woff2", ".ico",
-    ".mp4", ".mp3",
+    # images
+    ".png", ".jpg", ".jpeg", ".gif", ".svg", ".ico",
+    ".webp", ".bmp", ".avif", ".tiff", ".apng", ".cur",
+    # styles + fonts
+    ".css", ".scss", ".less", ".woff", ".woff2", ".ttf", ".eot", ".otf",
+    # source maps (never a target, huge, noisy)
+    ".map",
+    # video
+    ".mp4", ".webm", ".avi", ".mov", ".flv", ".mkv", ".m4v",
+    # audio
+    ".mp3", ".wav", ".ogg", ".m4a", ".aac", ".flac",
+    # misc static
+    ".swf",
 ]
+# NOTE: deliberately NOT here — kept for scanning/analysis:
+#   .js  → jsluice/xnLinkFinder mine endpoints & secrets from it
+#   .json/.xml → often API responses / sitemaps
+#   .pdf/.txt  → may leak info (metadata, robots, internal notes)
+
+
+def is_static_asset(url: str) -> bool:
+    """True if the URL's path ends in a static-asset extension (image, font,
+    css, media, source map…). Used to drop dead-weight URLs before probing
+    with httpx / scanning with nuclei — never matches ``.js`` (kept for JS
+    analysis). Query string is ignored (``/a.png?v=2`` still matches)."""
+    if not url:
+        return False
+    try:
+        from urllib.parse import urlsplit
+        path = urlsplit(url).path.lower()
+    except ValueError:
+        return False
+    return any(path.endswith(ext) for ext in STATIC_EXT)
 
 
 def to_dirsearch_flag(extensions: list[str]) -> str:

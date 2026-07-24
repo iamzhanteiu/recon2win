@@ -145,6 +145,12 @@ httpx:
   # the highest-value URLs first (params / api / admin / auth paths).
   #   0 → no cap (only for small curated targets)
   max_url_check: 60000
+  # Drop static-asset URLs (images/fonts/css/media/source-maps — see
+  # sensitive_ext.STATIC_EXT) BEFORE the max_url_check cap, so the cap
+  # budget goes to real endpoints instead of dead-weight assets that push
+  # genuine URLs out of the window. ``.js`` is NEVER dropped (jsluice /
+  # xnLinkFinder mine it). Set false to probe every asset too.
+  drop_static: true
 
 # ---------- Content discovery ----------
 content_discovery:

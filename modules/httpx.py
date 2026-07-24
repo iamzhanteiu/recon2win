@@ -13,7 +13,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from . import runner
+from . import console, runner
+from .sensitive_ext import is_static_asset
 from .utils import (
     load_json,
     make_result,
@@ -43,21 +44,39 @@ def _score_url(url: str) -> int:
     return score
 
 
-def _cap_urls(urls_file: Path, output_dir: Path, max_urls: int) -> tuple[Path, int, int]:
-    """Cap the URL list to ``max_urls``, keeping the highest-value URLs.
+def _cap_urls(urls_file: Path, output_dir: Path, max_urls: int,
+              *, drop_static: bool = False) -> tuple[Path, int, int, int]:
+    """Prepare the URL list to probe: optionally drop static assets, then
+    cap to ``max_urls`` keeping the highest-value URLs.
 
-    Returns ``(file_to_scan, total, kept)``. When the list already fits
-    (or ``max_urls <= 0``) the original file is returned untouched so the
-    common small-target case stays a no-op.
+    ``drop_static`` removes image/font/css/media/source-map URLs BEFORE the
+    cap — so the cap budget is spent on real endpoints, not dead-weight
+    assets that were pushing genuine URLs out of the 60k window. ``.js`` is
+    never dropped (JS analysis needs it).
+
+    Returns ``(file_to_scan, total, kept, dropped_static)``. When nothing
+    changes (no static dropped and list fits) the original file is returned
+    untouched so the common small-target case stays a no-op.
     """
     urls = read_lines(urls_file)
     total = len(urls)
-    if max_urls <= 0 or total <= max_urls:
-        return urls_file, total, total
-    ranked = sorted(urls, key=lambda u: (-_score_url(u), len(u), u))[:max_urls]
+
+    dropped_static = 0
+    if drop_static:
+        kept_urls = [u for u in urls if not is_static_asset(u)]
+        dropped_static = total - len(kept_urls)
+        urls = kept_urls
+
+    if max_urls > 0 and len(urls) > max_urls:
+        urls = sorted(urls, key=lambda u: (-_score_url(u), len(u), u))[:max_urls]
+
+    # No-op only when nothing was removed at all.
+    if dropped_static == 0 and len(urls) == total:
+        return urls_file, total, total, 0
+
     subset = raw_dir(output_dir, "httpx_urls") / "input_subset.txt"
-    write_lines(subset, ranked)
-    return subset, total, len(ranked)
+    write_lines(subset, urls)
+    return subset, total, len(urls), dropped_static
 
 
 def _write_alive_from_detail(detail_json: Path, alive_txt: Path) -> int:
@@ -215,8 +234,14 @@ def check_urls(
     threads = int(cfg.get("httpx", {}).get("threads", 50))
     timeout = int(cfg.get("httpx", {}).get("timeout", 600))
     max_url_check = int(cfg.get("httpx", {}).get("max_url_check", 60000))
+    drop_static = bool(cfg.get("httpx", {}).get("drop_static", True))
 
-    scan_file, total, kept = _cap_urls(urls_file, output_dir, max_url_check)
+    scan_file, total, kept, n_static = _cap_urls(
+        urls_file, output_dir, max_url_check, drop_static=drop_static)
+    if n_static:
+        print(console.phase_info_line(
+            f"[{stage}] dropped {n_static} static asset URL(s) "
+            f"(jpg/png/css/woff/…) before probing"))
 
     cmd = [
         "httpx", "-l", str(scan_file),
@@ -242,7 +267,8 @@ def check_urls(
         )
 
     count = _write_alive_from_detail(detail_json, alive_txt)
-    extra = {"input_urls": total, "probed_urls": kept}
+    extra = {"input_urls": total, "probed_urls": kept,
+             "static_dropped": n_static}
 
     if timed_out:
         return make_result(
