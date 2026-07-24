@@ -4,6 +4,7 @@ Required: subfinder, amass, chaos (chaos requires PDCP API key).
 """
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from typing import List
 
@@ -87,11 +88,29 @@ def collect(
                 output_dir=output_dir, timeout=timeout,
             )
         elif tool == "chaos":
-            if not runner.tool_available("chaos"):
+            # ProjectDiscovery's `go install .../chaos-client/cmd/chaos@latest`
+            # gives a binary literally named ``chaos``, but the Homebrew
+            # formula (``brew install chaos-client``) installs it as
+            # ``chaos-client`` instead — same tool, same flags, different
+            # name. Try both so either install method works.
+            if runner.tool_available("chaos"):
+                chaos_bin = "chaos"
+            elif runner.tool_available("chaos-client"):
+                chaos_bin = "chaos-client"
+            else:
                 print(f"[{stage}] chaos not installed — skipping")
                 out_file.write_text("")
                 continue
-            cmd = ["chaos", "-d", domain, "-silent", "-o", str(out_file)]
+            # chaos hard-fails with "PDCP_API_KEY not specified" when it has
+            # no key from either -key or the env var — skip up front instead
+            # of burning a subprocess call on a call we know will error out.
+            if not chaos_key and not os.environ.get("PDCP_API_KEY"):
+                print(f"[{stage}] chaos skipped — no chaos_api_key in config.yml "
+                      f"and PDCP_API_KEY not set (free key: "
+                      f"https://cloud.projectdiscovery.io)")
+                out_file.write_text("")
+                continue
+            cmd = [chaos_bin, "-d", domain, "-silent", "-o", str(out_file)]
             if chaos_key:
                 cmd.extend(["-key", chaos_key])
             r = runner.run(
