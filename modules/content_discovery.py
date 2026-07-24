@@ -171,14 +171,18 @@ def crawl(
             base_cmd = ["katana", "-list", str(alive_file), "-do",
                         "-depth", str(depth), "-silent"]
             if fx:
-                # -fx extracts form/input/textarea/select into the jsonl;
-                # -ob omits the response body so the jsonl stays lean. We
-                # then split it back into a plain URL list (downstream stays
-                # unchanged) + processed/forms.json. Same single crawl — no
+                # -fx extracts form/input/textarea/select into the jsonl.
+                # -ob (omit body) + -or (omit raw request/response) keep the
+                # jsonl lean — it carries ONLY the endpoint + parsed forms,
+                # no bodies and no raw HTTP headers (~70% smaller). We split
+                # it back into a plain URL list (downstream stays unchanged) +
+                # processed/forms.json, then delete the jsonl since both
+                # useful pieces are now persisted. Same single crawl — no
                 # extra requests to the target.
                 jsonl = raw_cd / "katana.jsonl"
                 r = runner.run(
-                    base_cmd + ["-jsonl", "-fx", "-ob", "-output", str(jsonl)],
+                    base_cmd + ["-jsonl", "-fx", "-ob", "-or",
+                                "-output", str(jsonl)],
                     stage="content_discovery_katana", log_name=stage,
                     output_dir=output_dir, timeout=to,
                 )
@@ -190,6 +194,12 @@ def crawl(
                         print(console.phase_info_line(
                             f"[{stage}] katana form-extraction: {n_f} form(s) "
                             f"→ processed/forms.json"))
+                    # URL + forms are now in katana_urls.txt / forms.json;
+                    # the intermediate jsonl is dead weight — drop it.
+                    try:
+                        jsonl.unlink()
+                    except OSError:
+                        pass
                 else:
                     out.write_text("")
                     write_json(forms_out, {"forms": [], "count": 0})
