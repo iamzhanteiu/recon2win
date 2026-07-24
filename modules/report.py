@@ -432,6 +432,9 @@ class ReportBuilder:
         ("findings/dynamic/nuclei.txt",  "findings",  "nuclei dynamic matched URLs"),
         ("findings/dynamic/nuclei.json", "findings",  "nuclei dynamic findings"),
         ("findings/jsluice_secrets.json","findings",  "secrets extracted from JS"),
+        # responses/ (ffuf/dirsearch body previews — no full bodies stored)
+        ("responses/index.md",           "responses", "ffuf/dirsearch response previews (status/size/short body snippet)"),
+        ("responses/preview.json",       "responses", "response previews (machine-readable)"),
         # logs/
         ("logs/commands.log",            "logs",      "every command ever run"),
         ("logs/stages.json",             "logs",      "per-stage structured result"),
@@ -524,6 +527,13 @@ class ReportBuilder:
             jsluice_secrets = []
         jsluice_sev = jsl.get("severity_count", {}) if isinstance(jsl, dict) else {}
         counts["jsluice_secrets"] = len(jsluice_secrets)
+
+        # captured responses — full ffuf/dirsearch hit bodies (responses/)
+        resp = load_json_safe(i.output_dir / "responses" / "preview.json") or {}
+        resp_previews = resp.get("previews", []) if isinstance(resp, dict) else []
+        counts["responses_captured"] = (
+            len(resp_previews) if isinstance(resp_previews, list) else 0
+        )
 
         # high-value targets — scan the union of alive URLs + parameterized
         candidate_urls: list[str] = []

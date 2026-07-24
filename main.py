@@ -32,6 +32,7 @@ from modules import (
     nuclei as nuclei_mod,
     priority as priority_mod,
     progress as progress_mod,
+    responses as responses_mod,
     scandiff as scandiff_mod,
     report as report_mod,
     subdomain as sub_mod,
@@ -170,6 +171,8 @@ def main() -> int:
     p.add_argument("--skip-arjun", action="store_true")
     p.add_argument("--skip-xnlinkfinder", action="store_true")
     p.add_argument("--skip-jsluice", action="store_true")
+    p.add_argument("--skip-responses", action="store_true",
+                   help="Skip capturing full responses for ffuf/dirsearch hits.")
     p.add_argument("--color", dest="color", action="store_true", default=None,
                    help="Force ANSI colors even when stdout is not a TTY")
     p.add_argument("--no-color", dest="color", action="store_false",
@@ -380,6 +383,23 @@ def main() -> int:
                 f"(kept keyword values like ?action=delete distinct)"
             ))
         prog.finish_phase(r, num=5)
+
+        # ---- 5.post: body preview for ffuf/dirsearch hits ----
+        # ffuf/dirsearch only record status+URL; re-request each hit with
+        # httpx -bp to grab a short body preview (no full bodies stored) →
+        # responses/index.md. Runs before the report so the preview can be
+        # surfaced there. Skips cleanly when there are no hits.
+        rr = _run_stage(
+            "responses", responses_mod.collect, output_dir, cfg,
+            resume=args.resume, dry_run=False, skip=args.skip_responses,
+        )
+        results.append(rr)
+        _rc = rr.get("extra") or {}
+        if _rc.get("fetched"):
+            print(console.phase_info_line(
+                f"previewed {_rc['fetched']} hit(s) → responses/index.md"
+                + (f"; {_rc['capped']} skipped by cap" if _rc.get("capped") else "")
+            ))
 
         # ---- 6. parallel: httpx URL check + xnLinkFinder + jsluice ----
         prog.start_phase("httpx_urls (and 2 others)", num=6)

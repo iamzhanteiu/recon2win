@@ -79,6 +79,7 @@ def create_output_structure(domain: str, root: str = "outputs") -> Path:
         "logs",
         "tests_input",
         "report",
+        "responses",
     ):
         (base / sub).mkdir(parents=True, exist_ok=True)
     return base
@@ -93,7 +94,7 @@ def raw_dir(output_dir: Path, stage: str) -> Path:
     """
     valid = {"subdomain", "content_discovery", "dirsearch", "ffuf", "waymore",
              "arjun", "nuclei_default", "nuclei_dynamic", "nuclei_endpoints",
-             "httpx_urls"}
+             "httpx_urls", "responses"}
     if stage not in valid:
         raise ValueError(
             f"unknown raw subfolder {stage!r} — valid options: {sorted(valid)}"

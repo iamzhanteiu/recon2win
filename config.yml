@@ -345,6 +345,26 @@ ffuf:
   # Multiplies the request count by len(extensions) + 1 — keep it short.
   extensions: []
 
+# ---------- Response preview ----------
+# ffuf/dirsearch only report status + URL. To triage a hit (is a 200 a real
+# page or a soft-404? what does that 403 body actually say?) you want a
+# glimpse of the body. This stage re-requests the ffuf + dirsearch hits with
+# httpx -bp (body-preview): only the first ~snippet_bytes chars of the body
+# come back — NO full response bodies are fetched or stored. Writes a preview
+# table (status/size/type/title/snippet) to responses/index.md.
+#
+# Runs after content discovery (needs processed/ffuf_urls.txt +
+# dirsearch_urls.txt). Skips cleanly when both are empty. Disable with
+# enabled:false. max_urls caps how many hits get probed (highest-value first:
+# sensitive-looking paths win).
+responses:
+  enabled: true
+  max_urls: 500          # cap how many ffuf/dirsearch hits to probe (0 = no cap)
+  threads: 40
+  timeout: 900           # overall stage budget (seconds)
+  request_timeout: 10    # per-request httpx timeout
+  snippet_bytes: 50      # chars of the response body to keep as preview
+
 # ---------- Waymore ----------
 waymore:
   enabled: true

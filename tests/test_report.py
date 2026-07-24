@@ -193,6 +193,18 @@ def fake_outputs(tmp_path: Path) -> Path:
         "severity_count": {"high": 1, "low": 1},
     }))
 
+    # responses/ — full ffuf/dirsearch response capture + preview
+    (base / "responses").mkdir(parents=True, exist_ok=True)
+    (base / "responses" / "index.md").write_text(
+        "# Response previews — example.com\n\n| status | url |\n")
+    (base / "responses" / "preview.json").write_text(json.dumps({
+        "previews": [
+            {"url": "https://example.com/admin", "status": 200,
+             "content_length": 12, "sources": ["ffuf"], "snippet": "hi"},
+        ],
+        "stats": {"hits": 1, "fetched": 1, "capped": 0},
+    }))
+
     # logs
     (logs / "commands.log").write_text(
         "[2026-06-23T10:00:00Z] [subdomain] subfinder -d example.com -all\n"

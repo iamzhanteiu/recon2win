@@ -45,6 +45,7 @@ _REVIEW = [
     ("processed/alive_urls.txt",       "live discovered URLs (verified)"),
     ("processed/parameterized_urls.txt", "injection candidates (has params)"),
     ("processed/jsluice_endpoints.txt",  "endpoints mined from JS"),
+    ("responses/index.md",               "ffuf/dirsearch response previews (status/size/short body snippet)"),
 ]
 
 # relative path -> (role, subset_of or None)
