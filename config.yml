@@ -51,9 +51,11 @@ subdomain:
     - subfinder
     - amass
     - chaos
-  # Chaos requires an API key from ProjectDiscovery Cloud.
-  # Leave empty if you do not have one.
-  chaos_api_key: ""
+  # Chaos requires an API key from ProjectDiscovery Cloud. Loaded from the
+  # $PDCP_API_KEY env var by default (the same var chaos-client reads) —
+  # export it, or hard-code a value here / in config.local.yml. Resolves to
+  # "" when the env var is unset, which makes the chaos sub-tool skip.
+  chaos_api_key: "${PDCP_API_KEY}"
   timeout: 900
 
 # ---------- puredns (subdomain validator) ----------
@@ -120,14 +122,21 @@ dnsx:
 
 # ---------- HTTPX alive check ----------
 httpx:
-  threads: 50
-  # Bumped from 600 → 1800. The upstream dnsx stage now caps the
+  # Bumped from 50 → 80. A real run against acronis.com's 60000-URL
+  # (max_url_check-capped) input still only probed 60000/180672 — wait,
+  # it probed exactly the max_url_check cap but STILL hit the 1800s
+  # timeout before finishing that capped batch (see logs/stages.json:
+  # "salvaged 12336 alive URLs from partial output (60000/180672
+  # probed)"). More threads shortens wall time for the same request count.
+  threads: 80
+  # Bumped from 600 → 1800 → 3000. The upstream dnsx stage now caps the
   # host list at 5000 (see dnsx.max_resolved), so 600s is usually
   # fine — but with rate-limited CDNs (Akamai, Cloudflare, Fastly)
   # a single httpx probe can hang 5–10s and 5000 hosts × 50 threads
-  # doesn't fit in 600s. 1800s gives 30s/host headroom which is what
-  # apple.com, microsoft.com and similar large targets need.
-  timeout: 1800
+  # doesn't fit in 600s. 3000s gives real headroom for the URL-check
+  # pass (stage 6), which probes up to max_url_check (60000) URLs, not
+  # just the smaller host list the alive-check pass (stage 2) sees.
+  timeout: 3000
   follow_redirects: true
   # Cap the merged URL list fed to the stage-6 URL alive-check. The
   # crawler + waymore + JS tools can produce 400k+ URLs; probing every
@@ -167,11 +176,18 @@ dirsearch:
   threads: 30
   # dirsearch quét các host trong -l TUẦN TỰ trong một process. `timeout` là
   # TRẦN cho cả stage; ngân sách thật = timeout_per_host × số target (sau
-  # dedup). Trước đây chỉ có một con số cố định: 3600s cho 50 host = 72s/host,
-  # gần như chắc chắn bị cắt giữa chừng. Khi ngân sách mong muốn vượt trần,
-  # stage in cảnh báo kèm số giây thực tế mỗi host.
-  timeout_per_host: 300
-  timeout: 3600
+  # dedup). Trước đây timeout_per_host=300 với max_hosts=50 → wanted=15000s,
+  # vượt xa trần 3600s cũ → subprocess bị kill CỨNG ở đúng 3600s (không phải
+  # "72s/host điều chỉnh mềm" như comment cũ mô tả — code chỉ tính con số
+  # thật để CẢNH BÁO, còn timeout truyền cho subprocess vẫn là min(ceiling,
+  # wanted) = ceiling, nên toàn bộ host chưa quét tới bị mất, không salvage
+  # được gì). Thực tế run 2026-07-23 với acronis.com: TimeoutExpired sau
+  # đúng 3600s, 0 kết quả (xem logs/stages.json: "dirsearch failed | timeout
+  # after 3600s"). Hạ timeout_per_host xuống mức vẫn đủ cho quét FILE +
+  # extension (không recursion) rồi nâng trần cho khớp 100%: 120s × 50 host
+  # = 6000s, không còn lệch nên không bao giờ bị cắt giữa chừng nữa.
+  timeout_per_host: 120
+  timeout: 6000
   # ------------------------------------------------------------------
   # Phân vai với ffuf (4.3) để không đào trùng cùng một cây thư mục:
   #   dirsearch = FILE + extension nhạy cảm, KHÔNG recursion
@@ -394,6 +410,25 @@ nuclei:
   update_templates: true
   update_timeout: 600
   # ------------------------------------------------------------------
+  # Batching (applies to ALL three scans: default / endpoints / dynamic).
+  # nuclei's ``-json-export`` is written once at process exit, so a single
+  # run that walls at its timeout persists NOTHING — the "salvaged 0
+  # partial findings" failure a real acronis.com run hit on every scan.
+  # Splitting the URL list into bounded batches makes each batch run to
+  # completion and persist its findings BEFORE the next starts, so a later
+  # timeout never wipes the earlier results.
+  #   batch_size       URLs per batch. 0 → disable (single run, old
+  #                    behaviour). Smaller = safer (less lost per timeout)
+  #                    but more nuclei template-load overhead (~10-30s each).
+  #   batch_timeout    timeout PER BATCH (seconds). The per-scan ``timeout``
+  #                    below still bounds a single non-batched run.
+  #   batch_on_timeout continue → keep going after a timed-out batch (max
+  #                    coverage). stop → halt the stage but keep what's done.
+  # ------------------------------------------------------------------
+  batch_size: 1000
+  batch_timeout: 1800
+  batch_on_timeout: continue
+  # ------------------------------------------------------------------
   # exclude_tags — passed to nuclei as ``-etags``. Filters out
   # templates whose tags match this list. Useful for cutting noise:
   #   interaction — requires user interaction (browser cookie
@@ -423,7 +458,16 @@ nuclei:
       - critical
       - high
       - medium
-    timeout: 7200
+    # Bumped 7200 → 10800. A real run against acronis.com (576 alive
+    # hosts, already critical/high/medium only) STILL hit 7200s and
+    # returned 0 findings — see logs/stages.json: "nuclei_default failed
+    # | timeout after 7200s — salvaged 0 partial findings". Unlike
+    # endpoints/dynamic there's no per-scan URL cap here on purpose —
+    # this is meant to be the one pass that sees every live root host —
+    # so the fix is more time, not less coverage. If it still walls on a
+    # bigger target, lower rate_limit-friendly options are: raise this
+    # further, or curate alive.txt down before running.
+    timeout: 10800
   # ------------------------------------------------------------------
   # endpoints scan — runs AFTER content discovery on alive_urls.txt (the
   # live-verified discovered URLs). default_scan only sees alive.txt (the
@@ -440,7 +484,15 @@ nuclei:
       - critical
       - high
       - medium
-    timeout: 7200
+    # Same failure as nuclei.dynamic used to have before it got max_urls:
+    # a real run fed this 12,336 URLs (alive_urls.txt, uncapped) and hit
+    # 7200s with 0 findings salvaged (logs/stages.json: "nuclei_endpoints
+    # failed | timeout after 7200s"). Dedup near-identical (host, path)
+    # URLs and cap to the top 5000 highest-value — same dedup+cap shape
+    # dynamic_scan already uses (see modules/nuclei.py _filter_endpoint_urls).
+    #   0 → no cap
+    max_urls: 5000
+    timeout: 10800
   dynamic:
     enabled: true
     tags:
@@ -465,18 +517,26 @@ nuclei:
     # (api / auth / most params) and dedup near-identical param shapes.
     #   0 → no cap
     max_urls: 3000
-    timeout: 7200
+    # Bumped 7200 → 10800. Even capped at 3000 URLs, a real run still hit
+    # 7200s with 0 findings salvaged (logs/stages.json: "nuclei_dynamic
+    # failed | timeout after 7200s"): 3000 URLs × the sqli/xss/lfi/rce/
+    # ssrf/ssti/idor/fuzz(ing) tag set × 4 severities is still a lot of
+    # requests at rate_limit=100/s. This is the highest-value scan (real
+    # attack-class templates, not tech detection), so more time > a
+    # smaller max_urls.
+    timeout: 10800
   rate_limit: 100
   bulk_size: 25
   concurrency: 25
 
 # ---------- Telegram ----------
-# Secrets (bot_token, chat_id) live in config.local.yml (git-ignored), NOT here.
-# config.local.yml is deep-merged over this file — set enabled:true + creds there.
+# Secrets load from env ($TELEGRAM_BOT_TOKEN / $TELEGRAM_CHAT_ID) by default,
+# or override in config.local.yml (git-ignored, deep-merged over this file).
+# Both resolve to "" when unset, which keeps Telegram disabled (see _enabled).
 telegram:
-  enabled: false                    # turn on in config.local.yml once creds are set
-  bot_token: ""                     # set in config.local.yml (create a bot via @BotFather)
-  chat_id: ""                       # set in config.local.yml (numeric chat id / group)
+  enabled: false                    # turn on here/config.local.yml once creds are set
+  bot_token: "${TELEGRAM_BOT_TOKEN}"  # $TELEGRAM_BOT_TOKEN (bot via @BotFather)
+  chat_id: "${TELEGRAM_CHAT_ID}"      # $TELEGRAM_CHAT_ID (numeric chat id / group)
   notify_high_critical: true        # immediate alert per high/critical nuclei finding
   notify_summary: true              # milestone summaries at stage-6 and final
   # Per-phase notification — sends one message per stage with count + output
@@ -497,5 +557,5 @@ telegram:
 # Do NOT put real credentials here — copy config.local.yml.example to
 # config.local.yml (git-ignored) and fill them in there.
 hackerone:
-  api_username: ""   # API token identifier
-  api_token: ""      # API token value
+  api_username: "${H1_API_USERNAME}"   # $H1_API_USERNAME — API token identifier
+  api_token: "${H1_API_TOKEN}"         # $H1_API_TOKEN — API token value

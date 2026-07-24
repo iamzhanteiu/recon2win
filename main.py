@@ -20,6 +20,7 @@ import yaml
 
 from modules import (
     arjun as arjun_mod,
+    audit as audit_mod,
     content_discovery as cd_mod,
     console,
     dirsearch as dirsearch_mod,
@@ -569,6 +570,14 @@ def main() -> int:
         graph = graphgen_mod.build_output_graph(output_dir, domain)
         results.append(graph)
 
+        # ---- 10.post.d: reviewer's map → INDEX.md ----
+        # Groups every artefact into review / intermediate / raw / empty so
+        # opening outputs/<domain>/ makes it obvious what to read first. The
+        # processed/ tree is mostly derived slices of all_urls.txt; INDEX
+        # spells that out. Deep overlap on demand: python3 -m modules.audit.
+        index = audit_mod.build_index(output_dir, domain)
+        results.append(index)
+
     # Final Telegram message includes the HTML report path
     _send_summary("final", domain, results, cfg, output_dir, report_info=report_info)
 
@@ -586,6 +595,8 @@ def main() -> int:
     print(console.kv("delta       ", str(output_dir / "report" / "delta.md"),
                      value_color="bright_cyan"))
     print(console.kv("graph       ", str(output_dir / "report" / "graph.mmd"),
+                     value_color="bright_cyan"))
+    print(console.kv("index       ", str(output_dir / "INDEX.md"),
                      value_color="bright_cyan"))
     print(console.kv("output dir  ", str(output_dir), value_color="bright_cyan"))
 
@@ -629,6 +640,33 @@ def _deep_merge(base: dict, overlay: dict) -> dict:
     return out
 
 
+def _resolve_env_vars(val):
+    import os
+    import re
+    if isinstance(val, dict):
+        return {k: _resolve_env_vars(v) for k, v in val.items()}
+    elif isinstance(val, list):
+        return [_resolve_env_vars(v) for v in val]
+    elif isinstance(val, str):
+        # Resolve ${VAR_NAME} or ${VAR_NAME:-default}
+        pattern = re.compile(r'\$\{(?P<name>[A-Za-z_][A-Za-z0-9_]*)(?::-(?P<default>[^}]*))?\}')
+        def repl(match):
+            name = match.group('name')
+            default = match.group('default')
+            if default is None:
+                default = ""
+            return os.environ.get(name, default)
+        
+        # Also support bare $VAR_NAME if it constitutes the entire string
+        if val.startswith("$") and not val.startswith("${"):
+            bare_name = val[1:]
+            if re.match(r'^[A-Za-z_][A-Za-z0-9_]*$', bare_name):
+                return os.environ.get(bare_name, "")
+                
+        return pattern.sub(repl, val)
+    return val
+
+
 def _load_config(cfg_path: Path) -> dict:
     """Load ``config.yml`` and overlay a sibling ``config.local.yml`` if present.
 
@@ -641,7 +679,7 @@ def _load_config(cfg_path: Path) -> dict:
         overlay = yaml.safe_load(local.read_text(encoding="utf-8")) or {}
         if isinstance(overlay, dict):
             cfg = _deep_merge(cfg, overlay)
-    return cfg
+    return _resolve_env_vars(cfg)
 
 
 # ----------------------------------------------------------------------
