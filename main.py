@@ -24,6 +24,7 @@ from modules import (
     content_discovery as cd_mod,
     console,
     dirsearch as dirsearch_mod,
+    doctor as doctor_mod,
     dnsx as dnsx_mod,
     ffuf as ffuf_mod,
     graphgen as graphgen_mod,
@@ -164,6 +165,9 @@ def main() -> int:
                    help="Skip stages whose expected outputs already exist")
     p.add_argument("--dry-run", action="store_true",
                    help="Print the plan and exit; never invoke external tools")
+    p.add_argument("--doctor", action="store_true",
+                   help="Preflight check: report installed tools, configured "
+                        "API keys and wordlists, then exit (no scan).")
     p.add_argument("--skip-nuclei", action="store_true")
     p.add_argument("--skip-dirsearch", action="store_true")
     p.add_argument("--skip-ffuf", action="store_true")
@@ -186,11 +190,34 @@ def main() -> int:
         console.set_enabled(False)
     # else: leave auto-detection alone (TTY / $NO_COLOR / $FORCE_COLOR)
 
+    # Make user-installed tools (~/.local/bin, ~/go/bin, ~/.pdtm/go/bin)
+    # reachable before anything shells out — see _augment_path.
+    _added_paths = _augment_path()
+
     cfg_path = Path(args.config)
     if not cfg_path.exists():
         print(f"[!] config not found: {cfg_path}", file=sys.stderr)
         return 2
     cfg = _load_config(cfg_path)
+
+    # ---- preflight doctor (--doctor: full report + exit) ----
+    if args.doctor:
+        return doctor_mod.run(cfg, added_paths=_added_paths)
+
+    # Brief auto-preflight: one warning line if something's missing, so a
+    # crippled run is obvious up front instead of only in the logs. Never
+    # blocks — run `--doctor` for the full report.
+    if not args.dry_run:
+        _pf = doctor_mod.summarise(cfg)
+        if _pf["missing_required"]:
+            print(console.phase_info_line(
+                "⚠ REQUIRED tools missing: "
+                + ", ".join(_pf["missing_required"])
+                + " — run `--doctor`. Scan will be crippled."))
+        if _pf["missing_optional"]:
+            print(console.phase_info_line(
+                "optional tools missing (stages will skip): "
+                + ", ".join(_pf["missing_optional"])))
 
     # ---- HackerOne integration (optional) ----
     # One seamless flow: --h1-list lists your programs, lets you pick one,
@@ -649,6 +676,38 @@ def main() -> int:
 # ----------------------------------------------------------------------
 # Config loading (config.yml + optional config.local.yml overlay)
 # ----------------------------------------------------------------------
+def _augment_path() -> list[str]:
+    """Prepend common user tool dirs to ``$PATH`` so subprocesses find tools
+    installed via ``go install`` (~/go/bin), pip --user / pipx (~/.local/bin)
+    and the ProjectDiscovery tool manager (~/.pdtm/go/bin) — even when the
+    scan runs from cron / an IDE with a minimal PATH. This is the root cause
+    fix for waymore/arjun/xnlinkfinder/gau silently skipping as "binary not
+    found" despite being installed. Returns the dirs actually added.
+    """
+    import os
+    home = Path.home()
+    candidates = [home / ".local" / "bin", home / "go" / "bin",
+                  home / ".pdtm" / "go" / "bin"]
+    gopath = os.environ.get("GOPATH")
+    if gopath:
+        candidates.append(Path(gopath) / "bin")
+    gobin = os.environ.get("GOBIN")
+    if gobin:
+        candidates.append(Path(gobin))
+
+    current = os.environ.get("PATH", "").split(os.pathsep)
+    seen = set(current)
+    added: list[str] = []
+    for c in candidates:
+        cs = str(c)
+        if cs not in seen and c.is_dir():
+            added.append(cs)
+            seen.add(cs)
+    if added:
+        os.environ["PATH"] = os.pathsep.join(added + current)
+    return added
+
+
 def _deep_merge(base: dict, overlay: dict) -> dict:
     """Recursively merge ``overlay`` over ``base`` (overlay wins)."""
     out = dict(base)
