@@ -98,7 +98,7 @@ def collect(
     # ANSI escapes (PEP-0001 / no-color.org convention — read by most tools).
     cmd = ["waymore", "-i", domain, "-mode", "U", "-oU", str(raw_out)]
     r = runner.run(cmd, stage=stage, output_dir=output_dir, timeout=timeout,
-                   env={**os.environ, "NO_COLOR": "1"})
+                   env={**os.environ, "NO_COLOR": "1"}, capture_stdout=False)
     if not r["success"] and not r["missing_binary"]:
         # waymore can be flaky, but we still want to keep its partial output
         print(f"[{stage}] waymore exited non-zero: {r['stderr'][:200]}")

@@ -86,8 +86,21 @@ def run(
     input_data: Optional[str] = None,
     env: Optional[dict] = None,
     check: bool = False,
+    capture_stdout: bool = True,
 ) -> dict:
     """Run a subprocess and return a structured dict.
+
+    ``capture_stdout=False`` discards the child's stdout to ``/dev/null``
+    instead of buffering it in Python memory. Use this for tools that
+    already write their own ``-output``/``-o`` file and whose caller never
+    reads ``result["stdout"]`` — e.g. katana crawling a large host list can
+    emit gigabytes of stdout (every URL, including out-of-scope JS/assets
+    pulled in by ``-do``), and ``subprocess.run(capture_output=True)``
+    holds all of it in memory before it ever reaches the log file. On a
+    box with no swap that raises a bare ``MemoryError`` (empty message)
+    mid-run, killing the stage with no partial output. Only flip this for
+    calls that don't consume ``stdout`` — jsluice/xnlinkfinder/dirsearch
+    parse ``result["stdout"]`` directly and must keep the default.
 
     Output paths are derived from ``output_dir/logs/``:
 
@@ -151,7 +164,8 @@ def run(
     try:
         proc = subprocess.run(
             resolved,
-            capture_output=True,
+            stdout=subprocess.PIPE if capture_stdout else subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
             text=True,
             timeout=timeout,
             input=input_data,
@@ -165,7 +179,10 @@ def run(
         elapsed = round(time.time() - start, 2)
         with out_log.open("a", encoding="utf-8") as fh:
             fh.write(f"=== {stage} ===\n")
-            fh.write(f"--- stdout ---\n{proc.stdout or ''}")
+            if capture_stdout:
+                fh.write(f"--- stdout ---\n{proc.stdout or ''}")
+            else:
+                fh.write("--- stdout ---\n(discarded — tool writes its own -output file)\n")
             if proc.stderr and proc.stderr.strip():
                 fh.write(f"--- stderr ---\n{proc.stderr}\n")
             fh.write(f"--- exit {proc.returncode} ({elapsed}s) ---\n\n")

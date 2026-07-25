@@ -75,7 +75,7 @@ def collect(
             r = runner.run(
                 ["subfinder", "-d", domain, "-all", "-silent", "-o", str(out_file)],
                 stage=f"{stage}_subfinder", log_name=stage,
-                output_dir=output_dir, timeout=timeout,
+                output_dir=output_dir, timeout=timeout, capture_stdout=False,
             )
         elif tool == "amass":
             if not runner.tool_available("amass"):
@@ -85,7 +85,7 @@ def collect(
             r = runner.run(
                 ["amass", "enum", "-passive", "-d", domain, "-o", str(out_file)],
                 stage=f"{stage}_amass", log_name=stage,
-                output_dir=output_dir, timeout=timeout,
+                output_dir=output_dir, timeout=timeout, capture_stdout=False,
             )
         elif tool == "chaos":
             # ProjectDiscovery's `go install .../chaos-client/cmd/chaos@latest`
@@ -115,7 +115,7 @@ def collect(
                 cmd.extend(["-key", chaos_key])
             r = runner.run(
                 cmd, stage=f"{stage}_chaos", log_name=stage,
-                output_dir=output_dir, timeout=timeout,
+                output_dir=output_dir, timeout=timeout, capture_stdout=False,
             )
         else:
             # unknown tool — skip gracefully

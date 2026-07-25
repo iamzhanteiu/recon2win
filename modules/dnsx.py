@@ -77,7 +77,7 @@ def resolve(
             "-t", str(threads),
             "-o", str(detail_json),
         ],
-        stage=stage, output_dir=output_dir, timeout=timeout,
+        stage=stage, output_dir=output_dir, timeout=timeout, capture_stdout=False,
     )
     if not r["success"] and not r["missing_binary"]:
         return make_result(

@@ -184,7 +184,7 @@ def crawl(
                     base_cmd + ["-jsonl", "-fx", "-ob", "-or",
                                 "-output", str(jsonl)],
                     stage="content_discovery_katana", log_name=stage,
-                    output_dir=output_dir, timeout=to,
+                    output_dir=output_dir, timeout=to, capture_stdout=False,
                 )
                 if not r["success"] and not r["missing_binary"]:
                     print(f"[{stage}] katana failed: {r['stderr'][:200]}")
@@ -207,7 +207,7 @@ def crawl(
                 r = runner.run(
                     base_cmd + ["-output", str(out)],
                     stage="content_discovery_katana", log_name=stage,
-                    output_dir=output_dir, timeout=to,
+                    output_dir=output_dir, timeout=to, capture_stdout=False,
                 )
                 if not r["success"] and not r["missing_binary"]:
                     print(f"[{stage}] katana failed: {r['stderr'][:200]}")
@@ -244,7 +244,7 @@ def crawl(
                     r = runner.run(
                         ["urlfinder", "-list", tmp.name, "-o", str(out), "-silent"],
                         stage="content_discovery_urlfinder", log_name=stage,
-                        output_dir=output_dir, timeout=to,
+                        output_dir=output_dir, timeout=to, capture_stdout=False,
                     )
                     if not r["success"] and not r["missing_binary"]:
                         print(f"[{stage}] urlfinder failed: {r['stderr'][:200]}")
@@ -278,7 +278,7 @@ def crawl(
                 ["gau", "--subs", "--threads", str(threads),
                  "--o", str(out), output_dir.name],
                 stage="content_discovery_gau", log_name=stage,
-                output_dir=output_dir, timeout=to,
+                output_dir=output_dir, timeout=to, capture_stdout=False,
             )
             if not r["success"] and not r["missing_binary"]:
                 print(f"[{stage}] gau failed: {r['stderr'][:200]}")
