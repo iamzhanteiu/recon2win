@@ -217,6 +217,45 @@ def parse_httpx_jsonl(path: Path) -> list[dict]:
     return out
 
 
+def summarize_url_surface(rows: list[dict]) -> dict:
+    """Aggregate httpx URL-detail rows into a status / content-type breakdown.
+
+    Powers the report's discovered-URL surface view — the human-readable
+    counterpart of ``processed/alive_urls_table.txt``. ``application/json`` is
+    called out as APIs and ``401/403`` as auth-gated because those two buckets
+    are what a tester scans for first. ``by_status`` / ``by_type`` are ordered
+    by descending count so the display can just take the head.
+    """
+    def _int(v) -> int:
+        try:
+            return int(v)
+        except (TypeError, ValueError):
+            return 0
+
+    by_status: dict[int, int] = {}
+    by_type: dict[str, int] = {}
+    apis = auth_gated = total = 0
+    for r in rows:
+        if not isinstance(r, dict) or not r.get("url"):
+            continue
+        total += 1
+        st = _int(r.get("status_code"))
+        by_status[st] = by_status.get(st, 0) + 1
+        ctype = (r.get("content_type") or "-").split(";")[0].strip().lower() or "-"
+        by_type[ctype] = by_type.get(ctype, 0) + 1
+        if ctype == "application/json":
+            apis += 1
+        if st in (401, 403):
+            auth_gated += 1
+    return {
+        "total": total,
+        "by_status": dict(sorted(by_status.items(), key=lambda kv: -kv[1])),
+        "by_type": dict(sorted(by_type.items(), key=lambda kv: -kv[1])),
+        "apis": apis,
+        "auth_gated": auth_gated,
+    }
+
+
 def classify_url(url: str) -> list[str]:
     """Return the list of high-value labels matched by *url*."""
     if not url:
@@ -399,7 +438,7 @@ class ReportBuilder:
         ("raw/dirsearch/merged_wordlists.txt","raw",  "merged wordlists (deduped)"),
         ("raw/dirsearch/targets.txt",          "raw",  "host đã chọn để fuzz (sau dedup)"),
         # raw/ffuf/ (plus one <host>.json report per fuzzed target)
-        ("raw/ffuf/ffuf_raw.txt",             "raw",  "ffuf hits (status + url)"),
+        ("raw/ffuf/ffuf_raw.txt",             "raw",  "ffuf hits (status + length + url)"),
         ("raw/ffuf/merged_wordlists.txt",     "raw",  "ffuf merged wordlists (deduped)"),
         # raw/waymore/
         ("raw/waymore/waymore_raw.txt",     "raw",    "waymore raw output"),
@@ -411,6 +450,7 @@ class ReportBuilder:
         ("processed/resolved_detail.json","processed","dnsx per-host detail"),
         ("processed/alive.txt",          "processed", "httpx alive URLs"),
         ("processed/alive_detail.json",  "processed", "httpx per-host JSON"),
+        ("processed/alive_table.txt",    "processed", "httpx table (status|length|ctype|url)"),
         ("processed/crawler_urls.txt",   "processed", "crawler union"),
         ("processed/dirsearch_urls.txt", "processed", "dirsearch URL list"),
         ("processed/ffuf_urls.txt",      "processed", "ffuf URL list"),
@@ -422,6 +462,7 @@ class ReportBuilder:
         ("processed/xnlinkfinder_urls.txt","processed","xnLinkFinder URLs"),
         ("processed/alive_urls.txt",     "processed", "httpx URL check (final)"),
         ("processed/alive_urls_detail.json","processed","httpx URL check detail"),
+        ("processed/alive_urls_table.txt","processed","httpx URL table (status|length|ctype|url)"),
         ("processed/arjun_params.txt",   "processed", "Arjun raw output"),
         ("processed/parameterized_urls.txt","processed","parameterized URLs"),
         ("processed/forms.json",         "processed", "forms/inputs from crawl (POST/upload/login surface)"),
@@ -507,6 +548,16 @@ class ReportBuilder:
                 assets_dedup.append(a)
         assets = assets_dedup
 
+        # discovered-URL surface — status/content-type breakdown of the full
+        # probed URL list (processed/alive_urls_detail.json), the human summary
+        # of the new processed/alive_urls_table.txt.
+        url_detail = parse_httpx_jsonl(proc / "alive_urls_detail.json")
+        if not url_detail:
+            _d = load_json_safe(proc / "alive_urls_detail.json")
+            if isinstance(_d, list):
+                url_detail = _d
+        url_surface = summarize_url_surface(url_detail)
+
         # nuclei — v2 layout puts the scans under findings/<kind>/
         n_def_findings, n_def_sev = parse_nuclei_summary(
             findings / "default" / "nuclei.json"
@@ -591,6 +642,7 @@ class ReportBuilder:
             "files": file_inventory,
             "dns_records": dns_records,
             "assets": assets,
+            "url_surface": url_surface,
             "nuclei": {
                 "default": {
                     "findings": n_def_findings,
@@ -667,6 +719,8 @@ class ReportBuilder:
             "  .file-card .exists-yes { color: #388e3c; }\n"
             "  .file-card .exists-no  { color: #999; }\n"
             "  .small { font-size: 12px; color: #666; }\n"
+            "  .chip { display: inline-block; padding: 2px 8px; margin: 2px; "
+            "border-radius: 10px; background: #eef1f5; font-size: 12px; }\n"
             "  pre { background: #1e1e1e; color: #f5f5f5; padding: 12px; border-"
             "radius: 4px; overflow-x: auto; font-size: 12px; }\n"
             "</style>"
@@ -791,13 +845,28 @@ class ReportBuilder:
         out.append("| Source | Count | Output file |")
         out.append("|--------|------:|-------------|")
         for label, key, rel in [
-            ("katana + urlfinder (union)", "crawler_urls", "../processed/crawler_urls.txt"),
+            ("katana crawl (+urlfinder/gau if on)", "crawler_urls", "../processed/crawler_urls.txt"),
             ("dirsearch",                  "dirsearch_urls", "../processed/dirsearch_urls.txt"),
             ("ffuf",                       "ffuf_urls", "../processed/ffuf_urls.txt"),
             ("waymore",                    "waymore_urls", "../processed/waymore_urls.txt"),
         ]:
             out.append(f"| {label} | `{c.get(key,0)}` | [{rel}]({rel}) |")
         out.append("")
+
+        surf = data.get("url_surface") or {}
+        if surf.get("total"):
+            out.append(f"**Discovered URL surface** — {surf['total']} probed "
+                       "([`../processed/alive_urls_table.txt`]"
+                       "(../processed/alive_urls_table.txt)):\n")
+            bs = " · ".join(f"`{k}`: {v}"
+                            for k, v in list(surf["by_status"].items())[:8])
+            out.append(f"- By status: {bs}")
+            bt = " · ".join(f"`{escape(k)}`: {v}"
+                            for k, v in list(surf["by_type"].items())[:8])
+            out.append(f"- By content-type: {bt}")
+            out.append(f"- ⭐ APIs (`application/json`): `{surf['apis']}` · "
+                       f"Auth-gated (`401/403`): `{surf['auth_gated']}`")
+            out.append("")
 
         # JS analysis
         out.append("## 6. JavaScript Analysis\n")
@@ -1174,7 +1243,7 @@ class ReportBuilder:
             f"<tr><td>{escape(label)}</td><td><code>{c.get(key,0):,}</code></td>"
             f"<td><a href=\"{escape(rel)}\"><code>{escape(rel)}</code></a></td></tr>"
             for label, key, rel in [
-                ("katana + urlfinder (union)", "crawler_urls",  "../processed/crawler_urls.txt"),
+                ("katana crawl (+urlfinder/gau if on)", "crawler_urls",  "../processed/crawler_urls.txt"),
                 ("dirsearch",                  "dirsearch_urls","../processed/dirsearch_urls.txt"),
                 ("ffuf",                       "ffuf_urls",     "../processed/ffuf_urls.txt"),
                 ("waymore",                    "waymore_urls",  "../processed/waymore_urls.txt"),
@@ -1185,10 +1254,31 @@ class ReportBuilder:
                 ("raw waymore output",         None,            "../raw/waymore/waymore_raw.txt"),
             ]
         )
+        surf = data.get("url_surface") or {}
+        surface_html = ""
+        if surf.get("total"):
+            def _chips(items: list[tuple]) -> str:
+                return " ".join(
+                    f"<span class=\"chip\"><code>{escape(str(k))}</code> {v}</span>"
+                    for k, v in items
+                )
+            status_chips = _chips(list(surf["by_status"].items())[:8])
+            type_chips = _chips(list(surf["by_type"].items())[:8])
+            surface_html = (
+                "<h3>Discovered URL surface</h3>"
+                f"<p class=\"small\">{surf['total']:,} probed — "
+                "<a href=\"../processed/alive_urls_table.txt\">"
+                "<code>alive_urls_table.txt</code></a> · "
+                f"⭐ APIs (application/json): <b>{surf['apis']:,}</b> · "
+                f"auth-gated (401/403): <b>{surf['auth_gated']:,}</b></p>"
+                f"<p><b>By status:</b> {status_chips}</p>"
+                f"<p><b>By content-type:</b> {type_chips}</p>"
+            )
         return (
             "<h2>5. Content Discovery</h2>\n"
             "<table><thead><tr><th>Source</th><th>Count</th><th>File</th></tr></thead>"
             f"<tbody>{rows}</tbody></table>"
+            f"{surface_html}"
         )
 
     def _html_section_js(self, data: dict) -> str:

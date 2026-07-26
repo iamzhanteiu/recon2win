@@ -26,26 +26,19 @@ def _fake_run_for_nuclei(cmd, **kw):
 
 
 def _nuclei_cmd(cfg):
-    """Build the nuclei argv with cfg as the user-supplied config."""
-    # We can't easily call _run() directly (it expects a real file path
-    # for the input and writes outputs). Instead, replicate the cmd
-    # construction logic so the test stays focused on the flag.
+    """Build the nuclei argv with cfg as the user-supplied config.
+
+    Calls the real builder rather than replicating it — an earlier copy of
+    this logic silently drifted out of sync with the module it was meant
+    to be testing.
+    """
     n_cfg = cfg.get("nuclei", {})
-    severity = n_cfg.get("severity", ["info"])
-    tags = n_cfg.get("tags")
-    cmd = [
-        "nuclei", "-l", "x",
-        "-severity", ",".join(severity),
-        "-silent",
-        "-o", "x.txt", "-json-export", "x.json",
-    ]
-    if tags:
-        cmd.extend(["-tags", ",".join(tags)])
-    exclude_tags = n_cfg.get("exclude_tags") or []
-    clean_excludes = [str(t).strip() for t in exclude_tags if str(t).strip()]
-    if clean_excludes:
-        cmd.extend(["-etags", ",".join(clean_excludes)])
-    return cmd
+    return nuclei_mod._build_nuclei_cmd(
+        Path("x"), Path("x.jsonl"),
+        severity=n_cfg.get("severity", ["info"]),
+        tags=n_cfg.get("tags"),
+        n_cfg=n_cfg,
+    )
 
 
 def test_etags_emitted_when_exclude_tags_configured():
@@ -89,6 +82,44 @@ def test_etags_coerces_non_string_to_string():
     assert cmd[i + 1] == "200,smtp"
 
 
+def test_dast_flag_emitted_only_when_enabled():
+    """nuclei refuses to load its ~250 fuzzing templates without -dast
+    (it errors with "no templates provided for scan" if they are all you
+    ask for), and their tags look like ordinary ones — so a missing flag
+    silently drops every fuzzing template. Off unless asked for."""
+    assert "-dast" not in _nuclei_cmd({"nuclei": {}})
+    assert "-dast" not in _nuclei_cmd({"nuclei": {"dast": False}})
+    assert "-dast" in _nuclei_cmd({"nuclei": {"dast": True}})
+
+
+def test_dynamic_scan_enables_dast(tmp_path, monkeypatch):
+    """The dynamic scan fuzzes parameterised URLs — the one stage that
+    needs the fuzzing templates — so its per-scan config must reach argv."""
+    captured: list[str] = []
+
+    def fake_run(cmd, **kw):
+        captured.extend(cmd)
+        out = Path(cmd[cmd.index("-o") + 1])
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_text("")
+        return _fake_run_for_nuclei(cmd)
+
+    monkeypatch.setattr("modules.runner.run", fake_run)
+    monkeypatch.setattr("modules.runner.tool_available", lambda b: True)
+    monkeypatch.setattr("modules.runner.which", lambda b: f"/usr/bin/{b}")
+
+    (tmp_path / "findings" / "dynamic").mkdir(parents=True)
+    params = tmp_path / "params.txt"
+    params.write_text("https://example.com/a?id=1\n")
+
+    nuclei_mod.dynamic_scan(
+        params, tmp_path,
+        cfg={"nuclei": {"dynamic": {"enabled": True, "dast": True}}},
+        resume=False, dry_run=False, skip=False,
+    )
+    assert "-dast" in captured
+
+
 def test_etags_combines_with_include_tags():
     """-tags (include) and -etags (exclude) can both be active — nuclei
     applies them together: include first, then exclude."""
@@ -119,9 +150,9 @@ def test_nuclei_run_passes_etags_to_subprocess(tmp_path, monkeypatch):
     def fake_run(cmd, **kw):
         captured_cmd.extend(cmd)
         # Write a minimal JSON file so the parser doesn't blow up.
-        json_out = Path(cmd[cmd.index("-json-export") + 1])
+        json_out = Path(cmd[cmd.index("-o") + 1])
         json_out.parent.mkdir(parents=True, exist_ok=True)
-        json_out.write_text('{"findings": [], "severity_count": {}}')
+        json_out.write_text("")
         return _fake_run_for_nuclei(cmd)
 
     monkeypatch.setattr("modules.runner.run", fake_run)
@@ -146,3 +177,33 @@ def test_nuclei_run_passes_etags_to_subprocess(tmp_path, monkeypatch):
     assert "-etags" in captured_cmd
     etags_idx = captured_cmd.index("-etags")
     assert captured_cmd[etags_idx + 1] == "interaction,smtp"
+
+# ----------------------------------------------------------------------
+# -fuzz-aggression + the "no -tags under -dast" rule
+# ----------------------------------------------------------------------
+def test_fuzz_aggression_only_applies_to_dast_runs():
+    """-fuzz-aggression is a DAST-only knob (payload count per fuzz
+    point). It must not leak into the default/endpoints scans, which load
+    no fuzzing templates at all."""
+    assert "-fuzz-aggression" not in _nuclei_cmd(
+        {"nuclei": {"fuzz_aggression": "medium"}})
+    cmd = _nuclei_cmd({"nuclei": {"dast": True, "fuzz_aggression": "medium"}})
+    assert cmd[cmd.index("-fuzz-aggression") + 1] == "medium"
+
+
+def test_fuzz_aggression_omitted_when_unset():
+    """Unset / blank → don't pass the flag, let nuclei use its default."""
+    assert "-fuzz-aggression" not in _nuclei_cmd({"nuclei": {"dast": True}})
+    assert "-fuzz-aggression" not in _nuclei_cmd(
+        {"nuclei": {"dast": True, "fuzz_aggression": "  "}})
+
+
+def test_dast_run_ships_without_a_tags_filter():
+    """``-dast`` IS the filter — it restricts the run to the fuzzing
+    corpus (54 loadable templates on nuclei-templates v10.4.6). Layering
+    the old tag set on top cut that to 41, dropping cmdi / crlf /
+    open-redirect / rfi / xinclude / csv-injection and the DAST CVE
+    templates. An empty tags list must therefore emit no -tags at all."""
+    cmd = _nuclei_cmd({"nuclei": {"dast": True, "tags": []}})
+    assert "-dast" in cmd
+    assert "-tags" not in cmd

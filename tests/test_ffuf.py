@@ -3,7 +3,7 @@
 Covers:
   * normalize_targets() — alive.txt → fuzzable base URLs
   * report_name()       — per-target JSON filename sanitisation
-  * parse_report()      — ffuf JSON → (status, url), incl. garbage input
+  * parse_report()      — ffuf JSON → (status, length, url), incl. garbage input
   * _build_cmd()        — -ac/-ach, recursion, matchers, extensions
   * scan()              — skip / disabled / empty-input short circuits
 """
@@ -60,17 +60,22 @@ def test_report_name_is_unique_per_scheme_host_pair():
 # ----------------------------------------------------------------------
 # parse_report
 # ----------------------------------------------------------------------
-def test_parse_report_extracts_status_and_url():
+def test_parse_report_extracts_status_length_and_url():
     text = """
     {"results": [
-        {"url": "https://a.example.com/admin", "status": 200, "input": {"FUZZ": "admin"}},
-        {"url": "https://a.example.com/api/v1/", "status": 301, "input": {"FUZZ": "api"}}
+        {"url": "https://a.example.com/admin", "status": 200, "length": 4096, "input": {"FUZZ": "admin"}},
+        {"url": "https://a.example.com/api/v1/", "status": 301, "length": 0, "input": {"FUZZ": "api"}}
     ]}
     """
     assert parse_report(text) == [
-        (200, "https://a.example.com/admin"),
-        (301, "https://a.example.com/api/v1/"),
+        (200, 4096, "https://a.example.com/admin"),
+        (301, 0, "https://a.example.com/api/v1/"),
     ]
+
+
+def test_parse_report_defaults_missing_length_to_zero():
+    text = '{"results": [{"url": "https://a.example.com/x", "status": 200}]}'
+    assert parse_report(text) == [(200, 0, "https://a.example.com/x")]
 
 
 def test_parse_report_handles_empty_and_truncated_json():
@@ -88,7 +93,7 @@ def test_parse_report_skips_entries_without_a_usable_url():
 
 def test_parse_report_defaults_unparseable_status_to_zero():
     text = '{"results": [{"url": "https://a.example.com/x", "status": "?"}]}'
-    assert parse_report(text) == [(0, "https://a.example.com/x")]
+    assert parse_report(text) == [(0, 0, "https://a.example.com/x")]
 
 
 # ----------------------------------------------------------------------
@@ -274,7 +279,7 @@ def test_scan_merges_hits_from_every_target(tmp_path: Path, monkeypatch):
         report = Path(cmd[cmd.index("-o") + 1])
         host = cmd[cmd.index("-u") + 1].replace("/FUZZ", "")
         report.write_text(
-            '{"results": [{"url": "%s/admin", "status": 200}]}' % host
+            '{"results": [{"url": "%s/admin", "status": 200, "length": 512}]}' % host
         )
         return {"success": True, "stderr": "", "missing_binary": False}
 
@@ -287,7 +292,7 @@ def test_scan_merges_hits_from_every_target(tmp_path: Path, monkeypatch):
     urls = (out_dir / "processed" / "ffuf_urls.txt").read_text().split()
     assert urls == ["https://a.example.com/admin", "https://b.example.com/admin"]
     raw = (out_dir / "raw" / "ffuf" / "ffuf_raw.txt").read_text()
-    assert "200 https://a.example.com/admin" in raw
+    assert "200 512 https://a.example.com/admin" in raw
 
 
 def test_scan_caps_targets_at_max_hosts(tmp_path: Path, monkeypatch):

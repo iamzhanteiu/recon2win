@@ -547,6 +547,23 @@ def main() -> int:
             resume=args.resume, dry_run=False, skip=args.skip_nuclei,
         )
         results.append(r)
+        uf = (r.get("extra") or {}).get("url_filter")
+        if uf and (uf.get("deduped") or uf.get("per_host_capped")
+                   or uf.get("capped")):
+            print(console.phase_info_line(
+                f"nuclei_endpoints: {uf.get('input', 0)} URL(s) → "
+                f"-{uf.get('deduped', 0)} dup-path "
+                f"-{uf.get('per_host_capped', 0)} over per-host cap "
+                f"-{uf.get('capped', 0)} over-cap → "
+                f"{uf.get('selected', 0)} scanned"
+            ))
+        if uf and uf.get("waf_hosts"):
+            hosts = uf["waf_hosts"]
+            shown = ", ".join(hosts[:3]) + ("…" if len(hosts) > 3 else "")
+            print(console.phase_info_line(
+                f"nuclei_endpoints: {len(hosts)} host(s) answer every path "
+                f"from the edge (403/406/429), capped to a sample: {shown}"
+            ))
         prog.finish_phase(r, num=9)
 
         # ---- 9. nuclei dynamic ----

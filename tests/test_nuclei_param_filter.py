@@ -125,9 +125,9 @@ def test_dynamic_scan_feeds_only_param_urls_to_nuclei(tmp_path: Path, monkeypatc
 
     def fake_run(cmd, **kw):
         captured_cmd.extend(cmd)
-        json_out = Path(cmd[cmd.index("-json-export") + 1])
+        json_out = Path(cmd[cmd.index("-o") + 1])
         json_out.parent.mkdir(parents=True, exist_ok=True)
-        json_out.write_text('{"findings": [], "severity_count": {}}')
+        json_out.write_text("")
         return {
             "returncode": 0, "stdout": "", "stderr": "",
             "missing_binary": False, "timed_out": False, "success": True,
@@ -166,9 +166,9 @@ def test_dynamic_scan_feeds_only_param_urls_to_nuclei(tmp_path: Path, monkeypatc
 
 def test_dynamic_scan_no_param_filter_key_when_nothing_dropped(tmp_path: Path, monkeypatch):
     def fake_run(cmd, **kw):
-        json_out = Path(cmd[cmd.index("-json-export") + 1])
+        json_out = Path(cmd[cmd.index("-o") + 1])
         json_out.parent.mkdir(parents=True, exist_ok=True)
-        json_out.write_text('{"findings": [], "severity_count": {}}')
+        json_out.write_text("")
         return {
             "returncode": 0, "stdout": "", "stderr": "",
             "missing_binary": False, "timed_out": False, "success": True,

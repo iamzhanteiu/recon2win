@@ -32,7 +32,37 @@ from modules.report import (
     parse_nuclei_summary,
     rel_link,
     severity_rank,
+    summarize_url_surface,
 )
+
+
+# ----------------------------------------------------------------------
+# summarize_url_surface — status / content-type breakdown
+# ----------------------------------------------------------------------
+def test_summarize_url_surface_counts_sorts_and_flags():
+    rows = [
+        {"url": "https://x/a", "status_code": 200, "content_type": "text/html; charset=utf-8"},
+        {"url": "https://x/b", "status_code": 403, "content_type": "text/html"},
+        {"url": "https://x/c", "status_code": 403, "content_type": "text/html"},
+        {"url": "https://x/api", "status_code": 200, "content_type": "application/json"},
+        {"url": "https://x/gated", "status_code": 401},   # no ctype → "-"
+        {"status_code": 200},                              # no url → skipped
+    ]
+    s = summarize_url_surface(rows)
+    assert s["total"] == 5
+    # counts: 200×2 (a, api), 403×2 (b, c), 401×1
+    assert s["by_status"] == {200: 2, 403: 2, 401: 1}
+    # ties keep insertion order (200 seen before 403), 401 last (lower count)
+    assert list(s["by_status"]) == [200, 403, 401]
+    assert s["by_type"]["text/html"] == 3      # charset param stripped + merged
+    assert s["by_type"]["-"] == 1
+    assert s["apis"] == 1                       # application/json
+    assert s["auth_gated"] == 3                 # 403 + 403 + 401
+
+
+def test_summarize_url_surface_empty():
+    s = summarize_url_surface([])
+    assert s == {"total": 0, "by_status": {}, "by_type": {}, "apis": 0, "auth_gated": 0}
 
 
 # ----------------------------------------------------------------------
@@ -104,6 +134,9 @@ def fake_outputs(tmp_path: Path) -> Path:
          "status_code": 200, "title": "API", "content_type": "application/json",
          "content_length": 567, "webserver": "nginx", "tech": "Node.js"},
     ]))
+    (proc / "alive_table.txt").write_text(
+        "200  1234  text/html  https://a.example.com\n"
+    )
     (proc / "crawler_urls.txt").write_text(
         "https://example.com/login\nhttps://example.com/admin\n"
         "https://example.com/api/users\n"
@@ -141,6 +174,9 @@ def fake_outputs(tmp_path: Path) -> Path:
         {"url": "https://example.com/login", "status_code": 200,
          "content_length": 900, "content_type": "text/html"},
     ]))
+    (proc / "alive_urls_table.txt").write_text(
+        "200  900  text/html  https://example.com/login\n"
+    )
     (proc / "arjun_params.txt").write_text(
         "[200] https://example.com/login?id=&q=\n"
         "[200] https://example.com/admin?debug=\n"
@@ -381,9 +417,10 @@ def test_nuclei_run_handles_json_array_output(tmp_path: Path, monkeypatch):
 
     fdir = tmp_path / "findings" / "default"
     fdir.mkdir(parents=True)
-    json_out = fdir / "nuclei.json"
+    txt_out = fdir / "nuclei.txt"
 
-    # nuclei writes a single JSON array with two findings.
+    # nuclei writes a single JSON array with two findings; the canonical
+    # nuclei.json is derived from what we parse back out of that stream.
     findings_doc = [
         {"template-id": "tech-detect",
          "info": {"name": "Nginx", "severity": "info"},
@@ -392,10 +429,11 @@ def test_nuclei_run_handles_json_array_output(tmp_path: Path, monkeypatch):
          "info": {"name": ".env", "severity": "high"},
          "matched-at": "https://b/.env"},
     ]
-    json_out.write_text(_json.dumps(findings_doc))
-    txt_out = fdir / "nuclei.txt"
 
     def fake_run(cmd, **kw):
+        out = Path(cmd[cmd.index("-o") + 1])
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_text(_json.dumps(findings_doc))
         return {"returncode": 0, "stdout": "", "stderr": "",
                 "missing_binary": False, "timed_out": False, "success": True,
                 "stdout_path": "", "stderr_path": "", "log_path": "",
@@ -429,17 +467,17 @@ def test_nuclei_run_skips_non_dict_jsonl_lines(tmp_path: Path, monkeypatch):
 
     fdir = tmp_path / "findings" / "default"
     fdir.mkdir(parents=True)
-    json_out = fdir / "nuclei.json"
-    # Mix of valid finding, stray list, blank line, stray int, valid finding.
-    json_out.write_text(
-        '{"template-id": "t1", "info": {"severity": "info"}, "matched-at": "https://a"}\n'
-        '[1, 2, 3]\n'
-        '\n'
-        '42\n'
-        '{"template-id": "t2", "info": {"severity": "high"}, "matched-at": "https://b"}\n'
-    )
-
     def fake_run(cmd, **kw):
+        out = Path(cmd[cmd.index("-o") + 1])
+        out.parent.mkdir(parents=True, exist_ok=True)
+        # Mix of valid finding, stray list, blank line, stray int, valid finding.
+        out.write_text(
+            '{"template-id": "t1", "info": {"severity": "info"}, "matched-at": "https://a"}\n'
+            '[1, 2, 3]\n'
+            '\n'
+            '42\n'
+            '{"template-id": "t2", "info": {"severity": "high"}, "matched-at": "https://b"}\n'
+        )
         return {"returncode": 0, "stdout": "", "stderr": "",
                 "missing_binary": False, "timed_out": False,
                 "success": True, "stdout_path": "", "stderr_path": "",

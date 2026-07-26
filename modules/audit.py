@@ -43,6 +43,7 @@ _REVIEW = [
     ("processed/subdomains.txt",       "all subdomains found"),
     ("processed/alive.txt",            "live root hosts"),
     ("processed/alive_urls.txt",       "live discovered URLs (verified)"),
+    ("processed/alive_urls_table.txt", "live URLs as status|length|content-type table"),
     ("processed/parameterized_urls.txt", "injection candidates (has params)"),
     ("processed/forms.json",             "forms/inputs from crawl (POST/upload/login surface)"),
     ("processed/jsluice_endpoints.txt",  "endpoints mined from JS"),

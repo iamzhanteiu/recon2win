@@ -13,8 +13,37 @@ import json
 from pathlib import Path
 
 from modules import httpx as httpx_mod
-from modules.httpx import _cap_urls, _score_url
+from modules.httpx import _cap_urls, _score_url, _table_path, _write_alive_table
 from modules.utils import read_lines, write_lines
+
+
+# ----------------------------------------------------------------------
+# _write_alive_table — status | length | content-type | url companion
+# ----------------------------------------------------------------------
+def test_table_path_names_companion():
+    assert _table_path(Path("/o/processed/alive_urls.txt")).name == "alive_urls_table.txt"
+    assert _table_path(Path("/o/processed/alive.txt")).name == "alive_table.txt"
+
+
+def test_alive_table_columns_sort_and_defaults(tmp_path: Path):
+    rows = [
+        {"url": "https://x.com/big", "status_code": 200, "content_length": 5000,
+         "content_type": "text/html; charset=utf-8"},
+        {"url": "https://x.com/api", "status_code": 200, "content_length": 90,
+         "content_type": "application/json"},
+        {"url": "https://x.com/gone", "status_code": 404},  # missing len/ctype
+        {"status_code": 200, "content_length": 1},           # no url → skipped
+    ]
+    out = tmp_path / "alive_urls_table.txt"
+    n = _write_alive_table(rows, out)
+    assert n == 3  # url-less row dropped
+    lines = out.read_text().splitlines()
+    assert lines[0].split() == ["ST", "LENGTH", "CONTENT-TYPE", "URL"]
+    # sorted by (status, -length): 200/5000, then 200/90, then 404
+    assert lines[1].split() == ["200", "5000", "text/html", "https://x.com/big"]
+    assert lines[2].split() == ["200", "90", "application/json", "https://x.com/api"]
+    # missing content_type → "-", missing length → 0; charset param stripped
+    assert lines[3].split() == ["404", "0", "-", "https://x.com/gone"]
 
 
 # ----------------------------------------------------------------------

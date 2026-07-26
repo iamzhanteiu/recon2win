@@ -56,9 +56,31 @@ def test_resume_nuclei_outputs_exist(tmp_path: Path):
     # v2 layout: findings/{default,dynamic}/nuclei.json
     (tmp_path / "findings" / "default").mkdir(parents=True)
     (tmp_path / "findings" / "dynamic").mkdir(parents=True)
-    _touch(tmp_path / "findings/default/nuclei.json", "{\"findings\": []}")
+    _touch(tmp_path / "findings/default/nuclei.json",
+           "{\"findings\": [], \"complete\": true}")
     assert nuclei._outputs_exist(tmp_path, "default") is True
     assert nuclei._outputs_exist(tmp_path, "dynamic") is False
+
+
+def test_resume_nuclei_rejects_incomplete_outputs(tmp_path: Path):
+    """A timed-out / skipped scan writes a well-formed but PARTIAL
+    nuclei.json. Resuming on it would report "success | 0 findings"
+    without scanning, so it must not count as an existing output."""
+    fdir = tmp_path / "findings" / "default"
+    fdir.mkdir(parents=True)
+    j = fdir / "nuclei.json"
+
+    # timed-out batch run: real shape, complete=false
+    _touch(j, "{\"findings\": [], \"severity_count\": {}, \"complete\": false}")
+    assert nuclei._outputs_exist(tmp_path, "default") is False
+
+    # legacy output written before the flag existed — re-scan, don't skip
+    _touch(j, "{\"findings\": [], \"severity_count\": {}}")
+    assert nuclei._outputs_exist(tmp_path, "default") is False
+
+    # truncated / unparsable JSON must not blow up the resume check
+    _touch(j, "{\"findings\": [")
+    assert nuclei._outputs_exist(tmp_path, "default") is False
 
 
 # ---------- sub-modules: resume short-circuits to success ---------------

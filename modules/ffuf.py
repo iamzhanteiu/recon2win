@@ -32,7 +32,7 @@ kept in the match list.
 
 Outputs:
     raw/ffuf/<host>.json      — one ffuf JSON report per target
-    raw/ffuf/ffuf_raw.txt     — "<status> <url>" union, human-readable
+    raw/ffuf/ffuf_raw.txt     — "<status> <length> <url>" union, human-readable
     processed/ffuf_urls.txt   — URL-only, deduped (feeds url_merge)
 """
 from __future__ import annotations
@@ -93,13 +93,15 @@ def report_name(target: str) -> str:
     return _UNSAFE_RE.sub("_", stripped).strip("_") + ".json"
 
 
-def parse_report(text: str) -> list[tuple[int, str]]:
-    """Extract ``(status, url)`` pairs from one ffuf JSON report.
+def parse_report(text: str) -> list[tuple[int, int, str]]:
+    """Extract ``(status, length, url)`` triples from one ffuf JSON report.
 
-    ffuf writes ``{"results": [{"url": ..., "status": ..., "input": {...}}]}``.
-    A report can be missing, empty, or truncated when ffuf is killed by the
-    per-host timeout — every one of those yields ``[]`` rather than raising,
-    because one dead host must not fail the stage for the other 49.
+    ffuf writes ``{"results": [{"url": ..., "status": ..., "length": ...,
+    "input": {...}}]}``. ``length`` is the response body size in bytes — the
+    signal you scan for to spot the odd-sized hit among a wall of same-size
+    soft-404s. A report can be missing, empty, or truncated when ffuf is
+    killed by the per-host timeout — every one of those yields ``[]`` rather
+    than raising, because one dead host must not fail the stage for the rest.
     """
     if not text or not text.strip():
         return []
@@ -112,7 +114,7 @@ def parse_report(text: str) -> list[tuple[int, str]]:
     results = data.get("results")
     if not isinstance(results, list):
         return []
-    out: list[tuple[int, str]] = []
+    out: list[tuple[int, int, str]] = []
     for item in results:
         if not isinstance(item, dict):
             continue
@@ -123,7 +125,11 @@ def parse_report(text: str) -> list[tuple[int, str]]:
             status = int(item.get("status") or 0)
         except (TypeError, ValueError):
             status = 0
-        out.append((status, url))
+        try:
+            length = int(item.get("length") or 0)
+        except (TypeError, ValueError):
+            length = 0
+        out.append((status, length, url))
     return out
 
 
@@ -397,7 +403,7 @@ def scan(
         merge_stats = {"files": 0, "path": str(merged_wl_path),
                        "source": "sensitive_files fallback"}
 
-    results: dict[str, list[tuple[int, str]]] = {}
+    results: dict[str, list[tuple[int, int, str]]] = {}
     failures: list[str] = []
     skipped_over_budget: list[str] = []
 
@@ -416,8 +422,16 @@ def scan(
         report_path = raw_ff / report_name(target)
         # Không để một host đơn lẻ vượt quá phần ngân sách còn lại.
         host_timeout = timeout
+        budget_capped = False
         if deadline is not None:
-            host_timeout = max(30, min(timeout, int(deadline - time.monotonic())))
+            # Trước đây chỗ này là ``max(30, min(timeout, remaining))``: khi
+            # ngân sách chỉ còn vài giây, host vẫn được cấp trọn 30s — vượt
+            # luôn trần mà chính nó tồn tại để bảo vệ, và chắc chắn chết vì
+            # ffuf cần hàng phút cho một wordlist. Run thật 2026-07-25 có 3
+            # host dính đúng kiểu này (``TimeoutExpired after 30s``). Cấp
+            # đúng phần còn lại, không hơn.
+            host_timeout = min(timeout, max(1, int(deadline - time.monotonic())))
+            budget_capped = host_timeout < timeout
         r = runner.run(
             _build(target, wordlist), stage=stage, output_dir=output_dir,
             timeout=host_timeout, log_name=stage,
@@ -425,7 +439,14 @@ def scan(
         # ffuf exits non-zero on a timeout or a dead host. That is one
         # target's problem — record it and keep the other hits.
         if not r["success"] and not report_path.exists():
-            failures.append(f"{target}: {(r['stderr'] or 'failed').strip()[:120]}")
+            # Host bị cắt ngắn vì hết ngân sách rồi chết đúng ở cái timeout
+            # đã bị cắt đó không phải lỗi của target — đó là hệ quả của
+            # quyết định ngân sách, cùng bản chất với nhánh skip ở trên.
+            # Đếm nó vào ``failures`` chỉ làm nhiễu báo cáo.
+            if budget_capped and r.get("timed_out"):
+                skipped_over_budget.append(target)
+            else:
+                failures.append(f"{target}: {(r['stderr'] or 'failed').strip()[:120]}")
             return
         text = report_path.read_text(errors="ignore") if report_path.exists() else ""
         results[target] = parse_report(text)
@@ -437,8 +458,10 @@ def scan(
     urls: list[str] = []
     seen: set[str] = set()
     for target in capped:
-        for status, url in results.get(target, []):
-            raw_lines.append(f"{status} {url}")
+        for status, length, url in results.get(target, []):
+            # "<status> <length> <url>" — length (response bytes) lets you eyeball
+            # the odd-sized hit among a block of identical soft-404s.
+            raw_lines.append(f"{status} {length} {url}")
             if url not in seen:
                 seen.add(url)
                 urls.append(url)

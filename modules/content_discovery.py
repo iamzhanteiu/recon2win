@@ -72,35 +72,42 @@ def _extract_katana_jsonl(jsonl_path: Path, urls_out: Path,
     urls: list[str] = []
     forms: list[dict] = []
     seen_form: set[tuple] = set()
-    for ln in jsonl_path.read_text(errors="ignore").splitlines():
-        ln = ln.strip()
-        if not ln:
-            continue
-        try:
-            obj = json.loads(ln)
-        except json.JSONDecodeError:
-            continue
-        if not isinstance(obj, dict):
-            continue
-        req = obj.get("request") or {}
-        url = req.get("endpoint") or ""
-        if url:
-            urls.append(url)
-        resp = obj.get("response") or {}
-        for f in resp.get("forms") or []:
-            if not isinstance(f, dict):
+    # Stream line-by-line. A big crawl produces a multi-GB jsonl (a real
+    # acronis.com run hit 3.4GB / 1.1M lines); ``read_text().splitlines()``
+    # loads the whole file into one string AND a duplicate list, which on a
+    # no-swap box raises a bare MemoryError (empty message) that surfaced as
+    # the "exception: " content_discovery failure in logs/stages.json. A
+    # file iterator keeps memory flat regardless of jsonl size.
+    with jsonl_path.open(encoding="utf-8", errors="ignore") as fh:
+        for ln in fh:
+            ln = ln.strip()
+            if not ln:
                 continue
-            action = f.get("action") or url
-            method = (f.get("method") or "GET").upper()
-            params = [p for p in (f.get("parameters") or []) if p]
-            key = (method, action, tuple(sorted(params)))
-            if key in seen_form:
+            try:
+                obj = json.loads(ln)
+            except json.JSONDecodeError:
                 continue
-            seen_form.add(key)
-            forms.append({
-                "url": url, "action": action, "method": method,
-                "enctype": f.get("enctype") or "", "parameters": params,
-            })
+            if not isinstance(obj, dict):
+                continue
+            req = obj.get("request") or {}
+            url = req.get("endpoint") or ""
+            if url:
+                urls.append(url)
+            resp = obj.get("response") or {}
+            for f in resp.get("forms") or []:
+                if not isinstance(f, dict):
+                    continue
+                action = f.get("action") or url
+                method = (f.get("method") or "GET").upper()
+                params = [p for p in (f.get("parameters") or []) if p]
+                key = (method, action, tuple(sorted(params)))
+                if key in seen_form:
+                    continue
+                seen_form.add(key)
+                forms.append({
+                    "url": url, "action": action, "method": method,
+                    "enctype": f.get("enctype") or "", "parameters": params,
+                })
     n_urls = write_lines(urls_out, urls)   # write_lines dedups
     write_json(forms_out, {"forms": forms, "count": len(forms)})
     return n_urls, len(forms)

@@ -165,8 +165,14 @@ content_discovery:
     # output back into the plain URL list + forms.json. Set false to keep
     # the old plain-text crawl (e.g. an old katana without -fx).
     form_extraction: true
+  # urlfinder (passive archive) — TẮT vì trùng nguồn với waymore. urlfinder
+  # query wayback/commoncrawl/alienvault/urlscan/virustotal; waymore (stage
+  # riêng, bật) query ĐÚNG cùng bộ nguồn đó + tải cả response body. Chạy cả
+  # hai = gọi lặp cùng archive API (chậm, tốn rate-limit), url_merge dedup
+  # nên output cuối không lợi gì. Giữ MỘT passive là đủ. Bật lại nếu tắt
+  # waymore, hoặc muốn passive nhanh hơn (bỏ waymore) thay vì sâu hơn.
   urlfinder:
-    enabled: true
+    enabled: false
     timeout: 1800
   # Gom host trả về cùng một response trước khi crawl — crawl 200 host
   # wildcard cùng phục vụ một app lãng phí y như fuzz chúng. max_hosts: 0 =
@@ -175,11 +181,13 @@ content_discovery:
   max_hosts: 0
   skip_waf: false
 
-  # gau — archived URLs (wayback/commoncrawl/otx/urlscan). Complements
-  # waymore with a different provider mix; ``--subs`` spans all subdomains
-  # of the target. Skipped gracefully if the gau binary is missing.
+  # gau (passive archive) — TẮT: là tập con yếu nhất của urlfinder/waymore
+  # (cùng wayback/commoncrawl/otx/urlscan, không có virustotal, không tải
+  # body) và ProjectDiscovery urlfinder chính là bản thay thế hiện đại của
+  # nó. Chạy thêm gau chỉ là lượt query thứ 3 vào cùng nguồn. Passive đã do
+  # waymore đảm nhiệm. Bật lại chỉ khi tắt cả urlfinder lẫn waymore.
   gau:
-    enabled: true
+    enabled: false
     threads: 5
     timeout: 600
 
@@ -188,17 +196,21 @@ dirsearch:
   enabled: true
   threads: 30
   # dirsearch quét các host trong -l TUẦN TỰ trong một process. `timeout` là
-  # TRẦN cho cả stage; ngân sách thật = timeout_per_host × số target (sau
-  # dedup). Trước đây timeout_per_host=300 với max_hosts=50 → wanted=15000s,
-  # vượt xa trần 3600s cũ → subprocess bị kill CỨNG ở đúng 3600s (không phải
-  # "72s/host điều chỉnh mềm" như comment cũ mô tả — code chỉ tính con số
-  # thật để CẢNH BÁO, còn timeout truyền cho subprocess vẫn là min(ceiling,
-  # wanted) = ceiling, nên toàn bộ host chưa quét tới bị mất, không salvage
-  # được gì). Thực tế run 2026-07-23 với acronis.com: TimeoutExpired sau
-  # đúng 3600s, 0 kết quả (xem logs/stages.json: "dirsearch failed | timeout
-  # after 3600s"). Hạ timeout_per_host xuống mức vẫn đủ cho quét FILE +
-  # extension (không recursion) rồi nâng trần cho khớp 100%: 120s × 50 host
-  # = 6000s, không còn lệch nên không bao giờ bị cắt giữa chừng nữa.
+  # TRẦN cho cả stage.
+  #
+  # Ngân sách thật giờ được SUY RA TỪ KHỐI LƯỢNG REQUEST, không còn là
+  # timeout_per_host × số target nữa (xem modules/dirsearch.py _plan_budget):
+  #     wanted = số_target × số_từ ÷ max_rate × 1.3
+  # Lý do đổi: con số per_host không có cách nào biết wordlist to bao nhiêu.
+  # Comment cũ ở đây từng khẳng định "120s × 50 host = 6000s, không bao giờ
+  # bị cắt giữa chừng nữa" — nhưng run acronis.com 2026-07-25 vẫn chết đúng
+  # ở 6000s, vì khối lượng thật là:
+  #     50 target × 13,799 từ = 689,950 request
+  #     ở max_rate=30 (giới hạn TOÀN CỤC) = 22,998s = 6.4 giờ  → thiếu ~4×
+  # Với max_rate=200 dưới đây: 689,950 ÷ 200 × 1.3 ≈ 4,485s, vừa trần 6000s.
+  #
+  # timeout_per_host chỉ còn là đường lui khi max_rate=0 (không ghì tốc độ),
+  # lúc đó không suy ra được rps nên quay lại cách tính cũ theo host.
   timeout_per_host: 120
   timeout: 6000
   # ------------------------------------------------------------------
@@ -224,11 +236,20 @@ dirsearch:
   dedup_targets: true
   max_hosts: 50
   skip_waf: false
-  # Ghì tốc độ — đối xứng với ffuf.rate. Không có nó thì ffuf bị giới hạn
-  # 30 req/s còn dirsearch 30 thread bắn tự do vào cùng target, ghì một nửa
-  # thì vẫn ăn ban. `--max-rate` = req/s, `--delay` = giây giữa các request
-  # (0 = tắt). Chỉnh theo policy req/s của chương trình.
-  max_rate: 30
+  # Ghì tốc độ. `--max-rate` = req/s TOÀN CỤC (không phải mỗi thread),
+  # `--delay` = giây giữa các request (0 = tắt).
+  #
+  # 30 → 200. 30 req/s là quá thấp so với khối lượng: 689,950 request ở 30
+  # req/s = 6.4 giờ, không đời nào lọt trần 6000s, và đó là lý do stage này
+  # timeout ở mọi lần chạy. 200 req/s đưa về ~4,485s. Con số này vẫn thấp
+  # hơn nuclei.rate_limit (400) đang bắn vào cùng target, nên nhất quán với
+  # phần còn lại của pipeline.
+  #
+  # HẠ XUỐNG khi target là origin nhỏ/yếu hoặc chương trình có policy req/s
+  # — timeout sẽ tự giãn theo (ngân sách suy ra từ max_rate), nhưng nhớ
+  # kiểm tra dòng cảnh báo "vượt trần" khi chạy. 0 = không ghì (khi đó
+  # ngân sách rơi về timeout_per_host × số host).
+  max_rate: 200
   delay: 0
   # ------------------------------------------------------------------
   # Status-code filtering (dirsearch v3.x — `-i` and `-x`).
@@ -423,6 +444,28 @@ arjun:
   threads: 5
   rate_limit: 60          # arjun --rate-limit: max requests per SECOND (0 = arjun default 9999)
   timeout: 3600
+  # arjun --stable. KHÔNG phải "cẩn thận hơn một chút": requester của arjun
+  # đặt delay = random 3–9 GIÂY trước MỖI request (arjun/core/requester.py),
+  # nên nó nuốt luôn ý nghĩa của rate_limit ở trên. Đo thật trên
+  # acronis.com 2026-07-25: ~660s cho MỘT url (103 chunk wordlist/url) →
+  # budget 3600s chỉ đủ ~5 url trong khi max_urls = 200.
+  # Bật lại KHI VÀ CHỈ KHI target chặn rate (arjun in "try --stable switch"
+  # / "Target has rate limiting in place"), và khi bật thì nhớ hạ max_urls
+  # xuống ~20 cho khớp budget.
+  stable: false
+  # Vá bug upstream của arjun (≤2.2.7) trước khi chạy: __main__.py in
+  # ``request.status_code`` trong khi request là dict → AttributeError giết
+  # cả process ngay khi target trả 400/413/418/429/503 (WAF, rate limiter,
+  # endpoint 400 khi thấy param lạ — gặp hằng ngày). Vá sửa đúng một biểu
+  # thức thành ``response_1.status_code``, giữ .recon2win.bak, idempotent,
+  # và không đụng gì nếu arjun đã fix. false = không ghi vào site-packages
+  # (khi đó chunking vẫn giới hạn thiệt hại, nhưng mỗi chunk vẫn chết sớm).
+  patch_upstream: true
+  # Sàn thời gian cho một chunk. Các chunk chia đều phần budget CÒN LẠI,
+  # nhưng chunk nào không xin nổi ngần này giây thì bỏ hẳn thay vì khởi
+  # động để chết: run cũ có chunk nhận đúng 1s rồi timeout, và stage báo
+  # "timeout after 1s" nghe như lỗi cấu hình.
+  min_chunk_seconds: 120
   # Cap the number of dynamic URLs fed to arjun. Without this, an
   # aggressive crawler + waymore can produce 5k+ URLs and arjun will
   # sit fuzzing them for an hour before timing out. The framework
@@ -433,6 +476,28 @@ arjun:
   # for archive noise; 10s keeps a single hung URL from eating the
   # whole stage budget.
   request_timeout: 10
+  # Số URL mỗi lần gọi arjun. arjun 2.2.7 CRASH hẳn process trên một số
+  # target và kéo theo toàn bộ target còn lại. CÓ HAI CRASH KHÁC NHAU, cả
+  # hai đều được vá tự động (patch_upstream, xem modules/arjun.py):
+  #   (B) __main__.py:135 — in request.status_code khi target trả non-2xx,
+  #       nhưng request lúc đó là dict:
+  #         AttributeError: 'dict' object has no attribute 'status_code'
+  #       Giết run acronis.com 2026-07-25 ở target 2/200.
+  #   (A) __main__.py:133 — response_1.status_code, trong khi requester()
+  #       trả về STR khi lỗi mạng (hoặc 'killed' khi cờ kill bật vì
+  #       503/timeout). Upstream có kiểm type nhưng mãi tận dòng 139:
+  #         AttributeError: 'str' object has no attribute 'status_code'
+  #       Đây mới là cái giết chunk SAU KHI (B) đã vá — run discover.com
+  #       2026-07-26 mất 2/8 chunk vì nó.
+  # → 198 target không bao giờ được quét, mất 22 phút, arjun_params.txt
+  # không hề được tạo. Bug đó nay đã được vá (xem patch_upstream ở trên),
+  # nhưng arjun còn nhiều đường chết khác (error_handler bật cờ kill toàn
+  # cục khi gặp 503/timeout) nên vẫn giữ chunking để giới hạn thiệt hại:
+  # 25 URL/lần → một URL độc chỉ giết chunk của nó.
+  # ``-oT`` ghi nối tiếp nên finding của các chunk trước vẫn còn nguyên.
+  # ``timeout`` ở trên vẫn là trần cho CẢ stage (các chunk chia nhau).
+  #   0 → tắt chunking, gọi arjun một lần như trước.
+  chunk_size: 25
 
 # ---------- Nuclei ----------
 nuclei:
@@ -457,10 +522,21 @@ nuclei:
   #                    below still bounds a single non-batched run.
   #   batch_on_timeout continue → keep going after a timed-out batch (max
   #                    coverage). stop → halt the stage but keep what's done.
+  #   batch_min_size   sàn khi tự chia đôi (xem dưới). 0/1 → không có sàn.
+  #
+  # TỰ CHIA ĐÔI KHI TIMEOUT: batch timeout không có nghĩa là "17% URL cuối
+  # chưa quét". nuclei duyệt theo TEMPLATE, quét từng template qua toàn bộ
+  # target trong batch — nên bị kill là cụt ĐUÔI DANH SÁCH TEMPLATE cho
+  # MỌI URL trong batch, và thứ tự template không ngẫu nhiên nên lần nào
+  # cũng mất đúng phần đuôi đó. Vì vậy khi một batch timeout, các batch
+  # còn lại tự giảm còn một nửa (tới sàn batch_min_size) để mỗi batch đi
+  # hết bộ template. Tổng số request không đổi; cái được là coverage mỗi
+  # URL, trả giá bằng một lần load template thừa mỗi batch (~10-30s).
   # ------------------------------------------------------------------
   batch_size: 1000
   batch_timeout: 1800
   batch_on_timeout: continue
+  batch_min_size: 25
   # ------------------------------------------------------------------
   # exclude_tags — passed to nuclei as ``-etags``. Filters out
   # templates whose tags match this list. Useful for cutting noise:
@@ -491,16 +567,63 @@ nuclei:
       - critical
       - high
       - medium
-    # Bumped 7200 → 10800. A real run against acronis.com (576 alive
-    # hosts, already critical/high/medium only) STILL hit 7200s and
-    # returned 0 findings — see logs/stages.json: "nuclei_default failed
-    # | timeout after 7200s — salvaged 0 partial findings". Unlike
-    # endpoints/dynamic there's no per-scan URL cap here on purpose —
-    # this is meant to be the one pass that sees every live root host —
-    # so the fix is more time, not less coverage. If it still walls on a
-    # bigger target, lower rate_limit-friendly options are: raise this
-    # further, or curate alive.txt down before running.
-    timeout: 10800
+    # Template tag filter. severity=critical,high,medium STILL leaves
+    # ~7400 templates (measured: `nuclei -tl -severity critical,high,medium`
+    # → 7401), and 562 alive hosts × 7401 templates at rate_limit=100 is
+    # ~4.2M requests ≈ 11.6h of pure request time — no way it finishes in
+    # the 3h timeout, which is why the acronis.com run salvaged 0 findings.
+    # Narrowing to the attack-relevant tag classes below cuts to ~5200
+    # templates (drops tech/version-detection noise, wordpress-plugin
+    # enumeration, etc. — nothing you'd report). Leave empty to run every
+    # critical/high/medium template (slow; only for a small curated host list).
+    #
+    # TÊN TAG PHẢI KHỚP CHÍNH XÁC tag trong template — nuclei bỏ qua tag lạ
+    # trong im lặng, không cảnh báo. Đo bằng `nuclei -tl -severity
+    # critical,high,medium -tags <tag>`:
+    #     misconfig  → 622 template     misconfiguration → 4    (SAI)
+    #     panel      →  39 template     exposed-panels   → 0    (SAI)
+    # Config trước đây dùng hai cái sai nên chúng hoàn toàn vô tác dụng;
+    # salesforce-community-misconfig chỉ lọt lưới nhờ có kèm tag `exposure`.
+    # Sửa lại: 5148 → 5431 template.
+    tags:
+      - cve
+      - exposure
+      - misconfig
+      - default-login
+      - panel
+      - takeover
+    # Batch by host so each run is separately bounded and persisted.
+    #
+    # SIZING (measured, not estimated — `nuclei -stats` on a real 100-host
+    # batch of this target reported: templates=5095, total=1,162,000
+    # requests, sustained ~500 rps). Two things that earlier guesses got
+    # wrong:
+    #   * a template is NOT one request — 1,162,000 / (100 × 5095) = ~2.3
+    #     requests per template per host (redirects, retries, multi-step
+    #     matchers), so the true cost is ~11,600 requests per host;
+    #   * at ~500 rps that is ~23 s/host, so a 100-host batch needs ~39min
+    #     and could never fit the 30min batch_timeout — every batch died at
+    #     ~75% done, which is why all 6 timed out.
+    # 50 hosts × 23s ≈ 19min leaves real headroom inside batch_timeout.
+    # 562 hosts → 12 batches ≈ 4h. Raise batch_timeout, not batch_size, if
+    # you want fewer/longer batches.
+    batch_size: 50
+    batch_timeout: 1800
+    # TRẦN CHO CẢ STAGE, batched hay không. Trước đây nó chỉ bó đường
+    # un-batched: run batched chạy tự do batches × batch_timeout, nên
+    # nuclei_endpoints của discover.com đốt 4h dưới một ``timeout`` danh
+    # nghĩa 3h. Giờ mỗi batch chỉ được cấp phần còn lại của ngân sách
+    # stage, và stage dừng thay vì mở batch ngắn hơn cả lúc load template.
+    #
+    # 10800 (3h) LÀ QUÁ THẤP CHO STAGE NÀY khi trần đã có hiệu lực thật.
+    # Đo trên run acronis.com: 14 batch, mọi batch exit 0, tổng 17.219s =
+    # 4,78h. Ép 3h sẽ cắt mất ~5 batch của một scan đang chạy LÀNH LẶN —
+    # tức là biến một trần chống chạy loạn thành mất coverage.
+    # 25200 = 14 batch × batch_timeout 1800, tức trần bao được cả trường
+    # hợp xấu nhất mà vẫn chặn được run thoát ly.
+    # Công thức khi đổi batch_size: timeout ≥ ceil(số host / batch_size)
+    #                                        × batch_timeout
+    timeout: 25200
   # ------------------------------------------------------------------
   # endpoints scan — runs AFTER content discovery on alive_urls.txt (the
   # live-verified discovered URLs). default_scan only sees alive.txt (the
@@ -517,27 +640,109 @@ nuclei:
       - critical
       - high
       - medium
-    # Same failure as nuclei.dynamic used to have before it got max_urls:
-    # a real run fed this 12,336 URLs (alive_urls.txt, uncapped) and hit
-    # 7200s with 0 findings salvaged (logs/stages.json: "nuclei_endpoints
-    # failed | timeout after 7200s"). Dedup near-identical (host, path)
-    # URLs and cap to the top 5000 highest-value — same dedup+cap shape
-    # dynamic_scan already uses (see modules/nuclei.py _filter_endpoint_urls).
-    #   0 → no cap
-    max_urls: 5000
+    # DELIBERATELY narrower than the default scan's tag set. Measured
+    # template counts (severity critical,high,medium + the global -etags):
+    #   cve,exposure,misconfiguration,default-login,exposed-panels,takeover → 5150
+    #   exposure,misconfiguration                                          →  768
+    # ``cve`` alone is ~4000 of those, and it is the wrong tool here: a CVE
+    # template anchors its path to {{BaseURL}}, so against a deep endpoint
+    # like https://x.com/app/page it probes https://x.com/app/page/wp-admin
+    # — nonsense. The meaningful host-root form (https://x.com/wp-admin) is
+    # already covered by the default scan, which runs the FULL tag set
+    # against every alive host. What is unique to this scan is path-level
+    # exposure/misconfiguration on URLs discovery found.
+    #
+    # This is what makes the scan finish: 1079 templates × ~2.3 requests
+    # ≈ 2,500 requests per URL ≈ 5s at ~500 rps, so 2000 URLs ≈ 2.8h —
+    # versus ~13h for the same 2000 URLs at the full tag set. Keeping URL
+    # coverage and cutting redundant templates beats slashing max_urls.
+    #
+    # ``misconfig``, KHÔNG phải ``misconfiguration`` — xem ghi chú ở tag set
+    # của default scan. Stage này thiệt nhất vì tag set chỉ có 2 tag và một
+    # trong hai đang chết: exposure,misconfiguration = 766 template (gần như
+    # toàn bộ đến từ exposure), exposure,misconfig = 1079.
+    tags:
+      - exposure
+      - misconfig
+    # Cap the discovered-URL list. A real run fed this 12,336 URLs
+    # (alive_urls.txt, uncapped) and every batch timed out. Dedup of
+    # near-identical (host, path) URLs keeps the top max_urls
+    # highest-value ones.  0 → no cap
+    max_urls: 2000
+    # ------------------------------------------------------------------
+    # max_per_host — TRẦN SỐ URL MỖI HOST, áp TRƯỚC max_urls.
+    #
+    # Đây là thứ quyết định, không phải tinh chỉnh của max_urls. Cắt bằng
+    # max_urls là xếp hạng mọi URL với nhau, nên một host có bề mặt crawl
+    # khổng lồ nuốt sạch danh sách. Đo trên run discover.com 2026-07-26:
+    #   top-2000 toàn cục → apps.discover.com chiếm 1907 suất (95%),
+    #   44 host còn lại chia nhau 0-24 URL. Trong 2000 URL đó chỉ có
+    #   13 URL trả 200.
+    #   cap 100/host trên cùng input → 634 URL, trong đó 176 URL trả 200.
+    # Danh sách nhỏ hơn 3 lần nhưng nhiều hơn 13,5 lần nội dung đọc được,
+    # vì thứ bị bỏ là bản sao của cùng một trang "Access Denied".
+    # Chi phí đi theo: 2000 URL ≈ 6,9M request ≈ 4,8h @rate_limit 400,
+    # so với ≈ 1,5h.  0 → tắt cap.
+    max_per_host: 100
+    # waf_host_max — trần riêng cho host mà EDGE trả lời mọi path (>95% số
+    # URL của host trả 403/406/429; xem _blanket_blocked_hosts). Với
+    # apps.discover.com, path không tồn tại (/zzz-random-9931) cũng 403 →
+    # request không bao giờ tới origin, và mọi URL trên host đó là CÙNG
+    # một target được quét lặp lại.
+    #
+    # Cố tình KHÔNG drop hẳn (0): vẫn có thể có path lọt qua edge, và giữ
+    # 25 URL mẫu chỉ tốn ~0,5h. Đặt = max_per_host để tắt hẳn cơ chế này.
+    # Lưu ý khi chỉnh: body các trang 403 KHÔNG giống nhau từng byte
+    # (Akamai echo lại URL + reference nonce), nên dedup theo hash body
+    # không bắt được — phải nhìn phân bố status.
+    waf_host_max: 25
+    # SIZING — đo thật bằng `nuclei -stats` trên chính batch_000 của run
+    # discover.com: 1078 template × 10 host → RequestsTotal 34.510, tức
+    # 3.451 request/URL (KHÔNG phải ~2.500 như ước lượng cũ), và
+    # rate_limit là 400 chứ không phải 500. Số đúng: 8,6s/URL.
+    # Vì thế batch_size 250 cần ≥2.157s > batch_timeout 1800s — mọi batch
+    # timeout theo đúng phép tính, và thực tế 6/6 batch chết ở 1800s với
+    # 0 finding.
+    #   120 × 8,6s ≈ 1.035s, dư 42% trong batch_timeout.
+    # Điều kiện cần giữ khi retune:
+    #   batch_size × 3451 / rate_limit ≤ 0,7 × batch_timeout
+    # RPS thật còn tụt dần khi bị bóp (đo được 194 → 113 trong 2 phút),
+    # nên nếu batch vẫn timeout thì code tự chia đôi (batch_min_size).
+    batch_size: 120
+    batch_timeout: 1800
     timeout: 10800
   dynamic:
     enabled: true
-    tags:
-      - fuzz
-      - fuzzing
-      - sqli
-      - xss
-      - lfi
-      - rce
-      - ssrf
-      - ssti
-      - idor
+    # Load nuclei's DAST/fuzzing templates — the ones that actually inject
+    # payloads into query parameters. REQUIRED for this stage to do its
+    # job: nuclei gates them behind the -dast flag and silently loads none
+    # of them without it, even though their tags (sqli, xss, ssrf...) look
+    # like they match a tags filter. Without this the "fuzzing" scan was
+    # only running ordinary non-fuzzing templates. Only meaningful here —
+    # the default/endpoints scans have no parameters to fuzz.
+    dast: true
+    # tags: CỐ Ý ĐỂ TRỐNG. `-dast` tự nó ĐÃ là bộ lọc — nó giới hạn run
+    # trong đúng corpus fuzzing. Đo trên nuclei-templates v10.4.6
+    # (`nuclei -u 'http://127.0.0.1:1/?id=1' -dast [-tags ...]` rồi đọc
+    # dòng "Templates loaded for current scan"):
+    #     -dast                                   → 54 template
+    #     -dast + tags(fuzz,fuzzing,sqli,xss,…)   → 41 template
+    # Thư mục dast/ có 249 file nhưng 192 file là CSP-bypass `flow:
+    # headless`, không chạy nếu thiếu -headless → 54 mới là con số thật.
+    # Bộ tags cũ vì thế chỉ TRỪ ĐI, và trừ mất đúng những thứ đáng tiền:
+    # cmdi, crlf, open-redirect, rfi, xinclude, csv-injection và các
+    # template DAST theo CVE (CVE-2024-2961, CVE-2022-42889, …).
+    # Thêm tags vào đây = tự bịt 24% corpus, đừng làm.
+    tags: []
+    # nuclei -fuzz-aggression: số payload mỗi fuzz point. Mặc định của
+    # nuclei là "low" — đó là lựa chọn về TỶ LỆ PHÁT HIỆN chứ không phải
+    # về tốc độ. Đo thật (target local 2 param, corpus dast đầy đủ, đếm
+    # request tại server): low = 191 req/URL, medium = 236 (+24%),
+    # high = 289 (+51%); thời gian chạy gần như không đổi vì rate_limit
+    # mới là thứ chặn. Stage này xài hết ~1/6 budget nên đổi 24% traffic
+    # lấy dải payload rộng hơn là hời. high chỉ nên bật khi target là của
+    # mình / có ROE cho phép ồn.
+    fuzz_aggression: medium
     severity:
       - critical
       - high
@@ -549,16 +754,30 @@ nuclei:
     # scan walls with 0 findings. We keep the highest-value URLs first
     # (api / auth / most params) and dedup near-identical param shapes.
     #   0 → no cap
+    #
+    # SIZING — số ĐO THẬT, không còn ngoại suy. Con số cũ ở đây (~3960
+    # template, ~18s/URL) lấy từ `nuclei -tl`, mà -tl LỜ ĐI -dast nên nó
+    # đếm cả 13k template non-fuzzing → sai hai bậc độ lớn.
+    # Đo trên run acronis.com 2026-07-26 (logs/stages.json, stage
+    # nuclei_dynamic): 424 URL / 41 template / 361s ⇒ ~0.85s mỗi URL.
+    # Với corpus đầy đủ 54 template (bỏ tags) ⇒ ~1.1s mỗi URL. Vậy:
+    #   * max_urls 3000 ≈ 55 phút — vẫn thừa chỗ dưới timeout 10800
+    #   * batch_size 250 → 250 × 1.1 ≈ 4.5 phút/batch, dư 6 lần so với
+    #     batch_timeout 1800 (kể cả target chậm ~7s/URL vẫn kịp)
+    # batch_size cũ 75 chỉ ≈ 80s/batch: an toàn nhưng tốn công khởi động
+    # process vô ích. Retune thì đo lại bằng `-stats`.
     max_urls: 3000
-    # Bumped 7200 → 10800. Even capped at 3000 URLs, a real run still hit
-    # 7200s with 0 findings salvaged (logs/stages.json: "nuclei_dynamic
-    # failed | timeout after 7200s"): 3000 URLs × the sqli/xss/lfi/rce/
-    # ssrf/ssti/idor/fuzz(ing) tag set × 4 severities is still a lot of
-    # requests at rate_limit=100/s. This is the highest-value scan (real
-    # attack-class templates, not tech detection), so more time > a
-    # smaller max_urls.
+    batch_size: 250
+    batch_timeout: 1800
     timeout: 10800
-  rate_limit: 100
+  # Requests/second cap across all three scans. Bumped 100 → 400: the
+  # single biggest lever on scan time, which is linear in 1/rate_limit.
+  # 100 was far too low for the request volume (562 hosts × ~5200 templates
+  # ≈ 2.9M requests) and was the main reason every scan walled at its
+  # timeout. 400 is comfortable for large CDN-fronted infra like the test
+  # target; lower it for small/fragile origins, or override per-scan under
+  # nuclei.default / .endpoints / .dynamic (per-scan keys win over these).
+  rate_limit: 400
   bulk_size: 25
   concurrency: 25
 

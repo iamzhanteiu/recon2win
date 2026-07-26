@@ -1,8 +1,13 @@
 """httpx — stage 3 (alive check) and stage 6.1 (URL check).
 
 httpx is called twice for two different jobs:
-  1. alive-check subdomains → alive.txt + alive_detail.json
+  1. alive-check subdomains → alive.txt + alive_detail.json + alive_table.txt
   2. check the merged URL list → alive_urls.txt + alive_urls_detail.json
+     + alive_urls_table.txt
+
+Each stage also writes a ``*_table.txt`` companion — a human-readable
+``status | length | content-type | url`` view of the same rows for quick
+eyeballing/grep. The ``*.txt`` list stays URL-only for downstream stages.
 
 The earlier ``alive_detail.csv`` was dropped in v2 — JSON is the
 canonical machine-readable form and any downstream tool that wants CSV
@@ -97,7 +102,48 @@ def _write_alive_from_detail(detail_json: Path, alive_txt: Path) -> int:
         dedup.append(row)
     write_json(detail_json, dedup)
     write_lines(alive_txt, [r["url"] for r in dedup if r.get("url")])
+    _write_alive_table(dedup, _table_path(alive_txt))
     return len(dedup)
+
+
+def _table_path(alive_txt: Path) -> Path:
+    """``alive_urls.txt`` → ``alive_urls_table.txt`` (companion table)."""
+    return alive_txt.with_name(alive_txt.stem + "_table.txt")
+
+
+def _write_alive_table(rows: list[dict], table_path: Path) -> int:
+    """Write a human-readable ``status | length | content-type | url`` table
+    from the httpx detail rows — the quick eyeball view of the probed surface
+    (spot the odd-sized 200, the lone application/json API, the 401 admin).
+
+    The plain ``alive*.txt`` stays URL-only for downstream consumers; this is
+    a companion view, greppable by column (``awk '$1==200'`` / ``grep json``).
+    Sorted by (status, -length) so unusual sizes within a status class
+    cluster together. Written directly (not via ``write_lines``, which strips
+    leading pad and would wreck the column alignment).
+    """
+    def _int(v) -> int:
+        try:
+            return int(v)
+        except (TypeError, ValueError):
+            return 0
+
+    entries: list[tuple[int, int, str, str]] = []
+    for r in rows:
+        url = r.get("url") or ""
+        if not url:
+            continue
+        ctype = (r.get("content_type") or "-").split(";")[0].strip() or "-"
+        entries.append((_int(r.get("status_code")),
+                        _int(r.get("content_length")), ctype, url))
+    entries.sort(key=lambda e: (e[0], -e[1]))
+
+    lines = [f"{'ST':>3}  {'LENGTH':>9}  {'CONTENT-TYPE':<24}  URL"]
+    lines += [f"{st:>3}  {ln:>9}  {ct[:24]:<24}  {url}"
+              for st, ln, ct, url in entries]
+    table_path.parent.mkdir(parents=True, exist_ok=True)
+    table_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return len(entries)
 
 
 # ----------------------------------------------------------------------
@@ -188,10 +234,12 @@ def alive_check(
         dedup.append(row)
     write_json(detail_json, dedup)
     write_lines(alive_txt, [r["url"] for r in dedup if r.get("url")])
+    table_txt = _table_path(alive_txt)
+    _write_alive_table(dedup, table_txt)
 
     return make_result(
         stage, "success", input_path=hosts_file,
-        outputs=[alive_txt, detail_json], count=len(dedup),
+        outputs=[alive_txt, detail_json, table_txt], count=len(dedup),
     )
 
 
@@ -267,13 +315,14 @@ def check_urls(
         )
 
     count = _write_alive_from_detail(detail_json, alive_txt)
+    table_txt = _table_path(alive_txt)
     extra = {"input_urls": total, "probed_urls": kept,
              "static_dropped": n_static}
 
     if timed_out:
         return make_result(
             stage, "failed", input_path=urls_file,
-            outputs=[alive_txt, detail_json], count=count,
+            outputs=[alive_txt, detail_json, table_txt], count=count,
             error=(f"timeout after {timeout}s — salvaged {count} alive URLs "
                    f"from partial output ({kept}/{total} probed)"),
             extra=extra,
@@ -281,6 +330,6 @@ def check_urls(
 
     return make_result(
         stage, "success", input_path=urls_file,
-        outputs=[alive_txt, detail_json], count=count,
+        outputs=[alive_txt, detail_json, table_txt], count=count,
         extra=extra,
     )

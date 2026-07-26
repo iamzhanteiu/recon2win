@@ -230,6 +230,71 @@ def _build_cmd(
     return cmd
 
 
+def _count_words(wordlist: Path | None) -> int:
+    """Số dòng thật sự được gửi đi từ một wordlist (bỏ dòng trống/comment)."""
+    if wordlist is None or not wordlist.exists():
+        return 0
+    n = 0
+    for raw in wordlist.read_text(errors="ignore").splitlines():
+        s = raw.strip()
+        if s and not s.startswith("#"):
+            n += 1
+    return n
+
+
+# Dự phòng cho khởi động, retry, redirect và phần chờ không phải request —
+# đo trên run thật thì thời gian thực luôn nhỉnh hơn ``request / rate`` thuần.
+_BUDGET_SLACK = 1.3
+
+
+def _plan_budget(
+    *,
+    targets: int,
+    wordlist: Path | None,
+    extensions: list[str] | None,
+    max_rate: int,
+    per_host: int,
+    ceiling: int,
+) -> tuple[int, dict]:
+    """Tính timeout cho stage TỪ KHỐI LƯỢNG REQUEST THẬT.
+
+    Cách cũ là ``timeout_per_host × số target`` — một con số bịa, không hề
+    đối chiếu với việc thực sự phải gửi bao nhiêu request, nên config tự
+    tin ghi "120s × 50 host = 6000s, không bao giờ bị cắt giữa chừng nữa"
+    trong khi run acronis.com 2026-07-25 chết đúng ở trần 6000s:
+
+        50 target × 13,799 từ           = 689,950 request
+        ở --max-rate=30 (giới hạn TOÀN CỤC) = 22,998s = 6.4 giờ
+
+    tức là ngân sách thiếu gần 4 lần. ``per_host`` không có cách nào biết
+    điều đó; ``request ÷ rate`` thì có.
+
+    Trả về ``(timeout, thông_tin_ngân_sách)``. Khi không đặt ``max_rate``
+    (0 = không ghì tốc độ) thì không suy ra được rps nên rơi về cách tính
+    theo host cũ — vẫn tốt hơn là không có gì.
+    """
+    words = _count_words(wordlist)
+    # ``-e`` nhân số request lên: mỗi từ được thử thêm một lần cho mỗi
+    # extension (``admin`` → ``admin.bak``, ``admin.sql``, …).
+    ext_mult = 1 + len(extensions) if extensions else 1
+    requests = targets * words * ext_mult
+
+    if requests > 0 and max_rate > 0:
+        wanted = int(requests / max_rate * _BUDGET_SLACK)
+        basis = (f"{targets} host × {words} từ × {ext_mult} = {requests:,} "
+                 f"request ÷ {max_rate} req/s")
+    else:
+        wanted = per_host * max(1, targets)
+        basis = f"{targets} host × {per_host}s"
+
+    timeout = max(60, min(ceiling, wanted))
+    return timeout, {
+        "requests": requests, "words": words, "targets": targets,
+        "max_rate": max_rate, "wanted": wanted, "ceiling": ceiling,
+        "timeout": timeout, "over_ceiling": wanted > ceiling, "basis": basis,
+    }
+
+
 # ----------------------------------------------------------------------
 # Resume / dry-run helpers
 # ----------------------------------------------------------------------
@@ -362,19 +427,6 @@ def scan(
             f"[dirsearch] {fuzz_targets.summary_line(sel_stats)}"))
 
     threads = int(d_cfg.get("threads", 30))
-    # dirsearch quét các host trong ``-l`` TUẦN TỰ trong một process, nên một
-    # con số timeout cố định là ngân sách chia đều cho tất cả: 3600s cho 50
-    # host = 72s/host, gần như chắc chắn bị cắt giữa chừng và mất các host
-    # cuối danh sách. Tính theo số target thật (đã dedup) rồi mới chặn trần.
-    per_host = int(d_cfg.get("timeout_per_host", 300))
-    ceiling = int(d_cfg.get("timeout", 3600))
-    wanted = per_host * max(1, len(targets))
-    timeout = max(60, min(ceiling, wanted))
-    if wanted > ceiling:
-        print(console.phase_info_line(
-            f"[dirsearch] {len(targets)} host × {per_host}s = {wanted}s vượt trần "
-            f"{ceiling}s → thực tế {timeout // max(1, len(targets))}s/host. "
-            f"Tăng dirsearch.timeout hoặc giảm max_hosts."))
     recursive = bool(d_cfg.get("recursive", True))
     combine = bool(d_cfg.get("combine", False))
     extensions = d_cfg.get("extensions")  # if None we fall back to SENSITIVE_EXT
@@ -429,6 +481,20 @@ def scan(
         wordlist_file = fallback_wordlist
         combine = True
 
+    max_rate = int(d_cfg.get("max_rate", 0) or 0)
+    timeout, budget = _plan_budget(
+        targets=len(targets), wordlist=wordlist_file,
+        extensions=extensions if combine else None,
+        max_rate=max_rate,
+        per_host=int(d_cfg.get("timeout_per_host", 300)),
+        ceiling=int(d_cfg.get("timeout", 3600)),
+    )
+    if budget["over_ceiling"]:
+        print(console.phase_info_line(
+            f"[dirsearch] {budget['basis']} ≈ {budget['wanted']}s vượt trần "
+            f"{budget['ceiling']}s → sẽ bị cắt ở {timeout}s (kết quả một phần "
+            f"vẫn được giữ). Tăng max_rate/timeout, hoặc giảm max_hosts/wordlist."))
+
     cmd = _build_cmd(
         alive_file, raw_out, wordlist_file,
         extensions=extensions,
@@ -438,27 +504,45 @@ def scan(
         follow_redirects=bool(d_cfg.get("follow_redirects", True)),
         include_status=d_cfg.get("include_status") or [],
         exclude_status=d_cfg.get("exclude_status") or [],
-        max_rate=int(d_cfg.get("max_rate", 0) or 0),
+        max_rate=max_rate,
         delay=float(d_cfg.get("delay", 0) or 0),
     )
 
     r = runner.run(cmd, stage=stage, output_dir=output_dir, timeout=timeout)
-    if not r["success"] and not r["missing_binary"]:
+
+    # SALVAGE FIRST. dirsearch's ``-o`` plain report is written INCREMENTALLY
+    # (one line per hit, as it finds them) — unlike nuclei's ``-json-export``,
+    # a run killed at its timeout still leaves every hit it had already made
+    # on disk. The old code returned failed/count=0 without ever opening the
+    # file, so the 6000s timeout on the 2026-07-25 acronis.com run threw away
+    # real results. Parse first, decide status after.
+    src = raw_out.read_text(errors="ignore") if raw_out.exists() else (r.get("stdout") or "")
+    urls = normalize_output(src.splitlines())
+    n = write_lines(proc_out, urls)
+
+    timed_out = r.get("timed_out", False)
+    hard_fail = not r["success"] and not r["missing_binary"]
+    extra = {"wordlists": [str(p) for p in wl_paths],
+             "merge": merge_stats,
+             "selection": sel_stats,
+             "budget": budget,
+             "mode": "wordlist" if wl_paths else "extension"}
+
+    # Only a failure that salvaged NOTHING is a dead stage.
+    if hard_fail and not urls:
         return make_result(
             stage, "failed", input_path=alive_file,
             outputs=[raw_out, proc_out], count=0,
-            error=(r["stderr"] or "")[:300],
-            extra={"wordlists": [str(p) for p in wl_paths], "merge": merge_stats},
+            error=(r["stderr"] or "")[:300], extra=extra,
         )
 
-    src = raw_out.read_text(errors="ignore") if raw_out.exists() else (r["stdout"] or "")
-    urls = normalize_output(src.splitlines())
-    n = write_lines(proc_out, urls)
+    error = None
+    if timed_out:
+        extra["timed_out"] = True
+        error = f"timeout after {timeout}s — salvaged {n} partial results"
+    elif hard_fail:
+        error = f"{(r['stderr'] or 'failed').strip()[:200]} — salvaged {n} results"
     return make_result(
         stage, "success", input_path=alive_file,
-        outputs=[raw_out, proc_out], count=n,
-        extra={"wordlists": [str(p) for p in wl_paths],
-               "merge": merge_stats,
-               "selection": sel_stats,
-               "mode": "wordlist" if wl_paths else "extension"},
+        outputs=[raw_out, proc_out], count=n, error=error, extra=extra,
     )

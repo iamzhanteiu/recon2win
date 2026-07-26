@@ -55,6 +55,8 @@ python3 main.py -d example.com --config config.yml
 |---|---|---|
 | `dirsearch` → `failed (count=0, <1s)` with `ModuleNotFoundError: No module named 'pkg_resources'` | dirsearch imports `pkg_resources`, which Python 3.12+ dropped from the stdlib **and** setuptools 81+ dropped from its bundle | Same venv: `pip install -r requirements.txt` (pins `setuptools>=68,<81`). **pipx install** (dirsearch in its own venv): `pipx inject dirsearch "setuptools<81" --force` |
 | `arjun` → `failed (count=0, 3600s)` with `timeout after 3600s` | Stage budget exceeded because too many dynamic URLs were fed to arjun | Lower `arjun.max_urls` in `config.yml` (default 200) or raise `arjun.timeout` |
+| `arjun` → `AttributeError: 'dict' object has no attribute 'status_code'` in `logs/arjun.log` | Upstream bug in arjun ≤2.2.7: it prints `request.status_code` on a dict the moment a target answers 400/413/418/429/503, killing the whole invocation | Fixed automatically — the stage patches the installed `arjun/__main__.py` before running (`arjun.patch_upstream: true`, backup kept as `__main__.py.recon2win.bak`). If site-packages is read-only, `extra.upstream_patch` in `stages.json` says `failed: …`; install arjun with `pip install --user` or fix it by hand |
+| `arjun` → hours spent on a handful of URLs (`Processing chunks: n/103` crawling) | `arjun.stable: true` — `--stable` sleeps a random 3–9s before **every** request (~660s per URL) and overrides `rate_limit` | Leave `arjun.stable: false` (the default); only turn it on when arjun reports the target is rate-limiting, and drop `max_urls` to ~20 when you do |
 | `xnlinkfinder` → `failed (count=0, 1200s)` | xnLinkFinder hangs on a single slow JS URL | Lower `xnlinkfinder.timeout` *or* pre-filter `js_urls.txt` |
 | `nuclei_dynamic` → `skipped (input file empty or missing)` | Cascade from `arjun` failing | Fix arjun (above) and the cascade clears |
 
@@ -702,7 +704,7 @@ Nuclei runs against three target sets so coverage isn't limited to root hosts:
 |---|---|---|---|
 | default | alive hosts | full set | `findings/default/` |
 | endpoints | discovered live URLs (`alive_urls.txt`) | critical/high/medium | `findings/endpoints/` |
-| dynamic | parameterized URLs | fuzz/sqli/xss/lfi/… | `findings/dynamic/` |
+| dynamic | parameterized URLs | the whole DAST corpus (`-dast`, no tag filter) | `findings/dynamic/` |
 
 Before any pass, `nuclei -update-templates` refreshes the template store
 once per run (stale templates miss recent CVEs — the biggest silent quality
@@ -711,8 +713,18 @@ drain on a scanner). It's a fast no-op when already current; disable with
 
 ## What nuclei_dynamic actually scans
 
-`nuclei_dynamic` (stage 8) fuzzes injection templates (sqli/xss/lfi/ssrf/…)
-against `parameterized_urls.txt`. That file is the **union** of three sources,
+`nuclei_dynamic` (stage 8) fuzzes nuclei's DAST templates against
+`parameterized_urls.txt`. It runs with `-dast` and **no** `-tags` filter on
+purpose: `-dast` already restricts the run to the fuzzing corpus (54 loadable
+templates on nuclei-templates v10.4.6 — the `dast/` tree holds 249 files but
+192 are `flow: headless` CSP-bypass checks that need `-headless`), so adding
+tags only subtracts. The tag set this repo used to ship cut 54 → 41, silently
+dropping cmdi, crlf, open-redirect, rfi, xinclude, csv-injection and the DAST
+CVE templates. Payload breadth is set by `nuclei.dynamic.fuzz_aggression`
+(`medium` here; measured 191 → 236 requests per 2-param URL vs nuclei's
+`low` default).
+
+`parameterized_urls.txt` is the **union** of three sources,
 so an endpoint reaches the dynamic scan if *any* of them has a param for it:
 
 ```
