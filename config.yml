@@ -214,6 +214,29 @@ dirsearch:
   timeout_per_host: 120
   timeout: 6000
   # ------------------------------------------------------------------
+  # chunk_size — SỐ HOST MỖI LẦN GỌI dirsearch.
+  #
+  # Ước lượng ngân sách chuẩn đến mấy cũng không cứu được một run đơn:
+  # dirsearch duyệt target TUẦN TỰ, nên bị kill ở giây thứ N là những host
+  # chưa tới lượt KHÔNG HỀ được quét. Đo trên acronis.com: 50 target được
+  # chọn, kết quả chỉ đến từ target #1, #3, #9 → ~82% host chưa từng chạm
+  # tới. discover.com cùng hình dạng (4/43 host có kết quả).
+  #
+  # Và ngân sách KHÔNG THỂ chuẩn: cả hai run đều chết đúng bằng ``wanted``
+  # mà _plan_budget tự tính (4484s và 3856s) dù đã nhân _BUDGET_SLACK 1.3
+  # — tốc độ thật không bao giờ đạt max_rate, cùng hiện tượng RPS tụt dần
+  # đo được ở nuclei (194 → 113 trong 2 phút khi bị CDN bóp).
+  #
+  # Chia nhỏ mới là thứ giới hạn thiệt hại: mỗi chunk có ngân sách riêng
+  # tính từ chính số host của nó, ghi kết quả ngay sau khi chạy xong, và
+  # một chunk chết chỉ tốn đúng chunk đó. Chunk timeout thì các chunk còn
+  # lại tự giảm còn một nửa (tới sàn chunk_min_size).
+  # ``timeout`` ở trên là trần wall-clock cho CẢ stage, chia cho các chunk.
+  #   0 → tắt, quay lại hành vi một-lần cũ.
+  # ------------------------------------------------------------------
+  chunk_size: 10
+  chunk_min_size: 3
+  # ------------------------------------------------------------------
   # Phân vai với ffuf (4.3) để không đào trùng cùng một cây thư mục:
   #   dirsearch = FILE + extension nhạy cảm, KHÔNG recursion
   #   ffuf      = DIRECTORY + recursion

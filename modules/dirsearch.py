@@ -23,6 +23,7 @@ We normalize those to URL-only, one per line, in the form:
 from __future__ import annotations
 
 import re
+import time
 from pathlib import Path
 from typing import Iterable
 
@@ -245,6 +246,11 @@ def _count_words(wordlist: Path | None) -> int:
 # Dự phòng cho khởi động, retry, redirect và phần chờ không phải request —
 # đo trên run thật thì thời gian thực luôn nhỉnh hơn ``request / rate`` thuần.
 _BUDGET_SLACK = 1.3
+
+# Không mở chunk mới khi ngân sách stage còn ít hơn ngần này: dirsearch
+# mất vài chục giây nạp wordlist trước request đầu tiên, nên một lát mỏng
+# chỉ mua thêm đúng một lần timeout.
+_MIN_CHUNK_BUDGET = 60
 
 
 def _plan_budget(
@@ -482,12 +488,13 @@ def scan(
         combine = True
 
     max_rate = int(d_cfg.get("max_rate", 0) or 0)
+    ceiling = int(d_cfg.get("timeout", 3600))
     timeout, budget = _plan_budget(
         targets=len(targets), wordlist=wordlist_file,
         extensions=extensions if combine else None,
         max_rate=max_rate,
         per_host=int(d_cfg.get("timeout_per_host", 300)),
-        ceiling=int(d_cfg.get("timeout", 3600)),
+        ceiling=ceiling,
     )
     if budget["over_ceiling"]:
         print(console.phase_info_line(
@@ -495,53 +502,156 @@ def scan(
             f"{budget['ceiling']}s → sẽ bị cắt ở {timeout}s (kết quả một phần "
             f"vẫn được giữ). Tăng max_rate/timeout, hoặc giảm max_hosts/wordlist."))
 
-    cmd = _build_cmd(
-        alive_file, raw_out, wordlist_file,
-        extensions=extensions,
-        threads=threads,
-        recursive=recursive,
-        combine=combine,
-        follow_redirects=bool(d_cfg.get("follow_redirects", True)),
-        include_status=d_cfg.get("include_status") or [],
-        exclude_status=d_cfg.get("exclude_status") or [],
-        max_rate=max_rate,
-        delay=float(d_cfg.get("delay", 0) or 0),
-    )
+    # ------------------------------------------------------------------
+    # CHIA THEO HOST. Trước đây stage này gọi dirsearch ĐÚNG MỘT LẦN trên
+    # cả danh sách target, nên timeout là mất gần hết: dirsearch duyệt
+    # target tuần tự, bị kill ở giây thứ N thì những host chưa tới lượt
+    # KHÔNG HỀ được quét. Đo trên run acronis.com: 50 target được chọn,
+    # kết quả chỉ đến từ target #1, #3, #9 → ~82% host chưa từng chạm tới.
+    # discover.com cùng hình dạng (4/43).
+    #
+    # Ước lượng ngân sách chuẩn hơn KHÔNG cứu được chuyện này — một run
+    # đơn vẫn là được ăn cả ngã về không. Và ngân sách không thể chuẩn:
+    # cả hai run đều chết đúng bằng ``wanted`` mà _plan_budget tự tính
+    # (4484s và 3856s), kể cả khi đã nhân _BUDGET_SLACK 1.3 — tốc độ thật
+    # không bao giờ đạt ``max_rate`` (cùng hiện tượng RPS tụt dần đo được
+    # ở nuclei: 194 → 113 trong 2 phút khi bị CDN bóp).
+    #
+    # Nên chia nhỏ, y như nuclei: mỗi chunk có ngân sách riêng tính từ
+    # chính số host của nó, chạy xong ghi kết quả ngay, và một chunk chết
+    # chỉ tốn đúng chunk đó. ``chunk_size <= 0`` giữ hành vi một-lần cũ.
+    # ------------------------------------------------------------------
+    chunk_size = int(d_cfg.get("chunk_size", 10) or 0)
+    min_chunk = max(1, int(d_cfg.get("chunk_min_size", 3) or 1))
+    chunked = chunk_size > 0 and len(targets) > chunk_size
 
-    r = runner.run(cmd, stage=stage, output_dir=output_dir, timeout=timeout)
+    def _run_one(target_file: Path, out_file: Path, per_timeout: int) -> dict:
+        cmd = _build_cmd(
+            target_file, out_file, wordlist_file,
+            extensions=extensions,
+            threads=threads,
+            recursive=recursive,
+            combine=combine,
+            follow_redirects=bool(d_cfg.get("follow_redirects", True)),
+            include_status=d_cfg.get("include_status") or [],
+            exclude_status=d_cfg.get("exclude_status") or [],
+            max_rate=max_rate,
+            delay=float(d_cfg.get("delay", 0) or 0),
+        )
+        return runner.run(cmd, stage=stage, output_dir=output_dir,
+                          timeout=per_timeout)
 
-    # SALVAGE FIRST. dirsearch's ``-o`` plain report is written INCREMENTALLY
-    # (one line per hit, as it finds them) — unlike nuclei's ``-json-export``,
-    # a run killed at its timeout still leaves every hit it had already made
-    # on disk. The old code returned failed/count=0 without ever opening the
-    # file, so the 6000s timeout on the 2026-07-25 acronis.com run threw away
-    # real results. Parse first, decide status after.
-    src = raw_out.read_text(errors="ignore") if raw_out.exists() else (r.get("stdout") or "")
-    urls = normalize_output(src.splitlines())
-    n = write_lines(proc_out, urls)
+    started = time.monotonic()
+    pending = list(targets)
+    cur_size = chunk_size if chunked else 0
+    idx = 0
+    raw_files: list[Path] = []
+    chunks_run = 0
+    any_timeout = False
+    deadline_hit = False
+    resized = False
+    hard_failed = 0
+    last_err = ""
+    urls: list[str] = []
+    n = 0
 
-    timed_out = r.get("timed_out", False)
-    hard_fail = not r["success"] and not r["missing_binary"]
+    while pending:
+        chunk = pending[:cur_size] if cur_size > 0 else pending
+        pending = pending[len(chunk):]
+
+        if chunked:
+            c_targets = fuzz_targets.write_target_file(
+                chunk, raw_ds / f"chunk_{idx:03d}_targets.txt")
+            c_raw = raw_ds / f"chunk_{idx:03d}.txt"
+            remaining = ceiling - (time.monotonic() - started)
+            if remaining <= _MIN_CHUNK_BUDGET:
+                deadline_hit = True
+                pending = chunk + pending          # chưa chạy, trả lại
+                break
+            per_timeout, _ = _plan_budget(
+                targets=len(chunk), wordlist=wordlist_file,
+                extensions=extensions if combine else None,
+                max_rate=max_rate,
+                per_host=int(d_cfg.get("timeout_per_host", 300)),
+                ceiling=int(remaining),
+            )
+        else:
+            c_targets, c_raw, per_timeout = alive_file, raw_out, timeout
+        idx += 1
+
+        r = _run_one(c_targets, c_raw, per_timeout)
+        chunks_run += 1
+        raw_files.append(c_raw)
+
+        # SALVAGE FIRST. dirsearch's ``-o`` plain report is written
+        # INCREMENTALLY (one line per hit, as it finds them) — unlike
+        # nuclei's ``-json-export``, a run killed at its timeout still
+        # leaves every hit it had already made on disk. The old code
+        # returned failed/count=0 without ever opening the file, so the
+        # 6000s timeout on the 2026-07-25 acronis.com run threw away real
+        # results. Parse first, decide status after.
+        lines: list[str] = []
+        for p in raw_files:
+            if p.exists():
+                lines.extend(p.read_text(errors="ignore").splitlines())
+        if not lines:
+            lines = (r.get("stdout") or "").splitlines()
+        urls = normalize_output(lines)
+        n = write_lines(proc_out, urls)     # ghi sau MỖI chunk
+
+        if r.get("timed_out"):
+            any_timeout = True
+            if chunked and cur_size > min_chunk:
+                cur_size = max(min_chunk, cur_size // 2)
+                resized = True
+        elif not r["success"] and not r["missing_binary"]:
+            hard_failed += 1
+            last_err = (r["stderr"] or "").strip()
+
+    if chunked and raw_files:
+        # Gộp lại thành raw_out để consumer cũ (report/audit) không đổi.
+        raw_out.write_text("\n".join(
+            p.read_text(errors="ignore") for p in raw_files if p.exists()))
+
     extra = {"wordlists": [str(p) for p in wl_paths],
              "merge": merge_stats,
              "selection": sel_stats,
              "budget": budget,
              "mode": "wordlist" if wl_paths else "extension"}
+    if chunked:
+        left = -(-len(pending) // cur_size) if pending and cur_size else \
+            (1 if pending else 0)
+        extra["chunks"] = {
+            "total": chunks_run + left, "run": chunks_run,
+            "size": cur_size, "initial_size": chunk_size,
+            "resized": resized, "failed": hard_failed,
+            "unrun": len(pending),
+        }
 
     # Only a failure that salvaged NOTHING is a dead stage.
-    if hard_fail and not urls:
+    if hard_failed == chunks_run and chunks_run and not urls:
         return make_result(
             stage, "failed", input_path=alive_file,
             outputs=[raw_out, proc_out], count=0,
-            error=(r["stderr"] or "")[:300], extra=extra,
+            error=last_err[:300] or "every dirsearch chunk failed", extra=extra,
         )
 
     error = None
-    if timed_out:
+    if any_timeout or deadline_hit:
         extra["timed_out"] = True
-        error = f"timeout after {timeout}s — salvaged {n} partial results"
-    elif hard_fail:
-        error = f"{(r['stderr'] or 'failed').strip()[:200]} — salvaged {n} results"
+        if deadline_hit:
+            extra["deadline_hit"] = True
+        if not chunked:
+            error = f"timeout after {timeout}s — salvaged {n} partial results"
+        else:
+            note = (f"hết ngân sách stage {ceiling}s, còn {len(pending)} host"
+                    if deadline_hit else "chạy tiếp qua chunk timeout")
+            if resized:
+                note += f"; chunk {chunk_size}→{cur_size}"
+            error = (f"{chunks_run}/{extra['chunks']['total']} chunk chạy, "
+                     f"{note}; giữ {n} kết quả")
+    elif hard_failed:
+        error = f"{last_err[:200] or 'failed'} — salvaged {n} results"
     return make_result(
         stage, "success", input_path=alive_file,
         outputs=[raw_out, proc_out], count=n, error=error, extra=extra,
