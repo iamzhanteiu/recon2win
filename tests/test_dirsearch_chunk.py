@@ -122,6 +122,39 @@ def test_chunk_halves_after_a_timeout(tmp_path, monkeypatch):
     assert res["extra"]["chunks"]["size"] == 4
 
 
+def test_timeout_raises_per_host_budget_not_just_shrinks_the_chunk(
+        tmp_path, monkeypatch):
+    """The defect this guards. ``per_timeout`` is derived from len(chunk),
+    so halving the chunk ALSO halves its budget — same seconds per host,
+    so a chunk that timed out because the rate assumption was optimistic
+    would time out again at half size, forever. A timeout means the RATE
+    was wrong, so the rate estimate has to come down with it.
+
+    (nuclei does not have this problem: its batch_timeout is a constant
+    independent of batch size, so halving genuinely doubles per-URL time.)
+    """
+    fake, state = _fake_run_factory(timeouts={0})
+    monkeypatch.setattr("modules.runner.tool_available", lambda b: True)
+    monkeypatch.setattr("modules.runner.run", fake)
+
+    # Wordlist phải đủ lớn để ngân sách thoát khỏi sàn max(60, …) của
+    # _plan_budget — nếu cả hai chunk đều bị kẹp về 60s thì test pass kể
+    # cả khi backoff bị tắt, tức là không kiểm gì cả.
+    base, alive, wl = _base(tmp_path, 16, wordlist_words=2000)
+    ds.scan(alive, base, _cfg(wl, chunk_size=8, chunk_min_size=1), skip=False)
+
+    hosts0, budget0 = len(state["targets"][0]), state["timeouts"][0]
+    assert budget0 > 60 and state["timeouts"][1] > 60, "ngan sach dinh san 60s"
+    hosts1, budget1 = len(state["targets"][1]), state["timeouts"][1]
+    assert hosts1 == hosts0 // 2                      # chunk did halve
+    # ...but the budget must NOT halve with it: per-host time goes UP
+    per_host0 = budget0 / hosts0
+    per_host1 = budget1 / hosts1
+    assert per_host1 > per_host0 * 1.5, (
+        f"moi host chi duoc {per_host1:.0f}s sau timeout, truoc do "
+        f"{per_host0:.0f}s — thich ung khong co tac dung")
+
+
 def test_chunk_resize_stops_at_min_size(tmp_path, monkeypatch):
     fake, state = _fake_run_factory(timeouts=set(range(20)))
     monkeypatch.setattr("modules.runner.tool_available", lambda b: True)

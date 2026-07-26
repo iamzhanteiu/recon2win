@@ -252,6 +252,22 @@ _BUDGET_SLACK = 1.3
 # chỉ mua thêm đúng một lần timeout.
 _MIN_CHUNK_BUDGET = 60
 
+# Hạ ước lượng tốc độ sau mỗi chunk timeout.
+#
+# ĐÂY LÀ CHỖ KHÁC nuclei và rất dễ làm sai. Ở nuclei, ``batch_timeout`` là
+# hằng số độc lập với batch_size, nên chia đôi batch là mỗi URL được gấp
+# đôi thời gian — tự nó đã sửa được. Ở đây ``per_timeout`` lại SUY RA TỪ
+# len(chunk), nên chia đôi chunk cũng chia đôi ngân sách ⇒ vẫn đúng ngần
+# ấy giây mỗi host ⇒ chunk sau timeout y hệt. Cơ chế thích ứng thành vô
+# tác dụng trước đúng cái nó sinh ra để chống.
+#
+# Một chunk timeout không có nghĩa chunk quá to, mà nghĩa là tốc độ thật
+# thấp hơn ``max_rate`` ta tưởng (đo ở nuclei: 194 → 113 rps trong 2 phút
+# khi bị CDN bóp; dirsearch acronis/discover đều chết đúng bằng ``wanted``).
+# Đặt bằng đúng hệ số chia đôi chunk để wall-clock mỗi chunk giữ nguyên
+# còn thời gian mỗi host tăng gấp đôi.
+_RATE_BACKOFF = 0.5
+
 
 def _plan_budget(
     *,
@@ -544,6 +560,7 @@ def scan(
     started = time.monotonic()
     pending = list(targets)
     cur_size = chunk_size if chunked else 0
+    rate_factor = 1.0
     idx = 0
     raw_files: list[Path] = []
     chunks_run = 0
@@ -568,10 +585,14 @@ def scan(
                 deadline_hit = True
                 pending = chunk + pending          # chưa chạy, trả lại
                 break
+            # Ngân sách chunk tính từ chính số host của nó, NHƯNG theo tốc
+            # độ đã học được (rate_factor), không phải max_rate danh nghĩa.
+            # Xem chú thích ở _RATE_BACKOFF: thiếu chỗ này thì việc chia đôi
+            # chunk hoàn toàn vô tác dụng.
             per_timeout, _ = _plan_budget(
                 targets=len(chunk), wordlist=wordlist_file,
                 extensions=extensions if combine else None,
-                max_rate=max_rate,
+                max_rate=max(1, int(max_rate * rate_factor)),
                 per_host=int(d_cfg.get("timeout_per_host", 300)),
                 ceiling=int(remaining),
             )
@@ -601,9 +622,15 @@ def scan(
 
         if r.get("timed_out"):
             any_timeout = True
-            if chunked and cur_size > min_chunk:
-                cur_size = max(min_chunk, cur_size // 2)
-                resized = True
+            if chunked:
+                # Một chunk timeout nghĩa là GIẢ ĐỊNH TỐC ĐỘ SAI, không phải
+                # chunk quá to. Hạ ước lượng rate đúng bằng hệ số ta chia
+                # đôi chunk, nên wall-clock mỗi chunk giữ nguyên còn thời
+                # gian MỖI HOST tăng gấp đôi — đó mới là thứ sửa được lỗi.
+                rate_factor *= _RATE_BACKOFF
+                if cur_size > min_chunk:
+                    cur_size = max(min_chunk, cur_size // 2)
+                    resized = True
         elif not r["success"] and not r["missing_binary"]:
             hard_failed += 1
             last_err = (r["stderr"] or "").strip()
