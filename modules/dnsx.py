@@ -15,7 +15,7 @@ import json
 from pathlib import Path
 from typing import Any
 
-from . import runner
+from . import console, runner
 from .utils import (
     load_json,
     make_result,
@@ -133,13 +133,29 @@ def resolve(
     write_json(detail_json, detail)
     write_lines(resolved_txt, keep_hosts)
 
+    # Cắt cụt ở đây là quyết định LẶNG LẼ nhất trong cả pipeline: mọi stage
+    # sau chỉ nhìn thấy ``resolved.txt`` nên không cách nào biết nó là bản
+    # rút gọn, và stage vẫn báo "success". Với một target 10k+ host thì
+    # ``max_resolved`` mới là thứ quyết định coverage, không phải ngân sách
+    # của nuclei — nên nó phải hiện lên console chứ không chỉ nằm trong
+    # stages.json.
+    dropped = len(full_hosts) - len(keep_hosts)
+    extra = {
+        "kept_for_downstream": len(keep_hosts),  # prioritised count
+        "total_resolved": len(detail),
+        "max_resolved": max_resolved,
+    }
+    if dropped > 0:
+        extra["truncated"] = dropped
+        print(console.phase_warn_line(
+            f"[{stage}] cắt cụt: {len(full_hosts)} host resolve được → giữ "
+            f"{len(keep_hosts)} (dnsx.max_resolved={max_resolved}), bỏ "
+            f"{dropped}. Mọi stage sau chỉ thấy phần giữ lại; "
+            f"danh sách đầy đủ ở {detail_json.name}."))
+
     return make_result(
         stage, "success", input_path=subdomains_file,
         outputs=[resolved_txt, detail_json],
         count=len(detail),                       # raw resolved count
-        extra={
-            "kept_for_downstream": len(keep_hosts),  # prioritised count
-            "total_resolved": len(detail),
-            "max_resolved": max_resolved,
-        },
+        extra=extra,
     )

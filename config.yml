@@ -177,6 +177,15 @@ content_discovery:
   # Gom host trả về cùng một response trước khi crawl — crawl 200 host
   # wildcard cùng phục vụ một app lãng phí y như fuzz chúng. max_hosts: 0 =
   # không cap (crawl rẻ hơn fuzz nhiều nên mặc định không giới hạn số host).
+  #
+  # "Không cap" ở đây là không cap SỐ HOST, không phải không giới hạn: cái
+  # bó thật là ``katana.timeout`` ở trên. Đo được ~6s/host (43 host / 258s),
+  # nên timeout 1800s đi hết khoảng ~300 host. Quá ngưỡng đó katana bị giết
+  # giữa chừng và output vẫn ghi bình thường — stage vẫn "success", chỉ là
+  # thiếu một phần không ai biết là bao nhiêu. Trường hợp đó giờ có cảnh
+  # báo trên console + ``extra.truncated`` trong stages.json; muốn quét
+  # target vài nghìn host thì đặt max_hosts (bó đầu vào, có kiểm soát) chứ
+  # đừng để timeout tự cắt (bó đầu ra, ngẫu nhiên).
   dedup_targets: true
   max_hosts: 0
   skip_waf: false
@@ -561,6 +570,37 @@ nuclei:
   batch_on_timeout: continue
   batch_min_size: 25
   # ------------------------------------------------------------------
+  # batch_autotune — kiểm bất biến batch_size TRƯỚC khi quét, thay vì để
+  # operator phát hiện sau vài giờ xem mọi batch chết ở batch_timeout.
+  # Trước khi chạy, code đo corpus thật bằng `nuclei -tl -severity ...
+  # -tags ...` (đúng lệnh ghi trong các comment bên dưới, ~1-3s, có cache)
+  # rồi so với công thức:
+  #
+  #     batch_size × req_per_template × templates / rate_limit
+  #         ≤ 0,7 × batch_timeout
+  #
+  # Vượt thì batch_size tự hạ xuống mức vừa, kèm cảnh báo nói rõ vì sao.
+  # CHỈ THU NHỎ, không tự phóng to: batch nhỏ hơn tối ưu chỉ tốn thêm vài
+  # lượt load template (~10-30s), còn batch to hơn thì mất đuôi danh sách
+  # template cho MỌI URL trong batch — đắt hơn nhiều.
+  #
+  # Vì sao cần: mọi con số batch_size dưới đây đúng cho ĐÚNG bộ tags +
+  # severity + rate_limit hiện tại. Sửa `tags` một dòng là corpus đổi kích
+  # thước còn batch_size đứng yên. Đó chính là cách nuclei_endpoints từng
+  # có 6/6 batch timeout với 0 finding.
+  #
+  # Không áp dụng cho scan `-dast` (nuclei.dynamic): `-tl` lờ đi -dast nên
+  # phép đo sai hai bậc độ lớn — code tự bỏ qua, batch_size giữ nguyên.
+  # false → tắt hẳn, dùng batch_size như đã ghi.
+  batch_autotune: true
+  # req_per_template — số request THẬT cho mỗi (template × target). KHÔNG
+  # phải 1: redirect, retry, matcher nhiều bước nhân nó lên. Đo bằng
+  # `nuclei -stats` rồi chia RequestsTotal / (target × template):
+  #     default   1.162.000 / (100 × 5.095) = 2,28
+  #     endpoints    34.510 / ( 10 × 1.078) = 3,20
+  # Ghi đè trong từng scan bên dưới khi số đo khác.
+  req_per_template: 2.3
+  # ------------------------------------------------------------------
   # exclude_tags — passed to nuclei as ``-etags``. Filters out
   # templates whose tags match this list. Useful for cutting noise:
   #   interaction — requires user interaction (browser cookie
@@ -729,10 +769,15 @@ nuclei:
     #   120 × 8,6s ≈ 1.035s, dư 42% trong batch_timeout.
     # Điều kiện cần giữ khi retune:
     #   batch_size × 3451 / rate_limit ≤ 0,7 × batch_timeout
+    # Từ nay ``nuclei.batch_autotune`` KIỂM điều kiện này trước mỗi run và
+    # tự hạ batch_size nếu vi phạm — không còn phải nhớ tính tay.
     # RPS thật còn tụt dần khi bị bóp (đo được 194 → 113 trong 2 phút),
     # nên nếu batch vẫn timeout thì code tự chia đôi (batch_min_size).
     batch_size: 120
     batch_timeout: 1800
+    # 3,20 req/template/URL — đo riêng cho scan này (xem req_per_template
+    # ở khối nuclei chung), cao hơn 2,3 của default scan.
+    req_per_template: 3.2
     timeout: 10800
   dynamic:
     enabled: true

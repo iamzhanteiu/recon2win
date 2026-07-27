@@ -11,6 +11,7 @@ import os
 import re
 import tempfile
 from pathlib import Path
+from typing import Any
 from urllib.parse import urlsplit
 
 from . import console, fuzz_targets, runner
@@ -25,6 +26,28 @@ from .utils import (
 
 
 JS_RE = re.compile(r"https?://[^\s\"'<>]+\.js(?:[?#][^\s\"'<>]*)?", re.IGNORECASE)
+
+
+def _note_crawl_outcome(
+    r: dict, tool: str, stage: str, truncated: dict,
+    *, timeout: int, n_targets: int,
+) -> None:
+    """Ghi nhận khi một crawler bị timeout giết giữa chừng.
+
+    Khác với ``katana failed``, timeout KHÔNG phải lỗi — katana ghi output
+    dần nên phần đã crawl vẫn còn trên đĩa và stage vẫn "success". Đó đúng
+    là chỗ nguy hiểm: output trông bình thường, không ai biết nó là bản cắt
+    cụt của bao nhiêu host. Ở 157 host chuyện này không xảy ra (258s/1800s);
+    ở vài nghìn host thì đây là kịch bản mặc định, nên phải nói ra.
+    """
+    if not r.get("timed_out"):
+        return
+    truncated[tool] = {"timeout": timeout, "targets": n_targets}
+    print(console.phase_warn_line(
+        f"[{stage}] {tool} chạm timeout {timeout}s trên {n_targets} target — "
+        f"output là bản CẮT CỤT, không rõ bao nhiêu host chưa được crawl. "
+        f"Tăng content_discovery.{tool}.timeout hoặc đặt "
+        f"content_discovery.max_hosts để bó số target."))
 
 
 def _hosts_from_urls(url_lines: list[str]) -> list[str]:
@@ -144,6 +167,7 @@ def crawl(
     cd_cfg = cfg.get("content_discovery", {})
     outputs: list[Path] = []
     all_urls: list[str] = []
+    truncated: dict[str, Any] = {}   # tool → vì sao output là bản cắt cụt
 
     # Cùng bước chọn target với hai stage fuzzing: crawl 200 host wildcard
     # cùng phục vụ một app cũng lãng phí y như fuzz chúng. Tắt bằng
@@ -161,6 +185,8 @@ def crawl(
                 targets, raw_cd / "targets.txt")
             print(console.phase_info_line(
                 f"[content_discovery] {fuzz_targets.summary_line(sel_stats)}"))
+
+    n_targets = len(read_lines(alive_file))
 
     # 4.1.a — katana
     if cd_cfg.get("katana", {}).get("enabled", True):
@@ -195,6 +221,8 @@ def crawl(
                 )
                 if not r["success"] and not r["missing_binary"]:
                     print(f"[{stage}] katana failed: {r['stderr'][:200]}")
+                _note_crawl_outcome(r, "katana", stage, truncated,
+                                    timeout=to, n_targets=n_targets)
                 if jsonl.exists() and jsonl.stat().st_size > 0:
                     n_u, n_f = _extract_katana_jsonl(jsonl, out, forms_out)
                     if n_f:
@@ -218,6 +246,8 @@ def crawl(
                 )
                 if not r["success"] and not r["missing_binary"]:
                     print(f"[{stage}] katana failed: {r['stderr'][:200]}")
+                _note_crawl_outcome(r, "katana", stage, truncated,
+                                    timeout=to, n_targets=n_targets)
                 write_json(forms_out, {"forms": [], "count": 0})
         else:
             print(f"[{stage}] katana not installed — skipping")
@@ -307,10 +337,14 @@ def crawl(
     # folded in by url_merge.
     n_js = write_lines(js_txt, [u for u in all_urls if JS_RE.match(u)])
 
+    extra: dict[str, Any] = {"js_urls": n_js, "selection": sel_stats}
+    if truncated:
+        extra["truncated"] = truncated
+
     result = make_result(
         stage, "success", input_path=alive_file,
         outputs=outputs + [crawler_txt, js_txt],
-        count=n_crawl, extra={"js_urls": n_js, "selection": sel_stats},
+        count=n_crawl, extra=extra,
     )
 
     # stage-complete summary — only fires when URLs > 0

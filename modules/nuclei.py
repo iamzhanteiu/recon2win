@@ -10,6 +10,7 @@ High/Critical findings fire an immediate Telegram alert (if configured).
 from __future__ import annotations
 
 import json
+import subprocess
 import time
 from pathlib import Path
 from typing import Optional
@@ -33,6 +34,75 @@ SEV_ORDER = ["info", "low", "medium", "high", "critical"]
 # spends ~10-30s loading templates before its first request, so a 30s slice
 # buys nothing but a guaranteed timeout and a misleading "batch run" count.
 _MIN_BATCH_BUDGET = 60
+
+# Phần ngân sách batch mà một batch được phép ăn theo tính toán. Chừa 30%
+# vì rps THẬT tụt dần khi target bóp lại (đo được 194 → 113 trong 2 phút
+# trên discover.com), nên tính sát 100% là bảo đảm timeout.
+_BATCH_BUDGET_FACTOR = 0.7
+
+# Số request nuclei thực sự bắn cho mỗi (template × target). KHÔNG phải 1:
+# redirect, retry và matcher nhiều bước làm nó nhân lên. Hai số đo thật:
+#   default   — 1.162.000 req / (100 host × 5.095 template) = 2,28
+#   endpoints — 34.510 req / (10 URL × 1.078 template)      = 3,20
+# Ghi đè bằng ``nuclei.<scan>.req_per_template`` sau khi đo lại `-stats`.
+_REQ_PER_TEMPLATE = 2.3
+
+_TL_CACHE: dict[tuple, Optional[int]] = {}
+
+
+def _template_count(
+    severity: list[str], tags: Optional[list[str]],
+) -> Optional[int]:
+    """Đếm template mà bộ lọc severity+tags này thực sự nạp.
+
+    Dùng ``nuclei -tl``, tức đúng thứ mà config bảo operator chạy tay khi
+    retune. Trả ``None`` khi không đo được (nuclei thiếu, lệnh lỗi) — người
+    gọi phải coi đó là "không biết" và giữ nguyên batch_size đã cấu hình,
+    chứ không được đoán.
+
+    KHÔNG dùng được cho scan ``-dast``: ``-tl`` lờ đi ``-dast`` và đếm cả
+    13k template non-fuzzing, sai hai bậc độ lớn (xem nuclei.dynamic trong
+    config.yml). Người gọi phải tự loại trường hợp đó.
+    """
+    key = (tuple(severity or ()), tuple(tags or ()))
+    if key in _TL_CACHE:
+        return _TL_CACHE[key]
+
+    result: Optional[int] = None
+    if runner.tool_available("nuclei"):
+        # Cố tình KHÔNG qua ``runner.run``: đây là truy vấn metadata, không
+        # phải một bước quét. Đẩy nó vào commands.log/stage log sẽ làm bẩn
+        # đúng thứ dùng để dựng lại một run.
+        cmd = ["nuclei", "-tl", "-severity", ",".join(severity)]
+        if tags:
+            cmd += ["-tags", ",".join(tags)]
+        try:
+            p = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+            lines = [ln for ln in (p.stdout or "").splitlines() if ln.strip()]
+            if lines:
+                result = len(lines)
+        except (OSError, ValueError, subprocess.SubprocessError):
+            result = None
+
+    _TL_CACHE[key] = result
+    return result
+
+
+def _safe_batch_size(
+    templates: int, n_cfg: dict, batch_timeout: int,
+) -> int:
+    """batch_size lớn nhất còn chạy hết được trong ``batch_timeout``.
+
+    Chính là công thức đã ghi trong config.yml, chỉ khác là code tự tính
+    thay vì bắt người sửa config nhớ tính lại:
+
+        batch_size × req_per_template × templates / rate_limit
+            ≤ 0,7 × batch_timeout
+    """
+    rate = int(n_cfg.get("rate_limit", 100)) or 1
+    rpt = float(n_cfg.get("req_per_template", _REQ_PER_TEMPLATE)) or _REQ_PER_TEMPLATE
+    budget = _BATCH_BUDGET_FACTOR * batch_timeout * rate
+    return max(1, int(budget / (rpt * max(1, templates))))
 
 
 def update_templates(
@@ -573,6 +643,51 @@ def _run(
     on_timeout = str(n_cfg.get("batch_on_timeout", "continue")).strip().lower()
     min_batch = max(1, int(n_cfg.get("batch_min_size", 25) or 1))
 
+    # ------------------------------------------------------------------
+    # Kiểm bất biến batch_size TRƯỚC khi quét.
+    #
+    # config.yml ghi rõ công thức và các số đo, nhưng không có gì kiểm nó:
+    # sửa ``tags``, ``severity`` hay ``rate_limit`` là corpus đổi kích thước
+    # trong khi ``batch_size`` đứng yên, và cách duy nhất phát hiện là mất
+    # vài giờ xem 6/6 batch chết ở 1800s với 0 finding — đúng lịch sử đã
+    # xảy ra. Đo corpus một lần (~1-3s, có cache) rồi so với công thức.
+    #
+    # CHỈ THU NHỎ, không tự phóng to: batch nhỏ hơn mức tối ưu chỉ tốn thêm
+    # vài lượt load template, còn batch to hơn thì mất coverage phần đuôi
+    # danh sách template cho MỌI URL trong batch.
+    # ------------------------------------------------------------------
+    configured_size = batch_size
+    autotune = bool(n_cfg.get("batch_autotune", True))
+    tune: dict = {}
+    # ``-dast`` loại trừ: ``-tl`` lờ đi flag đó nên số đếm sẽ sai hai bậc.
+    if autotune and batch_size > 0 and not n_cfg.get("dast", False):
+        tmpl_count = _template_count(severity, tags)
+        if tmpl_count:
+            safe = _safe_batch_size(tmpl_count, n_cfg, batch_timeout)
+            tune = {"templates": tmpl_count, "safe_size": safe}
+            # Sàn ``batch_min_size`` có thể nâng mức "an toàn" lên CAO HƠN
+            # batch_size đang cấu hình (safe=1, sàn=25, cấu hình=4). Khi đó
+            # phải im lặng bỏ qua: cơ chế này chỉ được thu nhỏ. Phóng to
+            # batch — kể cả "về đúng sàn" — là đổi hành vi quét theo hướng
+            # mất đuôi danh sách template, đúng thứ nó sinh ra để tránh.
+            applied = max(min_batch, safe)
+            if batch_size > safe and applied < batch_size:
+                rate = max(1, int(n_cfg.get("rate_limit", 100)))
+                rpt = float(n_cfg.get("req_per_template", _REQ_PER_TEMPLATE))
+                need = batch_size * tmpl_count * rpt / rate
+                msg = (
+                    f"[{stage}] batch_size {batch_size} vượt ngân sách — "
+                    f"{tmpl_count} template × {rpt:g} req/target @rate {rate} "
+                    f"≈ {need:.0f}s/batch, quá {_BATCH_BUDGET_FACTOR:.0%} × "
+                    f"batch_timeout {batch_timeout}s. Hạ xuống {applied}"
+                )
+                if applied > safe:
+                    msg += (f" (sàn batch_min_size {min_batch}; vẫn có thể "
+                            f"timeout — nới batch_timeout hoặc rate_limit)")
+                print(console.phase_warn_line(msg + "."))
+                batch_size = applied
+                tune["applied_size"] = applied
+
     batched = batch_size > 0 and len(all_urls) > batch_size
     single = not batched
     planned_batches = (
@@ -730,10 +845,13 @@ def _run(
             "total": batches_run + left, "run": batches_run,
             "planned": planned_batches,
             "size": cur_size, "initial_size": batch_size,
+            "configured_size": configured_size,
             "resized": resized, "stopped_early": stopped_early,
             "failed": hard_failed_batches,
             "unscanned_urls": len(pending),
         }
+        if tune:
+            extra["batches"]["autotune"] = tune
     status = "success"
     error = None
     if any_timeout or deadline_hit:
