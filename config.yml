@@ -670,7 +670,28 @@ nuclei:
     # 50 hosts × 23s ≈ 19min leaves real headroom inside batch_timeout.
     # 562 hosts → 12 batches ≈ 4h. Raise batch_timeout, not batch_size, if
     # you want fewer/longer batches.
-    batch_size: 50
+    #
+    # ------------------------------------------------------------------
+    # 2026-07-27: ĐẶT 0 — MỘT LỆNH nuclei DUY NHẤT, KHÔNG CHIA BATCH.
+    #
+    # Lý do batching tồn tại là để một run bị timeout không xoá sạch kết
+    # quả. Lý do đó đã hết hiệu lực: output đi qua ``-jsonl -o``, thứ
+    # nuclei ghi DẦN theo từng finding (xem ghi chú trong
+    # _build_nuclei_cmd). Một run bị SIGKILL vẫn để lại nguyên phần đã
+    # tìm được — batching chỉ còn mua thêm chi phí.
+    #
+    # Chi phí đó đo được, không phải suy đoán. Run 2026-07-27 trên
+    # discover.com với batch 39 host: 30,7 s/host, so với 24,8 s/host của
+    # batch 50 host cùng target. Batch NHỎ HƠN lại tốn NHIỀU HƠN mỗi host
+    # — vì mỗi batch phải nạp lại toàn bộ 5.525 template (~10-30s) và chi
+    # phí đó không chia đều theo số host. 157 host một lượt ≈ 80 phút, dư
+    # xa dưới ``timeout: 25200``.
+    #
+    # Đặt lại > 0 khi quét target đủ lớn để một run không kịp trong
+    # ``timeout`` — lúc đó batching mới trả lại giá trị của nó.
+    # ``batch_autotune`` tự bỏ qua khi batch_size = 0.
+    # ------------------------------------------------------------------
+    batch_size: 0
     batch_timeout: 1800
     # TRẦN CHO CẢ STAGE, batched hay không. Trước đây nó chỉ bó đường
     # un-batched: run batched chạy tự do batches × batch_timeout, nên
@@ -698,7 +719,13 @@ nuclei:
   # endpoints at all-severity buries real findings under detection noise.
   # ------------------------------------------------------------------
   endpoints:
-    enabled: true
+    # TẮT theo yêu cầu 2026-07-27: chỉ chạy nuclei default.
+    #
+    # BIẾT TRƯỚC CÁI MẤT: đây là stage DUY NHẤT từng ra finding trên
+    # discover.com — 1 critical (app.config.json lộ token Extole trên
+    # acq.discover.com). default scan chỉ đụng root của mỗi host, không
+    # bao giờ thấy path đó. Bật lại bằng cách đổi thành true.
+    enabled: false
     severity:
       - critical
       - high
@@ -780,7 +807,11 @@ nuclei:
     req_per_template: 3.2
     timeout: 10800
   dynamic:
-    enabled: true
+    # TẮT theo yêu cầu 2026-07-27: chỉ chạy nuclei default.
+    # Cái mất ở đây nhỏ hơn endpoints — stage này chạy 212s và ra 0 finding
+    # trên discover.com. Nhưng nó là stage DAST duy nhất (sqli/xss/ssrf
+    # inject vào query param); tắt là bỏ hẳn lớp fuzzing chủ động.
+    enabled: false
     # Load nuclei's DAST/fuzzing templates — the ones that actually inject
     # payloads into query parameters. REQUIRED for this stage to do its
     # job: nuclei gates them behind the -dast flag and silently loads none
@@ -838,16 +869,40 @@ nuclei:
     batch_size: 250
     batch_timeout: 1800
     timeout: 10800
-  # Requests/second cap across all three scans. Bumped 100 → 400: the
-  # single biggest lever on scan time, which is linear in 1/rate_limit.
-  # 100 was far too low for the request volume (562 hosts × ~5200 templates
-  # ≈ 2.9M requests) and was the main reason every scan walled at its
-  # timeout. 400 is comfortable for large CDN-fronted infra like the test
-  # target; lower it for small/fragile origins, or override per-scan under
-  # nuclei.default / .endpoints / .dynamic (per-scan keys win over these).
-  rate_limit: 400
-  bulk_size: 25
-  concurrency: 25
+  # ------------------------------------------------------------------
+  # Ba cần gạt kiểm soát độ ồn, ánh xạ thẳng sang cờ nuclei:
+  #     rate_limit  → -rl / -rate-limit   trần request/giây (toàn cục)
+  #     concurrency → -c                  số template chạy song song
+  #     bulk_size   → -bs / -bulk-size    số host song song mỗi template
+  #
+  # 2026-07-27: HẠ 400/25/25 → 100/10/10 để tránh bị chặn.
+  #
+  # Vì sao không chỉ hạ rate_limit: phép đo `-stats` trên 3 host thật cho
+  # thấy connection reuse chỉ 11,1% (22.335 kết nối TCP MỚI trên 25.125
+  # request). Với WAF thì tốc độ mở kết nối mới là tín hiệu mạnh hơn cả
+  # rps — nên `concurrency` và `bulk_size` phải xuống cùng, không thì
+  # nuclei vẫn dựng 25 luồng đập cửa cùng lúc, chỉ là chậm hơn.
+  #
+  # Bối cảnh target: 93/157 host discover.com trả 403 ngay lần probe đầu
+  # của httpx, 10 host trả 503, chỉ 23 host trả 200. Đây là hạ tầng đã
+  # sẵn tư thế từ chối, không đáng để bắn 400 rps vào.
+  #
+  # CHI PHÍ, đo chứ không đoán: `nuclei -stats` trên 3 host với đúng bộ
+  # cờ này báo 36.906 request / 3 host = 12.302 request mỗi host. Nhân
+  # 157 host = 1,93 triệu request.
+  #     @400 rps → 1,3 giờ      (đã đo thật: run 26/07 hết 64 phút)
+  #     @100 rps → 5,4 giờ      ← hiện tại
+  # Vẫn vừa trong ``nuclei.default.timeout: 25200`` (7 giờ), còn dư 1,6h.
+  # HẠ THÊM NỮA thì phải nâng timeout theo: @50 rps là 10,7 giờ, vượt
+  # trần và stage sẽ bị cắt giữa chừng.
+  #
+  # Thời gian tỉ lệ nghịch TUYẾN TÍNH với rate_limit — đây vẫn là cần gạt
+  # mạnh nhất về thời lượng. Ghi đè riêng từng scan dưới nuclei.default /
+  # .endpoints / .dynamic nếu cần (key theo scan thắng key chung).
+  # ------------------------------------------------------------------
+  rate_limit: 100
+  bulk_size: 10
+  concurrency: 10
 
 # ---------- Telegram ----------
 # Secrets load from env ($TELEGRAM_BOT_TOKEN / $TELEGRAM_CHAT_ID) by default,
