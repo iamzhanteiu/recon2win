@@ -297,21 +297,44 @@ After the workflow completes, the framework writes three artefacts to
 | `final_report.md`   | Flat Markdown mirror for quick terminal review. |
 | `summary.json`      | The same structured data the report renders, as JSON (for downstream tooling). |
 
-The report has 12 sections:
+The report has 13 sections:
 
 1. Executive Summary — target / timing / mode / config
 2. Recon Coverage Summary — KPI cards + clickable source counts
 3. Asset Inventory — search/filterable table of every alive host
 4. DNS Inventory — search/filterable table of resolved subdomains
-5. Content Discovery — katana / urlfinder / dirsearch / ffuf / waymore summary
-6. JavaScript Analysis — JS file count, xnLinkFinder endpoints, interesting API paths
+5. Content Discovery — katana / urlfinder / dirsearch / ffuf / waymore summary,
+   plus a link to `responses/index.md` (body previews for ffuf/dirsearch hits)
+6. JavaScript Analysis — JS file count, **both** JS tools side by side
+   (xnLinkFinder = regex, jsluice = AST), plus jsluice's param table
+   (`url / method / queryParams / bodyParams`) and interesting API paths
    6.1 JavaScript Secrets — API keys/tokens jsluice extracted from JS, grouped by severity
-7. Parameter Discovery — Arjun + parameterized URLs
+7. Parameter Discovery — Arjun + jsluice params + the first 100 lines of
+   `parameterized_urls.txt` embedded inline (the hand-testing shortlist)
+   7.1 Forms & Input Surface — every `<form>` the crawler saw, **ranked by
+   testing value**: uploads first, then POST bodies, then forms carrying
+   auth/identity fields
 8. Nuclei Findings — **grouped by severity**, with template / name / URL / matcher / evidence
 9. High-Value Targets — auto-detected admin / login / API / env / git / backups
 10. Errors / Skipped / Missing Tools — clickable link to `commands.log`
 11. Manual Testing Recommendations — prioritized list
 12. Appendix — tool versions, config snapshot, all file links
+
+### Form ranking
+
+`processed/forms.json` routinely holds 100+ forms and most are search boxes
+and newsletter signups, so section 7.1 sorts them by `report.form_score()`:
+multipart uploads (+100) → POST (+50) → number of *real* inputs (capped at
++8) → fields whose names look like identity/auth (+8 each, capped).
+
+Framework plumbing is explicitly excluded from the input count:
+`__VIEWSTATE`, `__EVENTTARGET` and the rest of the ASP.NET postback set are
+on every page of that stack and are never the target. Without that
+exclusion a postback stub outranks a login form purely on field count —
+measured at 84 vs 74 on a real `acronis.com` run. CSRF tokens
+(`_token`, `csrfmiddlewaretoken`, …) are treated as neutral-positive: their
+presence means the form really changes state, but the token field itself is
+never the bug.
 
 Every referenced file is a **clickable relative link** (e.g.
 `../raw/subfinder.txt`) so the report works from disk (`file://`) or when

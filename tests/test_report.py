@@ -25,11 +25,13 @@ from modules.report import (
     classify_url,
     count_lines,
     extract_interesting_api_paths,
+    form_score,
     is_high_value,
     load_json_safe,
     missing_tools_from_skips,
     parse_httpx_jsonl,
     parse_nuclei_summary,
+    rank_forms,
     rel_link,
     severity_rank,
     summarize_url_surface,
@@ -214,14 +216,33 @@ def fake_outputs(tmp_path: Path) -> Path:
         "severity_count": {"high": 1, "low": 1},
     }))
 
+    # processed/jsluice_* — the AST half of the JS analysis
+    (proc / "jsluice_endpoints.txt").write_text(
+        "/api/v2/session\n/api/v2/upload\n"
+    )
+    (proc / "jsluice_urls.txt").write_text(
+        "https://example.com/api/v2/session\n"
+    )
+    (proc / "jsluice_params.json").write_text(json.dumps([
+        {"url": "https://example.com/api/v2/session", "method": "POST",
+         "queryParams": ["lang"], "bodyParams": ["email", "password"]},
+        {"url": "https://example.com/search", "method": "",
+         "queryParams": ["q"], "bodyParams": []},
+    ]))
+
     # processed/forms.json — forms/inputs mined from the crawl
     (proc / "forms.json").write_text(json.dumps({
         "forms": [
             {"url": "https://example.com/login", "action": "https://example.com/login",
              "method": "POST", "enctype": "application/x-www-form-urlencoded",
              "parameters": ["username", "password", "csrf"]},
+            {"url": "https://example.com/upload", "action": "https://example.com/upload",
+             "method": "POST", "enctype": "multipart/form-data",
+             "parameters": ["file"]},
+            {"url": "https://example.com/", "action": "https://example.com/search",
+             "method": "GET", "enctype": "", "parameters": []},
         ],
-        "count": 1,
+        "count": 3,
     }))
 
     # responses/ — full ffuf/dirsearch response capture + preview
@@ -990,3 +1011,155 @@ def test_write_handles_zero_outputs(tmp_path: Path):
     # counts all zero
     md = Path(info["md"]).read_text()
     assert "Not generated" in md or "Not recorded" in md
+
+
+# ----------------------------------------------------------------------
+# form_score / rank_forms — ordering the input surface by testing value
+# ----------------------------------------------------------------------
+def test_form_score_ranks_upload_above_post_above_get():
+    upload = {"method": "POST", "enctype": "multipart/form-data",
+              "parameters": ["file"]}
+    post = {"method": "POST", "enctype": "", "parameters": ["a"]}
+    get_empty = {"method": "GET", "enctype": "", "parameters": []}
+    assert form_score(upload) > form_score(post) > form_score(get_empty)
+    assert form_score(get_empty) == 0
+
+
+def test_form_score_boosts_auth_fields():
+    plain = {"method": "POST", "parameters": ["colour"]}
+    auth = {"method": "POST", "parameters": ["password"]}
+    assert form_score(auth) > form_score(plain)
+
+
+def test_form_score_ignores_framework_plumbing():
+    """Regression: on a real acronis.com run an ASP.NET postback stub
+    outscored a login form 84 to 74, purely by carrying more hidden
+    fields. __VIEWSTATE and friends are on every page of the stack and are
+    never the target, so they must not buy rank."""
+    viewstate_stub = {
+        "method": "POST", "enctype": "application/x-www-form-urlencoded",
+        "parameters": ["__EVENTTARGET", "__EVENTARGUMENT", "__LASTFOCUS",
+                       "__VIEWSTATE", "__VIEWSTATEGENERATOR",
+                       "__EVENTVALIDATION", "__SCROLLPOSITIONX"],
+    }
+    login = {
+        "method": "POST", "enctype": "application/x-www-form-urlencoded",
+        "parameters": ["csrfmiddlewaretoken", "next", "username", "password"],
+    }
+    assert form_score(login) > form_score(viewstate_stub)
+
+
+def test_form_score_credits_csrf_token_without_treating_it_as_a_target():
+    """A CSRF token means the form really changes state (worth a nudge),
+    but the token field itself is never the bug (no keyword bonus)."""
+    with_csrf = {"method": "POST", "parameters": ["_token", "colour"]}
+    without = {"method": "POST", "parameters": ["colour"]}
+    assert form_score(with_csrf) > form_score(without)
+    # ...but far less than a real identity field is worth
+    identity = {"method": "POST", "parameters": ["colour", "email"]}
+    assert form_score(identity) > form_score(with_csrf)
+
+
+def test_form_score_does_not_substring_match_keywords():
+    """"id" inside "disasterRecovery" is not an identifier field."""
+    false_hit = {"method": "POST", "parameters": ["disasterRecovery"]}
+    real_hit = {"method": "POST", "parameters": ["user_id"]}
+    assert form_score(real_hit) > form_score(false_hit)
+
+
+def test_form_score_survives_junk_input():
+    assert form_score({}) == 0
+    assert form_score({"parameters": "not-a-list"}) == 0
+    assert form_score("not-a-dict") == 0          # type: ignore[arg-type]
+
+
+def test_rank_forms_orders_and_drops_non_dicts():
+    forms = [
+        {"method": "GET", "parameters": []},
+        "junk",
+        {"method": "POST", "enctype": "multipart/form-data", "parameters": ["f"]},
+    ]
+    out = rank_forms(forms)          # type: ignore[arg-type]
+    assert len(out) == 2             # "junk" dropped
+    assert "multipart" in out[0]["enctype"]
+
+
+# ----------------------------------------------------------------------
+# Forms + jsluice surfaced in the report (previously collected, never shown)
+# ----------------------------------------------------------------------
+def test_collect_counts_forms_and_jsluice(fake_outputs: Path):
+    data = ReportBuilder(_make_inputs(fake_outputs)).collect()
+    c = data["counts"]
+    assert c["forms"] == 3
+    assert c["forms_post"] == 2
+    assert c["forms_upload"] == 1
+    assert c["jsluice_endpoints"] == 2
+    assert c["jsluice_urls"] == 1
+    assert c["jsluice_params"] == 2
+    # the lists themselves ride along, not just their lengths
+    assert len(data["forms"]) == 3
+    assert len(data["jsluice_params"]) == 2
+    # highest-value form first: the multipart upload
+    assert "multipart" in data["forms"][0]["enctype"]
+
+
+def test_collect_samples_parameterized_urls(fake_outputs: Path):
+    data = ReportBuilder(_make_inputs(fake_outputs)).collect()
+    assert data["parameterized_sample"]
+    assert all(isinstance(u, str) for u in data["parameterized_sample"])
+    assert len(data["parameterized_sample"]) <= ReportBuilder.PARAM_SAMPLE
+
+
+def test_html_shows_forms_section(fake_outputs: Path):
+    b = ReportBuilder(_make_inputs(fake_outputs))
+    html = b.render_html(b.collect())
+    assert "Forms &amp; Input Surface" in html
+    assert "multipart/form-data" in html
+    assert "username, password, csrf" in html
+
+
+def test_html_shows_jsluice_params_with_body(fake_outputs: Path):
+    b = ReportBuilder(_make_inputs(fake_outputs))
+    html = b.render_html(b.collect())
+    assert "jsluice endpoints (AST)" in html
+    assert "jsluice params" in html
+    # body params are the whole point — arjun never sees them
+    assert "email, password" in html
+
+
+def test_html_embeds_parameterized_sample(fake_outputs: Path):
+    b = ReportBuilder(_make_inputs(fake_outputs))
+    html = b.render_html(b.collect())
+    assert "Injection candidates" in html
+
+
+def test_html_links_response_previews(fake_outputs: Path):
+    b = ReportBuilder(_make_inputs(fake_outputs))
+    html = b.render_html(b.collect())
+    assert "../responses/index.md" in html
+    assert "Response previews" in html
+
+
+def test_md_shows_forms_and_jsluice(fake_outputs: Path):
+    b = ReportBuilder(_make_inputs(fake_outputs))
+    md = b.render_markdown(b.collect())
+    assert "## 7.1 Forms & Input Surface" in md
+    assert "jsluice param records (AST)" in md
+    assert "email, password" in md
+    assert "Injection candidates" in md
+
+
+def test_report_survives_missing_forms_and_jsluice(tmp_path: Path):
+    """A run where the crawl found no forms and jsluice was skipped must
+    still render both sections rather than crash on the missing files."""
+    from modules.utils import create_output_structure
+    base = create_output_structure("bare.com", root=str(tmp_path))
+    b = ReportBuilder(_make_inputs(base))
+    data = b.collect()
+    assert data["counts"]["forms"] == 0
+    assert data["counts"]["jsluice_params"] == 0
+    assert data["forms"] == []
+    html = b.render_html(data)
+    assert "No forms extracted" in html
+    md = b.render_markdown(data)
+    assert "_No forms extracted from the crawl._" in md

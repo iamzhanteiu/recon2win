@@ -320,6 +320,87 @@ def severity_rank(sev: str) -> int:
 
 
 # ----------------------------------------------------------------------
+# Form ranking — a crawl returns hundreds of forms and most are search
+# boxes and newsletter signups. Order by what is actually worth an hour of
+# manual testing so the top of the table is the part someone reads.
+# ----------------------------------------------------------------------
+# Framework plumbing that appears on every page of a given stack and is
+# never itself the target. Counting these as "inputs" is how an ASP.NET
+# postback stub outranks a login form — measured on a real acronis.com run,
+# where __VIEWSTATE forms scored 84 vs 74 for username/password.
+_FORM_NOISE_PARAMS = frozenset({
+    "__eventtarget", "__eventargument", "__lastfocus", "__viewstate",
+    "__viewstategenerator", "__viewstateencrypted", "__eventvalidation",
+    "__requestverificationtoken", "__scrollpositionx", "__scrollpositiony",
+})
+
+# CSRF tokens mark a genuinely state-changing form, so they are not noise —
+# but the token field itself is never the bug, so it earns no keyword bonus.
+_FORM_CSRF_PARAMS = frozenset({
+    "_token", "csrfmiddlewaretoken", "authenticity_token", "csrf_token",
+    "csrf", "_csrf",
+})
+
+# Field names that mark a form worth an hour of manual testing. Matched on
+# the whole field name (or as a word part), never as a bare substring of the
+# joined list — "id" inside "disasterRecovery" is not an identifier field.
+_FORM_HOT_KEYWORDS = (
+    "password", "passwd", "email", "user", "username", "login", "role",
+    "admin", "file", "upload", "redirect", "return", "url", "callback",
+    "id", "uuid", "account", "amount", "price", "token",
+)
+
+
+def form_score(form: dict) -> int:
+    """Rank a ``forms.json`` entry: higher = test this one first.
+
+    File uploads outrank everything (RCE / path traversal / content-type
+    bypass all start there), then POST bodies (CSRF, mass assignment),
+    then forms carrying auth/identity fields. A GET form with no inputs is
+    a search box and scores 0.
+
+    Quantity deliberately counts for little: a form with twenty framework
+    hidden fields is not twenty times more interesting than a login form
+    with two real ones.
+    """
+    if not isinstance(form, dict):
+        return 0
+    score = 0
+    if "multipart" in str(form.get("enctype", "")).lower():
+        score += 100
+    if str(form.get("method", "")).upper() == "POST":
+        score += 50
+
+    params = form.get("parameters")
+    if not isinstance(params, list):
+        return score
+
+    names = [str(p).strip().lower() for p in params if str(p).strip()]
+    real = [n for n in names
+            if n not in _FORM_NOISE_PARAMS and n not in _FORM_CSRF_PARAMS]
+    # Capped low on purpose — see the docstring.
+    score += min(len(real), 8)
+    if any(n in _FORM_CSRF_PARAMS for n in names):
+        score += 3          # a CSRF token means the form really does something
+
+    hits = 0
+    for n in real:
+        parts = set(re.split(r"[^a-z0-9]+", n)) | {n}
+        if parts & set(_FORM_HOT_KEYWORDS):
+            hits += 1
+    score += min(hits, 6) * 8
+    return score
+
+
+def rank_forms(forms: list[dict]) -> list[dict]:
+    """Sort forms by :func:`form_score`, highest first (stable on ties)."""
+    return sorted(
+        (f for f in forms if isinstance(f, dict)),
+        key=lambda f: -form_score(f),
+    )
+
+
+# ----------------------------------------------------------------------
 # Tool-version capture (best-effort, never raises).
 # ----------------------------------------------------------------------
 VERSION_CMDS: list[tuple[str, list[str]]] = [
@@ -416,6 +497,12 @@ class ReportInputs:
 class ReportBuilder:
     SEV_ORDER = ["critical", "high", "medium", "low", "info"]
 
+    # How many rows of a long list get embedded in the report itself. The
+    # full list is always one click away in processed/; the point of the
+    # sample is that "82 KB, go open the file" is not a report.
+    PARAM_SAMPLE = 100
+    FORM_ROWS = 150
+
     # Every file the report must reference. ``kind`` drives the empty-state
     # label: ``"raw"`` / ``"processed"`` / ``"findings"`` / ``"logs"``.
     # Paths follow the v2 layout: raw outputs are grouped per stage
@@ -458,8 +545,11 @@ class ReportBuilder:
         ("processed/all_urls.txt",       "processed", "merged normalised URLs"),
         ("processed/js_urls.txt",        "processed", "JS URLs (final)"),
         ("processed/dynamic_urls.txt",   "processed", "dynamic URLs only"),
-        ("processed/xnlinkfinder_endpoints.txt","processed","xnLinkFinder endpoints"),
-        ("processed/xnlinkfinder_urls.txt","processed","xnLinkFinder URLs"),
+        ("processed/xnlinkfinder_endpoints.txt","processed","xnLinkFinder endpoints (regex)"),
+        ("processed/xnlinkfinder_urls.txt","processed","xnLinkFinder URLs (regex)"),
+        ("processed/jsluice_endpoints.txt","processed","jsluice endpoints (AST)"),
+        ("processed/jsluice_urls.txt",    "processed", "jsluice URLs (AST)"),
+        ("processed/jsluice_params.json", "processed", "jsluice params (url/method/query/body)"),
         ("processed/alive_urls.txt",     "processed", "httpx URL check (final)"),
         ("processed/alive_urls_detail.json","processed","httpx URL check detail"),
         ("processed/alive_urls_table.txt","processed","httpx URL table (status|length|ctype|url)"),
@@ -522,6 +612,8 @@ class ReportBuilder:
             "waymore_urls":      count_lines(proc / "waymore_urls.txt"),
             "xnlinkfinder_endpoints": count_lines(proc / "xnlinkfinder_endpoints.txt"),
             "xnlinkfinder_urls": count_lines(proc / "xnlinkfinder_urls.txt"),
+            "jsluice_endpoints": count_lines(proc / "jsluice_endpoints.txt"),
+            "jsluice_urls":      count_lines(proc / "jsluice_urls.txt"),
         }
 
         # dns / assets
@@ -568,17 +660,39 @@ class ReportBuilder:
         jsluice_sev = jsl.get("severity_count", {}) if isinstance(jsl, dict) else {}
         counts["jsluice_secrets"] = len(jsluice_secrets)
 
-        # forms/inputs mined from the crawl (processed/forms.json)
+        # forms/inputs mined from the crawl (processed/forms.json). The
+        # densest attack surface in the run — POST bodies and file uploads
+        # are where CSRF / mass-assignment / injection actually live — so
+        # the list itself is carried through, not just its length.
         forms_data = load_json_safe(proc / "forms.json") or {}
         forms_list = forms_data.get("forms", []) if isinstance(forms_data, dict) else []
-        counts["forms"] = len(forms_list) if isinstance(forms_list, list) else 0
+        if not isinstance(forms_list, list):
+            forms_list = []
+        forms_list = rank_forms(forms_list)
+        counts["forms"] = len(forms_list)
+        counts["forms_post"] = sum(
+            1 for f in forms_list
+            if isinstance(f, dict) and str(f.get("method", "")).upper() == "POST"
+        )
+        counts["forms_upload"] = sum(
+            1 for f in forms_list
+            if isinstance(f, dict) and "multipart" in str(f.get("enctype", "")).lower()
+        )
+
+        # jsluice params — {url, method, queryParams, bodyParams} pulled out
+        # of JS by AST. The ONLY source of POST/JSON body params in the whole
+        # run: arjun is GET-only and only sees what looks dynamic in the URL.
+        jsluice_params = load_json_safe(proc / "jsluice_params.json") or []
+        if not isinstance(jsluice_params, list):
+            jsluice_params = []
+        counts["jsluice_params"] = len(jsluice_params)
 
         # captured responses — full ffuf/dirsearch hit bodies (responses/)
         resp = load_json_safe(i.output_dir / "responses" / "preview.json") or {}
         resp_previews = resp.get("previews", []) if isinstance(resp, dict) else []
-        counts["responses_captured"] = (
-            len(resp_previews) if isinstance(resp_previews, list) else 0
-        )
+        if not isinstance(resp_previews, list):
+            resp_previews = []
+        counts["responses_captured"] = len(resp_previews)
 
         # high-value targets — scan the union of alive URLs + parameterized
         candidate_urls: list[str] = []
@@ -601,6 +715,8 @@ class ReportBuilder:
         # interesting API paths from JS endpoints
         api_paths = extract_interesting_api_paths(
             list(read_lines(proc / "xnlinkfinder_urls.txt"))
+            + list(read_lines(proc / "jsluice_urls.txt"))
+            + list(read_lines(proc / "jsluice_endpoints.txt"))
             + list(read_lines(proc / "js_urls.txt"))
         )
 
@@ -641,6 +757,11 @@ class ReportBuilder:
                 "findings": jsluice_secrets,
                 "severity_count": jsluice_sev,
             },
+            "jsluice_params": jsluice_params,
+            "forms": forms_list,
+            "parameterized_sample": list(
+                read_lines(proc / "parameterized_urls.txt")
+            )[:self.PARAM_SAMPLE],
             "high_value_targets": high_value,
             "interesting_api_paths": api_paths,
             "stages": stage_buckets,
@@ -716,6 +837,7 @@ class ReportBuilder:
         body.append(self._html_section_js(data))
         body.append(self._html_section_secrets(data))
         body.append(self._html_section_params(data))
+        body.append(self._html_section_forms(data))
         body.append(self._html_section_nuclei(data))
         body.append(self._html_section_high_value(data))
         body.append(self._html_section_errors(data))
@@ -776,6 +898,7 @@ class ReportBuilder:
             ("Dynamic URLs",     "dynamic_urls"),
             ("Alive URLs",       "alive_urls"),
             ("Parameterized URLs","parameterized_urls"),
+            ("Forms",            "forms"),
             ("Nuclei default",   "nuclei_default_findings"),
         ]:
             out.append(f"- **{label}**: `{c.get(key, 0)}`")
@@ -831,6 +954,14 @@ class ReportBuilder:
         ]:
             out.append(f"| {label} | `{c.get(key,0)}` | [{rel}]({rel}) |")
         out.append("")
+        _nr = c.get("responses_captured", 0)
+        if _nr:
+            out.append(f"**Response previews:** `{_nr}` hit(s) re-requested with "
+                       "a short body preview — "
+                       "[`../responses/index.md`](../responses/index.md)\n")
+        else:
+            out.append("**Response previews:** none captured (no ffuf/dirsearch "
+                       "hits, or the stage was skipped).\n")
 
         surf = data.get("url_surface") or {}
         if surf.get("total"):
@@ -850,13 +981,40 @@ class ReportBuilder:
         # JS analysis
         out.append("## 6. JavaScript Analysis\n")
         out.append(f"- JS files (final): `{c.get('js_urls', 0)}`")
-        out.append(f"- xnLinkFinder endpoints: `{c.get('xnlinkfinder_endpoints', 0)}`")
-        out.append(f"- xnLinkFinder URLs:      `{c.get('xnlinkfinder_urls', 0)}`")
-        out.append(f"- Interesting API paths:  `{len(data['interesting_api_paths'])}`")
+        out.append(f"- xnLinkFinder endpoints (regex): `{c.get('xnlinkfinder_endpoints', 0)}`")
+        out.append(f"- xnLinkFinder URLs (regex):      `{c.get('xnlinkfinder_urls', 0)}`")
+        out.append(f"- jsluice endpoints (AST):        `{c.get('jsluice_endpoints', 0)}`")
+        out.append(f"- jsluice URLs (AST):             `{c.get('jsluice_urls', 0)}`")
+        out.append(f"- jsluice param records (AST):    `{c.get('jsluice_params', 0)}`")
+        out.append(f"- Interesting API paths:          `{len(data['interesting_api_paths'])}`")
         out.append("- Output files:")
         out.append("  - [`../processed/js_urls.txt`](../processed/js_urls.txt)")
         out.append("  - [`../processed/xnlinkfinder_endpoints.txt`](../processed/xnlinkfinder_endpoints.txt)")
         out.append("  - [`../processed/xnlinkfinder_urls.txt`](../processed/xnlinkfinder_urls.txt)")
+        out.append("  - [`../processed/jsluice_endpoints.txt`](../processed/jsluice_endpoints.txt)")
+        out.append("  - [`../processed/jsluice_urls.txt`](../processed/jsluice_urls.txt)")
+        out.append("  - [`../processed/jsluice_params.json`](../processed/jsluice_params.json)")
+
+        _jp = [r for r in (data.get("jsluice_params") or []) if isinstance(r, dict)]
+        if _jp:
+            _nb = sum(1 for r in _jp if r.get("bodyParams"))
+            out.append(f"\n<details><summary>jsluice params — {len(_jp)} record(s), "
+                       f"{_nb} with body params</summary>\n")
+            out.append("Body params never reach arjun (GET-only), so these are "
+                       "unique to this table.\n")
+            out.append("| Method | URL | Query params | Body params |")
+            out.append("|--------|-----|--------------|-------------|")
+            for r in sorted(_jp, key=lambda r: (-len(r.get("bodyParams") or []),
+                                                -len(r.get("queryParams") or []))):
+                _q = ", ".join(str(x) for x in (r.get("queryParams") or []))
+                _b = ", ".join(str(x) for x in (r.get("bodyParams") or []))
+                out.append(
+                    f"| `{escape(str(r.get('method') or '').upper() or '-')}` "
+                    f"| `{escape(str(r.get('url', '')))}` "
+                    f"| `{escape(_q[:120])}` | `{escape(_b[:120])}` |"
+                )
+            out.append("\n</details>\n")
+
         if data["interesting_api_paths"]:
             out.append("\n<details><summary>Sample interesting API paths</summary>\n")
             for p in data["interesting_api_paths"][:30]:
@@ -894,11 +1052,56 @@ class ReportBuilder:
         out.append("## 7. Parameter Discovery\n")
         out.append(f"- Dynamic URLs scanned: `{c.get('dynamic_urls', 0)}`")
         out.append(f"- Parameters discovered: `{c.get('arjun_params', 0)}`")
+        out.append(f"- jsluice param records: `{c.get('jsluice_params', 0)}`")
         out.append(f"- Parameterized URLs:    `{c.get('parameterized_urls', 0)}`")
         out.append("- Output files:")
         out.append("  - [`../processed/arjun_params.txt`](../processed/arjun_params.txt)")
         out.append("  - [`../processed/parameterized_urls.txt`](../processed/parameterized_urls.txt)")
         out.append("")
+
+        _sample = data.get("parameterized_sample") or []
+        _ptotal = c.get("parameterized_urls", 0)
+        if _sample:
+            out.append(f"<details open><summary><b>Injection candidates</b> — "
+                       f"showing {len(_sample)} of {_ptotal}</summary>\n")
+            out.append("Nothing scans this list automatically — it is the "
+                       "hand-testing shortlist.\n")
+            for u in _sample:
+                out.append(f"- `{escape(u)}`")
+            if _ptotal > len(_sample):
+                out.append(f"\n_… {_ptotal - len(_sample)} more in "
+                           "[`../processed/parameterized_urls.txt`]"
+                           "(../processed/parameterized_urls.txt)._")
+            out.append("\n</details>\n")
+
+        # Forms / input surface
+        out.append("## 7.1 Forms & Input Surface\n")
+        _forms = [f for f in (data.get("forms") or []) if isinstance(f, dict)]
+        if not _forms:
+            out.append("_No forms extracted from the crawl._\n")
+        else:
+            out.append("Ranked by testing value: file uploads first, then POST "
+                       "bodies, then forms carrying auth/identity fields.\n")
+            out.append(f"- Total forms: `{c.get('forms', 0)}`")
+            out.append(f"- POST: `{c.get('forms_post', 0)}`")
+            out.append(f"- File upload (multipart): `{c.get('forms_upload', 0)}`")
+            out.append("- Output file: "
+                       "[`../processed/forms.json`](../processed/forms.json)\n")
+            out.append("| Action | Method | Enctype | Inputs | Found on |")
+            out.append("|--------|--------|---------|--------|----------|")
+            for f in _forms[:self.FORM_ROWS]:
+                _pl = f.get("parameters")
+                _pl = _pl if isinstance(_pl, list) else []
+                out.append(
+                    f"| `{escape(str(f.get('action') or f.get('url') or ''))}` "
+                    f"| `{escape(str(f.get('method') or 'GET').upper())}` "
+                    f"| `{escape(str(f.get('enctype') or '')[:40])}` "
+                    f"| `{escape(', '.join(str(x) for x in _pl)[:120])}` "
+                    f"| `{escape(str(f.get('url') or ''))}` |"
+                )
+            if len(_forms) > self.FORM_ROWS:
+                out.append(f"\n_… {len(_forms) - self.FORM_ROWS} more in forms.json._")
+            out.append("")
 
         # Nuclei
         out.append("## 8. Nuclei Findings\n")
@@ -1103,6 +1306,7 @@ class ReportBuilder:
             ("Dynamic URLs",      c.get("dynamic_urls", 0)),
             ("Alive URLs",        c.get("alive_urls", 0)),
             ("Parameterized URLs",c.get("parameterized_urls", 0)),
+            ("Forms",             c.get("forms", 0)),
             ("Nuclei default",    c.get("nuclei_default_findings", 0)),
         ]
         cards = "\n".join(
@@ -1226,6 +1430,18 @@ class ReportBuilder:
                 ("raw waymore output",         None,            "../raw/waymore/waymore_raw.txt"),
             ]
         )
+        # Body previews for ffuf/dirsearch hits. A 200 on /backup/ means
+        # nothing until you see whether the body is a listing or a login
+        # page, and that is what responses/ holds.
+        n_resp = c.get("responses_captured", 0)
+        resp_html = (
+            "<p class=\"small\">Response previews: "
+            f"<b>{n_resp:,}</b> hit(s) re-requested with a short body preview — "
+            "<a href=\"../responses/index.md\"><code>responses/index.md</code></a></p>"
+            if n_resp else
+            "<p class=\"small\">Response previews: none captured "
+            "(no ffuf/dirsearch hits, or the stage was skipped).</p>"
+        )
         surf = data.get("url_surface") or {}
         surface_html = ""
         if surf.get("total"):
@@ -1250,6 +1466,7 @@ class ReportBuilder:
             "<h2>5. Content Discovery</h2>\n"
             "<table><thead><tr><th>Source</th><th>Count</th><th>File</th></tr></thead>"
             f"<tbody>{rows}</tbody></table>"
+            f"{resp_html}"
             f"{surface_html}"
         )
 
@@ -1259,21 +1476,88 @@ class ReportBuilder:
         api_html = "".join(f"<li><code>{escape(p)}</code></li>" for p in api[:80])
         more = ""
         if len(api) > 80:
-            more = f'<p class="small">… {len(api) - 80} more in js_urls.txt</p>'
+            more = f'<p class="small">… {len(api) - 80} more in the files above</p>'
+
+        def _row(label: str, key: str, rel: str) -> str:
+            return (
+                f"<tr><th>{escape(label)}</th>"
+                f"<td><code>{c.get(key, 0):,}</code></td>"
+                f"<td><a href=\"../processed/{rel}\"><code>{rel}</code></a></td></tr>"
+            )
+
+        # Both JS tools get equal billing. xnLinkFinder is regex (broad,
+        # noisy), jsluice is AST (precise, sees params) — reporting only
+        # the first hides the more accurate half of the analysis.
+        counts_table = (
+            "<table>"
+            + _row("JS files (final)", "js_urls", "js_urls.txt")
+            + _row("xnLinkFinder endpoints (regex)", "xnlinkfinder_endpoints",
+                   "xnlinkfinder_endpoints.txt")
+            + _row("xnLinkFinder URLs (regex)", "xnlinkfinder_urls",
+                   "xnlinkfinder_urls.txt")
+            + _row("jsluice endpoints (AST)", "jsluice_endpoints",
+                   "jsluice_endpoints.txt")
+            + _row("jsluice URLs (AST)", "jsluice_urls", "jsluice_urls.txt")
+            + _row("jsluice param records (AST)", "jsluice_params",
+                   "jsluice_params.json")
+            + f"<tr><th>Interesting API paths</th><td><code>{len(api):,}</code></td>"
+            + "<td><span class=\"small\">filtered from the files above</span></td></tr>"
+            + "</table>\n"
+        )
         return (
             "<h2>6. JavaScript Analysis</h2>\n"
-            "<table>"
-            f"<tr><th>JS files (final)</th><td><code>{c.get('js_urls',0):,}</code></td>"
-            f"<td><a href=\"../processed/js_urls.txt\"><code>js_urls.txt</code></a></td></tr>"
-            f"<tr><th>xnLinkFinder endpoints</th><td><code>{c.get('xnlinkfinder_endpoints',0):,}</code></td>"
-            f"<td><a href=\"../processed/xnlinkfinder_endpoints.txt\"><code>xnlinkfinder_endpoints.txt</code></a></td></tr>"
-            f"<tr><th>xnLinkFinder URLs</th><td><code>{c.get('xnlinkfinder_urls',0):,}</code></td>"
-            f"<td><a href=\"../processed/xnlinkfinder_urls.txt\"><code>xnlinkfinder_urls.txt</code></a></td></tr>"
-            f"<tr><th>Interesting API paths</th><td><code>{len(api):,}</code></td>"
-            "<td><span class=\"small\">filtered from the two files above</span></td></tr>"
-            "</table>\n"
-            "<details><summary>Interesting API paths (top 80)</summary>\n"
-            f"<ul>{api_html}</ul>{more}"
+            + counts_table
+            + self._html_jsluice_params(data)
+            + "<details><summary>Interesting API paths (top 80)</summary>\n"
+            + f"<ul>{api_html}</ul>{more}"
+            + "</details>"
+        )
+
+    def _html_jsluice_params(self, data: dict) -> str:
+        """Table of jsluice's AST-extracted params.
+
+        This is the only place in the run where **body** params show up:
+        arjun is GET-only and only fuzzes what already looks dynamic in the
+        URL, so a POST endpoint whose fields exist solely in a JS fetch()
+        call is invisible everywhere else.
+        """
+        recs = [r for r in (data.get("jsluice_params") or []) if isinstance(r, dict)]
+        if not recs:
+            return (
+                '<p class="small">jsluice extracted no parameter records '
+                "from JS (nothing to show).</p>"
+            )
+
+        def _sort_key(r: dict) -> tuple:
+            # Body params first (rarest + highest value), then most params.
+            return (
+                -len(r.get("bodyParams") or []),
+                -len(r.get("queryParams") or []),
+            )
+
+        rows = []
+        for r in sorted(recs, key=_sort_key):
+            q = ", ".join(str(x) for x in (r.get("queryParams") or []))
+            b = ", ".join(str(x) for x in (r.get("bodyParams") or []))
+            method = str(r.get("method") or "").upper() or "—"
+            rows.append(
+                "<tr>"
+                f"<td><code>{escape(method)}</code></td>"
+                f"<td><code>{escape(str(r.get('url', '')))}</code></td>"
+                f"<td><span class=\"small\"><code>{escape(q[:160])}</code></span></td>"
+                f"<td><span class=\"small\"><code>{escape(b[:160])}</code></span></td>"
+                "</tr>"
+            )
+        n_body = sum(1 for r in recs if r.get("bodyParams"))
+        return (
+            f"<details><summary><strong>jsluice params — {len(recs):,} record(s)"
+            f"</strong>, {n_body:,} with body params</summary>\n"
+            '<p class="small">Extracted from JS by AST. Body params never '
+            "reach arjun (GET-only), so these are unique to this table.</p>\n"
+            "<table><thead><tr>"
+            "<th>Method</th><th>URL</th><th>Query params</th><th>Body params</th>"
+            "</tr></thead>"
+            f"<tbody>{''.join(rows)}</tbody></table>"
             "</details>"
         )
 
@@ -1331,15 +1615,106 @@ class ReportBuilder:
 
     def _html_section_params(self, data: dict) -> str:
         c = data["counts"]
+        sample = data.get("parameterized_sample") or []
+        total = c.get("parameterized_urls", 0)
+        # No nuclei stage consumes parameterized_urls.txt any more, so this
+        # list IS the deliverable — printing only its line count and telling
+        # the reader to go open an 80 KB file is not a report.
+        if sample:
+            items = "".join(
+                f"<li><code>{escape(u)}</code></li>" for u in sample
+            )
+            more = ""
+            if total > len(sample):
+                more = (
+                    f'<p class="small">… {total - len(sample):,} more in '
+                    '<a href="../processed/parameterized_urls.txt">'
+                    "<code>parameterized_urls.txt</code></a></p>"
+                )
+            sample_html = (
+                f"<details open><summary><strong>Injection candidates</strong> "
+                f"— showing {len(sample):,} of {total:,}</summary>\n"
+                '<p class="small">Nothing scans this list automatically — '
+                "it is the hand-testing shortlist (union of already-param "
+                "URLs, arjun discoveries, and jsluice params).</p>\n"
+                f"<ul>{items}</ul>{more}</details>"
+            )
+        else:
+            sample_html = (
+                '<p class="small">No parameterised URLs found — nothing to '
+                "hand-test from this run.</p>"
+            )
         return (
             "<h2>7. Parameter Discovery</h2>\n"
             "<table>"
             f"<tr><th>Dynamic URLs scanned</th><td><code>{c.get('dynamic_urls',0):,}</code></td></tr>"
             f"<tr><th>Arjun params</th><td><code>{c.get('arjun_params',0):,}</code></td>"
             f"<td><a href=\"../processed/arjun_params.txt\"><code>arjun_params.txt</code></a></td></tr>"
-            f"<tr><th>Parameterized URLs</th><td><code>{c.get('parameterized_urls',0):,}</code></td>"
+            f"<tr><th>jsluice param records</th><td><code>{c.get('jsluice_params',0):,}</code></td>"
+            f"<td><a href=\"../processed/jsluice_params.json\"><code>jsluice_params.json</code></a></td></tr>"
+            f"<tr><th>Parameterized URLs</th><td><code>{total:,}</code></td>"
             f"<td><a href=\"../processed/parameterized_urls.txt\"><code>parameterized_urls.txt</code></a></td></tr>"
-            "</table>"
+            "</table>\n"
+            + sample_html
+        )
+
+    def _html_section_forms(self, data: dict) -> str:
+        """Forms + inputs mined from the crawl — ranked by testing value."""
+        c = data["counts"]
+        forms = [f for f in (data.get("forms") or []) if isinstance(f, dict)]
+        if not forms:
+            return (
+                "<h2>7.1 Forms &amp; Input Surface</h2>\n"
+                '<p class="small">No forms extracted from the crawl.</p>'
+            )
+        rows = []
+        for f in forms[:self.FORM_ROWS]:
+            params = f.get("parameters")
+            params = params if isinstance(params, list) else []
+            pnames = ", ".join(str(x) for x in params)
+            method = str(f.get("method") or "GET").upper()
+            enctype = str(f.get("enctype") or "")
+            badges = ""
+            if "multipart" in enctype.lower():
+                badges += '<span class="chip">upload</span> '
+            if method == "POST":
+                badges += '<span class="chip">POST</span> '
+            rows.append(
+                "<tr>"
+                f"<td>{badges or '&mdash;'}</td>"
+                f"<td><code>{escape(str(f.get('action') or f.get('url') or ''))}</code></td>"
+                f"<td><code>{escape(method)}</code></td>"
+                f"<td><span class=\"small\"><code>{escape(enctype[:40])}</code></span></td>"
+                f"<td><span class=\"small\"><code>{escape(pnames[:200])}</code></span></td>"
+                f"<td><code>{escape(str(f.get('url') or ''))}</code></td>"
+                "</tr>"
+            )
+        extra = ""
+        if len(forms) > self.FORM_ROWS:
+            extra = (
+                f'<p class="small">… {len(forms) - self.FORM_ROWS:,} more in '
+                '<a href="../processed/forms.json"><code>forms.json</code></a></p>'
+            )
+        return (
+            "<h2>7.1 Forms &amp; Input Surface</h2>\n"
+            '<p class="small">Every &lt;form&gt; the crawler saw, ranked by '
+            "testing value: file uploads first, then POST bodies, then forms "
+            "carrying auth/identity fields. This is where CSRF, mass "
+            "assignment and injection actually live.</p>\n"
+            "<table>"
+            f"<tr><th>Total forms</th><td><code>{c.get('forms', 0):,}</code></td></tr>"
+            f"<tr><th>POST</th><td><code>{c.get('forms_post', 0):,}</code></td></tr>"
+            f"<tr><th>File upload (multipart)</th>"
+            f"<td><code>{c.get('forms_upload', 0):,}</code></td></tr>"
+            "</table>\n"
+            f"<details open><summary><strong>{len(forms):,} form(s)</strong> "
+            "— highest-value first</summary>\n"
+            "<table><thead><tr>"
+            "<th></th><th>Action</th><th>Method</th><th>Enctype</th>"
+            "<th>Inputs</th><th>Found on</th>"
+            "</tr></thead>"
+            f"<tbody>{''.join(rows)}</tbody></table>{extra}"
+            "</details>"
         )
 
     def _html_section_nuclei(self, data: dict) -> str:
