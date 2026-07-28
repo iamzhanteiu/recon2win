@@ -469,10 +469,6 @@ class ReportBuilder:
         # findings/<kind>/
         ("findings/default/nuclei.txt",  "findings",  "nuclei default matched URLs"),
         ("findings/default/nuclei.json", "findings",  "nuclei default findings"),
-        ("findings/endpoints/nuclei.txt", "findings", "nuclei endpoints matched URLs"),
-        ("findings/endpoints/nuclei.json","findings", "nuclei endpoints findings"),
-        ("findings/dynamic/nuclei.txt",  "findings",  "nuclei dynamic matched URLs"),
-        ("findings/dynamic/nuclei.json", "findings",  "nuclei dynamic findings"),
         ("findings/jsluice_secrets.json","findings",  "secrets extracted from JS"),
         # responses/ (ffuf/dirsearch body previews — no full bodies stored)
         ("responses/index.md",           "responses", "ffuf/dirsearch response previews (status/size/short body snippet)"),
@@ -562,15 +558,7 @@ class ReportBuilder:
         n_def_findings, n_def_sev = parse_nuclei_summary(
             findings / "default" / "nuclei.json"
         )
-        n_end_findings, n_end_sev = parse_nuclei_summary(
-            findings / "endpoints" / "nuclei.json"
-        )
-        n_dyn_findings, n_dyn_sev = parse_nuclei_summary(
-            findings / "dynamic" / "nuclei.json"
-        )
         counts["nuclei_default_findings"] = len(n_def_findings)
-        counts["nuclei_endpoints_findings"] = len(n_end_findings)
-        counts["nuclei_dynamic_findings"] = len(n_dyn_findings)
 
         # jsluice secrets — API keys/tokens extracted from JS (findings/jsluice_secrets.json)
         jsl = load_json_safe(findings / "jsluice_secrets.json") or {}
@@ -647,14 +635,6 @@ class ReportBuilder:
                 "default": {
                     "findings": n_def_findings,
                     "severity_count": n_def_sev,
-                },
-                "endpoints": {
-                    "findings": n_end_findings,
-                    "severity_count": n_end_sev,
-                },
-                "dynamic": {
-                    "findings": n_dyn_findings,
-                    "severity_count": n_dyn_sev,
                 },
             },
             "jsluice_secrets": {
@@ -797,7 +777,6 @@ class ReportBuilder:
             ("Alive URLs",       "alive_urls"),
             ("Parameterized URLs","parameterized_urls"),
             ("Nuclei default",   "nuclei_default_findings"),
-            ("Nuclei dynamic",   "nuclei_dynamic_findings"),
         ]:
             out.append(f"- **{label}**: `{c.get(key, 0)}`")
         out.append("")
@@ -923,42 +902,37 @@ class ReportBuilder:
 
         # Nuclei
         out.append("## 8. Nuclei Findings\n")
-        for kind, label in [
-            ("default", "Default scan (hosts)"),
-            ("endpoints", "Endpoints scan (discovered URLs)"),
-            ("dynamic", "Dynamic scan (params)"),
-        ]:
-            blk = data["nuclei"][kind]
-            out.append(f"### {label}\n")
-            sc = blk["severity_count"] or {}
+        blk = data["nuclei"]["default"]
+        out.append("### Default scan (hosts)\n")
+        sc = blk["severity_count"] or {}
+        for sev in self.SEV_ORDER:
+            out.append(f"- {sev}: `{sc.get(sev, 0)}`")
+        out.append(f"- Total: `{len(blk['findings'])}`\n")
+        if blk["findings"]:
+            # group by severity, show only High & Critical by default
+            by_sev: dict[str, list[dict]] = {s: [] for s in self.SEV_ORDER}
+            for f in blk["findings"]:
+                s = ((f.get("info") or {}).get("severity") or "info").lower()
+                by_sev.setdefault(s, []).append(f)
+            out.append("<details><summary>Findings by severity</summary>\n")
             for sev in self.SEV_ORDER:
-                out.append(f"- {sev}: `{sc.get(sev, 0)}`")
-            out.append(f"- Total: `{len(blk['findings'])}`\n")
-            if blk["findings"]:
-                # group by severity, show only High & Critical by default
-                by_sev: dict[str, list[dict]] = {s: [] for s in self.SEV_ORDER}
-                for f in blk["findings"]:
-                    s = ((f.get("info") or {}).get("severity") or "info").lower()
-                    by_sev.setdefault(s, []).append(f)
-                out.append("<details><summary>Findings by severity</summary>\n")
-                for sev in self.SEV_ORDER:
-                    items = by_sev.get(sev) or []
-                    if not items:
-                        continue
-                    out.append(f"#### {sev.upper()} ({len(items)})\n")
-                    out.append("| Severity | Template | Name | URL |")
-                    out.append("|----------|----------|------|-----|")
-                    for f in items[:100]:
-                        info = f.get("info") or {}
-                        out.append(
-                            f"| {sev.upper()} | `{escape(f.get('template-id','?'))}` "
-                            f"| {escape(info.get('name','?'))} "
-                            f"| `{escape(f.get('matched-at') or f.get('host','?'))}` |"
-                        )
-                    if len(items) > 100:
-                        out.append(f"\n_… {len(items) - 100} more._\n")
-                    out.append("")
-                out.append("</details>\n")
+                items = by_sev.get(sev) or []
+                if not items:
+                    continue
+                out.append(f"#### {sev.upper()} ({len(items)})\n")
+                out.append("| Severity | Template | Name | URL |")
+                out.append("|----------|----------|------|-----|")
+                for f in items[:100]:
+                    info = f.get("info") or {}
+                    out.append(
+                        f"| {sev.upper()} | `{escape(f.get('template-id','?'))}` "
+                        f"| {escape(info.get('name','?'))} "
+                        f"| `{escape(f.get('matched-at') or f.get('host','?'))}` |"
+                    )
+                if len(items) > 100:
+                    out.append(f"\n_… {len(items) - 100} more._\n")
+                out.append("")
+            out.append("</details>\n")
 
         # High-value
         out.append("## 9. High-Value Targets\n")
@@ -1078,13 +1052,12 @@ class ReportBuilder:
                 recs["📂 Exposed files (env / git / backups)"].append(h["url"])
 
         # Nuclei high/critical
-        for kind in ("default", "dynamic"):
-            for f in data["nuclei"][kind]["findings"]:
-                sev = ((f.get("info") or {}).get("severity") or "").lower()
-                if sev in ("high", "critical"):
-                    url = f.get("matched-at") or f.get("host") or ""
-                    if url:
-                        recs["🚨 Nuclei High/Critical findings"].append(url)
+        for f in data["nuclei"]["default"]["findings"]:
+            sev = ((f.get("info") or {}).get("severity") or "").lower()
+            if sev in ("high", "critical"):
+                url = f.get("matched-at") or f.get("host") or ""
+                if url:
+                    recs["🚨 Nuclei High/Critical findings"].append(url)
 
         # de-dup within each bucket
         for k, v in recs.items():
@@ -1131,7 +1104,6 @@ class ReportBuilder:
             ("Alive URLs",        c.get("alive_urls", 0)),
             ("Parameterized URLs",c.get("parameterized_urls", 0)),
             ("Nuclei default",    c.get("nuclei_default_findings", 0)),
-            ("Nuclei dynamic",    c.get("nuclei_dynamic_findings", 0)),
         ]
         cards = "\n".join(
             f'<div class="kpi"><div class="v">{v:,}</div><div class="l">{escape(label)}</div></div>'
@@ -1374,8 +1346,6 @@ class ReportBuilder:
         out = ["<h2>8. Nuclei Findings</h2>"]
         for kind, label in [
             ("default", "Default scan (hosts)"),
-            ("endpoints", "Endpoints scan (discovered URLs)"),
-            ("dynamic", "Dynamic scan (params)"),
         ]:
             blk = data["nuclei"][kind]
             sc = blk["severity_count"] or {}

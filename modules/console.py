@@ -71,15 +71,13 @@ PHASE_COLORS: dict[str, str] = {
     "dirsearch":          "bright_yellow",
     "ffuf":               "orange",
     "waymore":            "yellow",
-    "nuclei_default":     "bright_red",
     "url_merge":          "white",
     "url_merge_append":   "bright_black",
     "httpx_urls":         "cyan",
     "xnlinkfinder":       "bright_green",
     "jsluice":            "magenta",
     "arjun":              "green",
-    "nuclei_endpoints":   "red",
-    "nuclei_dynamic":     "red",
+    "nuclei_default":     "bright_red",
     "report":             "bright_white",
 }
 
@@ -94,15 +92,13 @@ _PHASE_ORDER: list[str] = [
     "dirsearch",
     "ffuf",
     "waymore",
-    "nuclei_default",
     "url_merge",
     "httpx_urls",
     "xnlinkfinder",
     "jsluice",
     "url_merge_append",
     "arjun",
-    "nuclei_endpoints",
-    "nuclei_dynamic",
+    "nuclei_default",
     "report",
 ]
 

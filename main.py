@@ -68,8 +68,6 @@ _STAGE_NOUN: dict[str, str] = {
     "xnlinkfinder":      "endpoints+urls",
     "jsluice":           "endpoints+urls",
     "arjun":             "parameterized urls",
-    "nuclei_endpoints":  "findings",
-    "nuclei_dynamic":    "findings",
     "report":            "artifacts",
 }
 
@@ -277,7 +275,7 @@ def main() -> int:
     # operator sees in the workflow — sequential phases plus each parallel
     # group counted as one (the sub-stages are reported as rows within
     # the parallel() context manager).
-    prog = progress_mod.ReconProgress(n_phases=12)
+    prog = progress_mod.ReconProgress(n_phases=11)
 
     results: list[dict] = []
 
@@ -349,15 +347,18 @@ def main() -> int:
             prog.finish_phase(r, num=3)
             results.append(r)
 
-        # ---- 4. parallel: katana/urlfinder + dirsearch + ffuf + waymore + nuclei default ----
-        prog.start_phase("content_discovery (and 4 others)", num=4)
+        # ---- 4. parallel: katana/urlfinder + dirsearch + ffuf + waymore ----
+        # nuclei no longer runs here — it is the last scan in the pipeline
+        # (stage 9) so it gets the full rate budget to itself instead of
+        # fighting four discovery tools for bandwidth.
+        prog.start_phase("content_discovery (and 3 others)", num=4)
         from concurrent.futures import ThreadPoolExecutor
         par_results: dict[str, dict] = {}
         with prog.parallel(
-            ["content_discovery", "dirsearch", "ffuf", "waymore", "nuclei_default"],
+            ["content_discovery", "dirsearch", "ffuf", "waymore"],
             num=4,
         ):
-            with ThreadPoolExecutor(max_workers=5) as pool:
+            with ThreadPoolExecutor(max_workers=4) as pool:
                 futures = {
                     pool.submit(_run_stage, "content_discovery", cd_mod.crawl,
                                 alive_file, output_dir, cfg,
@@ -374,10 +375,6 @@ def main() -> int:
                                 domain, output_dir, cfg,
                                 resume=args.resume, dry_run=False,
                                 skip=args.skip_waymore): "waymore",
-                    pool.submit(_run_stage, "nuclei_default", nuclei_mod.default_scan,
-                                alive_file, output_dir, cfg,
-                                resume=args.resume, dry_run=False,
-                                skip=args.skip_nuclei): "nuclei_default",
                 }
                 for fut in futures:
                     name = futures[fut]
@@ -462,8 +459,9 @@ def main() -> int:
 
         # ---- 6.post: merge xnlinkfinder + jsluice URLs back into all_urls.txt ----
         # Both JS tools (regex + AST) feed their endpoints/urls here so they
-        # get httpx-probed + nuclei-scanned, and any parameterised ones flow
-        # on to arjun (stage 7) via the re-derived dynamic_urls.txt.
+        # get httpx-probed, and any parameterised ones flow on to arjun
+        # (stage 7) via the re-derived dynamic_urls.txt. Nuclei no longer
+        # scans these — it only sees alive.txt (hosts) in stage 8.
         prog.start_phase("url_merge_append", num=7)
         merge_candidates = [
             output_dir / "processed" / "xnlinkfinder_endpoints.txt",
@@ -510,90 +508,54 @@ def main() -> int:
         results.append(r)
         prog.finish_phase(r, num=8)
 
-        # ---- 7.post: enrich nuclei_dynamic input with jsluice's param intel ----
+        # ---- 7.post: enrich parameterized_urls.txt with jsluice's param intel ----
         # jsluice extracted {url, method, queryParams, bodyParams} via AST.
         # Feed those param-rich URLs (incl. POST/JSON params arjun never sees,
         # and anything past arjun's cap) straight into parameterized_urls.txt.
-        # Safe/additive even when arjun was skipped or found nothing.
+        # Safe/additive even when arjun was skipped or found nothing. No nuclei
+        # stage consumes this file any more — it is a hand-testing shortlist
+        # that also feeds the report and priority_targets.txt.
         merged = jsluice_mod.merge_params_into_nuclei_input(output_dir)
         results.append(merged)
         if merged["count"]:
             print(console.phase_info_line(
-                f"jsluice: +{merged['count']} param URL(s) → nuclei_dynamic "
+                f"jsluice: +{merged['count']} param URL(s) → parameterized_urls "
                 f"(now {merged['extra']['total']} total)"
             ))
 
         # ---- 7.post.b: seed already-parameterized URLs (arjun-independent) ----
         # URLs that already carry ?a=1 in the crawl/waymore output are prime
-        # injection targets; without this they only reach nuclei_dynamic if
-        # arjun re-discovers them (so --skip-arjun / cap / failure = no scan).
+        # injection targets; without this they only land in the shortlist when
+        # arjun re-discovers them (so --skip-arjun / cap / failure = no entry).
         seeded = url_merge_mod.seed_parameterized_urls(output_dir)
         results.append(seeded)
         if seeded["count"]:
             print(console.phase_info_line(
-                f"seed: +{seeded['count']} already-param URL(s) → nuclei_dynamic "
+                f"seed: +{seeded['count']} already-param URL(s) → parameterized_urls "
                 f"(now {seeded['extra']['total']} total)"
             ))
 
-        # ---- 8. nuclei on discovered endpoints (alive_urls.txt) ----
-        # Closes the coverage gap: default_scan only saw the root hosts
-        # (it ran in parallel with discovery). Scan the live-verified
-        # discovered URLs so crawled/dirsearch/jsluice endpoints get a pass.
-        prog.start_phase("nuclei_endpoints", num=9)
-        alive_urls_file = output_dir / "processed" / "alive_urls.txt"
+        # ---- 8. nuclei default — the last scan before the report ----
+        # Runs on its own at the end of the pipeline rather than alongside
+        # discovery: nothing else is competing for rate, and the report is
+        # guaranteed to be built from a finished nuclei scan.
+        prog.start_phase("nuclei_default", num=9)
         r = _run_stage(
-            "nuclei_endpoints", nuclei_mod.endpoints_scan,
-            alive_urls_file, output_dir, cfg,
+            "nuclei_default", nuclei_mod.default_scan,
+            alive_file, output_dir, cfg,
             resume=args.resume, dry_run=False, skip=args.skip_nuclei,
         )
         results.append(r)
-        uf = (r.get("extra") or {}).get("url_filter")
-        if uf and (uf.get("deduped") or uf.get("per_host_capped")
-                   or uf.get("capped")):
-            print(console.phase_info_line(
-                f"nuclei_endpoints: {uf.get('input', 0)} URL(s) → "
-                f"-{uf.get('deduped', 0)} dup-path "
-                f"-{uf.get('per_host_capped', 0)} over per-host cap "
-                f"-{uf.get('capped', 0)} over-cap → "
-                f"{uf.get('selected', 0)} scanned"
-            ))
-        if uf and uf.get("waf_hosts"):
-            hosts = uf["waf_hosts"]
-            shown = ", ".join(hosts[:3]) + ("…" if len(hosts) > 3 else "")
-            print(console.phase_info_line(
-                f"nuclei_endpoints: {len(hosts)} host(s) answer every path "
-                f"from the edge (403/406/429), capped to a sample: {shown}"
-            ))
         prog.finish_phase(r, num=9)
 
-        # ---- 9. nuclei dynamic ----
-        prog.start_phase("nuclei_dynamic", num=10)
-        param_urls_file = output_dir / "processed" / "parameterized_urls.txt"
-        r = _run_stage(
-            "nuclei_dynamic", nuclei_mod.dynamic_scan,
-            param_urls_file, output_dir, cfg,
-            resume=args.resume, dry_run=False, skip=args.skip_nuclei,
-        )
-        results.append(r)
-        pf = (r.get("extra") or {}).get("param_filter")
-        if pf and (pf.get("dropped_no_param") or pf.get("deduped") or pf.get("capped")):
-            print(console.phase_info_line(
-                f"nuclei_dynamic: {pf.get('input', 0)} URL(s) → "
-                f"-{pf.get('dropped_no_param', 0)} non-param "
-                f"-{pf.get('deduped', 0)} dup-shape "
-                f"-{pf.get('capped', 0)} over-cap → "
-                f"{pf.get('selected', 0)} scanned"
-            ))
-        prog.finish_phase(r, num=10)
-
-        # ---- 10. final summary (no _run_stage wrapper — synthesised) ----
-        prog.start_phase("summary", num=11)
+        # ---- 9. final summary (no _run_stage wrapper — synthesised) ----
+        prog.start_phase("summary", num=10)
         summary = _build_final_summary(domain, output_dir)
         results.append(summary)
-        prog.finish_phase(summary, num=11)
+        prog.finish_phase(summary, num=10)
 
-        # ---- 11. generate the final report (HTML + MD + JSON) ----
-        prog.start_phase("report", num=12)
+        # ---- 10. generate the final report (HTML + MD + JSON) ----
+        prog.start_phase("report", num=11)
         scan_end = datetime.now(timezone.utc)
         cfg_text = ""
         try:
@@ -617,7 +579,7 @@ def main() -> int:
             count=3, extra=report_info,
         )
         results.append(report_result)
-        prog.finish_phase(report_result, num=12)
+        prog.finish_phase(report_result, num=11)
 
         # ---- 10.post: distil everything into a ranked priority list ----
         # One file the operator opens first: report/priority_targets.txt.
@@ -903,13 +865,12 @@ def _print_plan(domain: str, output_dir: Path, cfg: dict, args: argparse.Namespa
         "  1  subdomain collection (subfinder + amass + chaos)",
         "  2  dnsx resolve",
         "  3  httpx alive check",
-        "  4  PARALLEL: katana/urlfinder + dirsearch + ffuf + waymore + nuclei-default",
+        "  4  PARALLEL: katana/urlfinder + dirsearch + ffuf + waymore",
         "  5  url_merge (crawler + dirsearch + ffuf + waymore -> all_urls / js_urls / dynamic_urls)",
         "  6  PARALLEL: httpx url check + xnLinkFinder + jsluice -> re-merge",
         "  7  arjun on dynamic_urls (+ seed already-param + jsluice params)",
-        "  8  nuclei endpoints on alive_urls (discovered)",
-        "  9  nuclei dynamic on parameterized_urls",
-        " 10  final telegram summary + report + priority + delta",
+        "  8  nuclei default on alive hosts (last scan, full rate to itself)",
+        "  9  final telegram summary + report + priority + delta",
     ]:
         print(console.c(step, "white"))
 
@@ -937,7 +898,6 @@ def _send_summary(
         f"• xnlinkfinder: `{counts.get('xnlinkfinder', 0)}`\n"
         f"• arjun: `{counts.get('arjun', 0)}`\n"
         f"• nuclei default: `{counts.get('nuclei_default', 0)}`\n"
-        f"• nuclei dynamic: `{counts.get('nuclei_dynamic', 0)}`\n"
         f"• output: `{output_dir}`"
     )
     if tag == "final" and report_info:
@@ -947,8 +907,6 @@ def _send_summary(
 
 def _build_final_summary(domain: str, output_dir: Path) -> dict:
     findings_default = load_json(output_dir / "findings" / "default" / "nuclei.json") or {}
-    findings_endpoints = load_json(output_dir / "findings" / "endpoints" / "nuclei.json") or {}
-    findings_dynamic = load_json(output_dir / "findings" / "dynamic" / "nuclei.json") or {}
     return make_result(
         "summary", "success", input_path=domain,
         outputs=[output_dir],
@@ -965,10 +923,6 @@ def _build_final_summary(domain: str, output_dir: Path) -> dict:
             ),
             "nuclei_default_findings_by_severity":
                 findings_default.get("severity_count", {}),
-            "nuclei_endpoints_findings_by_severity":
-                findings_endpoints.get("severity_count", {}),
-            "nuclei_dynamic_findings_by_severity":
-                findings_dynamic.get("severity_count", {}),
             "output_folder": str(output_dir),
         },
     )

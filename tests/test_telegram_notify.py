@@ -100,7 +100,9 @@ def test_nuclei_default_message_has_severity_breakdown():
         assert "info" in msg and "<code>0</code>" in msg
 
 
-def test_nuclei_dynamic_uses_same_format():
+def test_non_nuclei_stage_gets_the_generic_format():
+    """The severity breakdown is specific to nuclei_default — every other
+    stage falls through to the plain "stage done — N" message."""
     result = {
         "status": "success",
         "count": 2,
@@ -108,11 +110,11 @@ def test_nuclei_dynamic_uses_same_format():
     }
     with patch("modules.telegram._post") as post:
         post.return_value = True
-        assert notify_stage_result("nuclei_dynamic", result, _cfg()) is True
+        assert notify_stage_result("arjun", result, _cfg()) is True
         msg = post.call_args[0][2]
-        assert "nuclei_dynamic" in msg
+        assert "arjun" in msg
         assert "<code>2</code>" in msg
-        assert "high" in msg and "<code>2</code>" in msg
+        assert "critical" not in msg
 
 
 def test_nuclei_handles_missing_severity_count_gracefully():

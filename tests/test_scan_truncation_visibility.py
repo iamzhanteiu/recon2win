@@ -131,7 +131,7 @@ def test_katana_completes_without_truncation_note(tmp_path, monkeypatch, capsys)
 # --------------------------------------------------------- nuclei autotune
 
 def test_safe_batch_size_matches_documented_formula():
-    # Đúng phép tính ghi trong config.yml cho nuclei_endpoints:
+    # Đúng phép tính ghi trong config.yml cho nuclei_default:
     # 0,7 × 1800s × 400 rps / (3,2 req × 1078 template) = 146
     n_cfg = {"rate_limit": 400, "req_per_template": 3.2}
     assert nuclei_mod._safe_batch_size(1078, n_cfg, 1800) == 146
@@ -145,7 +145,7 @@ def test_oversized_batch_is_shrunk_before_scanning(tmp_path, monkeypatch, capsys
     6/6 batch chết ở 1800s. Nay nó phải bị chặn trước khi bắn request."""
     out = tmp_path / "example.com"
     create_output_structure(out)
-    urls = out / "processed" / "alive_urls.txt"
+    urls = out / "processed" / "alive.txt"
     write_lines(urls, [f"https://a.example.com/{i}" for i in range(600)])
 
     monkeypatch.setattr(nuclei_mod, "_template_count", lambda *a, **k: 1078)
@@ -162,12 +162,12 @@ def test_oversized_batch_is_shrunk_before_scanning(tmp_path, monkeypatch, capsys
 
     monkeypatch.setattr(nuclei_mod.runner, "run", _run)
 
-    cfg = {"nuclei": {"rate_limit": 400, "endpoints": {
+    cfg = {"nuclei": {"rate_limit": 400, "default": {
         "batch_size": 250, "batch_timeout": 1800, "batch_min_size": 25,
         "req_per_template": 3.2, "timeout": 10800,
         "severity": ["critical", "high"], "tags": ["exposure"],
     }}}
-    r = nuclei_mod._run(urls, "endpoints", cfg, out,
+    r = nuclei_mod._run(urls, "default", cfg, out,
                         severity=["critical", "high"], tags=["exposure"],
                         timeout=10800)
 
@@ -182,7 +182,7 @@ def test_oversized_batch_is_shrunk_before_scanning(tmp_path, monkeypatch, capsys
 def test_batch_within_budget_is_left_alone(tmp_path, monkeypatch, capsys):
     out = tmp_path / "example.com"
     create_output_structure(out)
-    urls = out / "processed" / "alive_urls.txt"
+    urls = out / "processed" / "alive.txt"
     write_lines(urls, [f"https://a.example.com/{i}" for i in range(300)])
 
     monkeypatch.setattr(nuclei_mod, "_template_count", lambda *a, **k: 1078)
@@ -199,11 +199,11 @@ def test_batch_within_budget_is_left_alone(tmp_path, monkeypatch, capsys):
 
     monkeypatch.setattr(nuclei_mod.runner, "run", _run)
 
-    cfg = {"nuclei": {"rate_limit": 400, "endpoints": {
+    cfg = {"nuclei": {"rate_limit": 400, "default": {
         "batch_size": 120, "batch_timeout": 1800, "batch_min_size": 25,
         "req_per_template": 3.2, "timeout": 10800,
     }}}
-    r = nuclei_mod._run(urls, "endpoints", cfg, out,
+    r = nuclei_mod._run(urls, "default", cfg, out,
                         severity=["critical", "high"], tags=["exposure"],
                         timeout=10800)
 
@@ -216,7 +216,7 @@ def test_batch_within_budget_is_left_alone(tmp_path, monkeypatch, capsys):
 
 def test_dast_scan_skips_autotune(tmp_path, monkeypatch):
     """``nuclei -tl`` lờ đi ``-dast`` và đếm cả corpus non-fuzzing, nên
-    dùng số đó cho scan dynamic sẽ hạ batch_size xuống sàn vô cớ."""
+    dùng số đó cho một scan bật dast sẽ hạ batch_size xuống sàn vô cớ."""
     out = tmp_path / "example.com"
     create_output_structure(out)
     urls = out / "processed" / "parameterized_urls.txt"
@@ -238,11 +238,11 @@ def test_dast_scan_skips_autotune(tmp_path, monkeypatch):
 
     monkeypatch.setattr(nuclei_mod.runner, "run", _run)
 
-    cfg = {"nuclei": {"rate_limit": 400, "dynamic": {
+    cfg = {"nuclei": {"rate_limit": 400, "default": {
         "dast": True, "batch_size": 250, "batch_timeout": 1800,
         "batch_min_size": 25, "timeout": 10800,
     }}}
-    r = nuclei_mod._run(urls, "dynamic", cfg, out,
+    r = nuclei_mod._run(urls, "default", cfg, out,
                         severity=["critical"], tags=None, timeout=10800)
 
     assert called == []                       # không hề đo

@@ -81,11 +81,9 @@ def fake_outputs(tmp_path: Path) -> Path:
     raw_ar = base / "raw" / "arjun"
     proc = base / "processed"
     fnd_def = base / "findings" / "default"
-    fnd_end = base / "findings" / "endpoints"
-    fnd_dyn = base / "findings" / "dynamic"
     logs = base / "logs"
     for d in (raw_sub, raw_cd, raw_ds, raw_ff, raw_wm, raw_ar,
-              proc, fnd_def, fnd_end, fnd_dyn, logs):
+              proc, fnd_def, logs):
         d.mkdir(parents=True, exist_ok=True)
 
     # raw/subdomain/
@@ -189,6 +187,7 @@ def fake_outputs(tmp_path: Path) -> Path:
     # findings/<kind>/
     (fnd_def / "nuclei.txt").write_text(
         "https://a.example.com\nhttps://b.example.com\n"
+        "https://example.com/login?id=\n"
     )
     (fnd_def / "nuclei.json").write_text(json.dumps({
         "findings": [
@@ -197,25 +196,11 @@ def fake_outputs(tmp_path: Path) -> Path:
             {"template-id": "exposed-env", "info": {"name": "Exposed .env",
              "severity": "high"}, "matched-at": "https://b.example.com/.env",
              "matcher-name": "env-file", "extracted-results": ["DB_PASS=hunter2"]},
-        ],
-        "severity_count": {"info": 1, "high": 1, "medium": 0, "low": 0, "critical": 0},
-    }))
-    (fnd_end / "nuclei.txt").write_text("https://example.com/backup.zip\n")
-    (fnd_end / "nuclei.json").write_text(json.dumps({
-        "findings": [
-            {"template-id": "backup-file", "info": {"name": "Backup file",
-             "severity": "medium"}, "matched-at": "https://example.com/backup.zip"},
-        ],
-        "severity_count": {"medium": 1, "critical": 0, "high": 0, "low": 0, "info": 0},
-    }))
-    (fnd_dyn / "nuclei.txt").write_text("https://example.com/login?id=\n")
-    (fnd_dyn / "nuclei.json").write_text(json.dumps({
-        "findings": [
             {"template-id": "sqli-error", "info": {"name": "SQL error",
              "severity": "critical"}, "matched-at": "https://example.com/login?id=",
              "matcher-name": "error-pattern"},
         ],
-        "severity_count": {"critical": 1, "high": 0, "medium": 0, "low": 0, "info": 0},
+        "severity_count": {"info": 1, "high": 1, "medium": 0, "low": 0, "critical": 1},
     }))
 
     # findings/jsluice_secrets.json (findings root, not per-kind)
@@ -629,12 +614,14 @@ def test_missing_tools_extracts_unique_binaries():
         {"stage": "katana",     "status": "skipped", "error": "katana binary not found"},
         {"stage": "dirsearch",  "status": "skipped", "error": "dirsearch binary not found"},
         {"stage": "nuclei_default", "status": "skipped", "error": "nuclei binary not found"},
-        {"stage": "nuclei_dynamic", "status": "skipped", "error": "nuclei binary not found"},
+        {"stage": "httpx_urls", "status": "skipped", "error": "httpx binary not found"},
+        {"stage": "httpx_alive", "status": "skipped", "error": "httpx binary not found"},
         {"stage": "subdomain",  "status": "success"},
     ]
     out = missing_tools_from_skips(results)
-    # "nuclei_default" and "nuclei_dynamic" both extract to "nuclei"
-    assert sorted(out) == ["dirsearch", "katana", "nuclei"]
+    # suffixed stage names collapse to the binary: "nuclei_default" → nuclei,
+    # and the two httpx_* stages report one missing tool, not two
+    assert sorted(out) == ["dirsearch", "httpx", "katana", "nuclei"]
 
 
 def test_missing_tools_ignores_unrelated_skips():
@@ -692,8 +679,7 @@ def test_collect_reads_every_file(fake_outputs: Path):
     assert data["counts"]["js_urls"] == 1
     assert data["counts"]["dynamic_urls"] == 5
     assert data["counts"]["parameterized_urls"] == 2
-    assert data["counts"]["nuclei_default_findings"] == 2
-    assert data["counts"]["nuclei_dynamic_findings"] == 1
+    assert data["counts"]["nuclei_default_findings"] == 3
 
     # every file in OUTPUT_FILES is in the inventory
     assert len(data["files"]) == len(ReportBuilder.OUTPUT_FILES)
@@ -859,8 +845,6 @@ def test_render_html_uses_clickable_links(fake_outputs: Path):
         "../processed/parameterized_urls.txt",
         "../findings/default/nuclei.txt",
         "../findings/default/nuclei.json",
-        "../findings/dynamic/nuclei.txt",
-        "../findings/dynamic/nuclei.json",
         "../logs/commands.log",
         "../logs/stages.json",
     ]:
@@ -872,7 +856,7 @@ def test_render_html_groups_nuclei_findings_by_severity(fake_outputs: Path):
         ReportBuilder(_make_inputs(fake_outputs)).collect()
     )
     # severities that have findings in the fixture must appear (uppercased)
-    # fixture has critical (dynamic) + high + info (default)
+    # fixture has critical + high + info, all in the default scan
     for sev in ("CRITICAL", "HIGH", "INFO"):
         assert sev in html, f"missing severity section: {sev}"
 

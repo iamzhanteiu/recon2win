@@ -1,8 +1,8 @@
-"""nuclei — stages 4.5 and 8.
+"""nuclei — stage 9, the last scan in the pipeline.
 
-Used twice:
-  1. default_scan(alive_file)            — full template set against alive hosts
-  2. dynamic_scan(parameterized_urls_file) — focused tags on parameterised URLs
+One entry point: ``default_scan(alive_file)`` — the full template set against
+the alive hosts. It runs on its own at the end of the run rather than beside
+content discovery, so it never shares its rate budget with the crawlers.
 
 Findings are persisted as both plain text (one matched URL per line) and JSON.
 High/Critical findings fire an immediate Telegram alert (if configured).
@@ -18,7 +18,6 @@ from typing import Optional
 from . import console, fuzz_targets, runner
 from .utils import (
     findings_dir,
-    load_json,
     make_result,
     raw_dir,
     read_lines,
@@ -41,10 +40,11 @@ _MIN_BATCH_BUDGET = 60
 _BATCH_BUDGET_FACTOR = 0.7
 
 # Số request nuclei thực sự bắn cho mỗi (template × target). KHÔNG phải 1:
-# redirect, retry và matcher nhiều bước làm nó nhân lên. Hai số đo thật:
-#   default   — 1.162.000 req / (100 host × 5.095 template) = 2,28
-#   endpoints — 34.510 req / (10 URL × 1.078 template)      = 3,20
-# Ghi đè bằng ``nuclei.<scan>.req_per_template`` sau khi đo lại `-stats`.
+# redirect, retry và matcher nhiều bước làm nó nhân lên. Hai số đo thật
+# (số thứ hai từ stage endpoints thời còn tồn tại, giữ lại làm cận trên):
+#   host — 1.162.000 req / (100 host × 5.095 template) = 2,28
+#   URL  — 34.510 req / (10 URL × 1.078 template)      = 3,20
+# Ghi đè bằng ``nuclei.default.req_per_template`` sau khi đo lại `-stats`.
 _REQ_PER_TEMPLATE = 2.3
 
 _TL_CACHE: dict[tuple, Optional[int]] = {}
@@ -61,8 +61,8 @@ def _template_count(
     chứ không được đoán.
 
     KHÔNG dùng được cho scan ``-dast``: ``-tl`` lờ đi ``-dast`` và đếm cả
-    13k template non-fuzzing, sai hai bậc độ lớn (xem nuclei.dynamic trong
-    config.yml). Người gọi phải tự loại trường hợp đó.
+    13k template non-fuzzing, sai hai bậc độ lớn (xem nuclei.default.dast
+    trong config.yml). Người gọi phải tự loại trường hợp đó.
     """
     key = (tuple(severity or ()), tuple(tags or ()))
     if key in _TL_CACHE:
@@ -145,266 +145,6 @@ def update_templates(
                            error=(r["stderr"] or "")[:200])
     return make_result(stage, "success", count=0)
 
-
-def _has_param(url: str) -> bool:
-    """True when the URL carries at least one query parameter (``?name=``).
-
-    The dynamic scan is meant to fuzz *parameterised* endpoints only, so a
-    bare ``https://x.com/api`` with no ``?...=`` is nothing to fuzz. We
-    require both a ``?`` and a ``name=`` pair so a trailing ``?`` with an
-    empty query string doesn't slip through.
-    """
-    q = url.split("?", 1)
-    return len(q) == 2 and "=" in q[1]
-
-
-# High-value markers used to rank parameterised URLs before the
-# ``nuclei.dynamic.max_urls`` cap — keep the URLs most likely to yield a
-# fuzzing hit (auth / api / write paths, id-like params) over archive noise.
-_DYN_HINTS = (
-    "/api/", "/v1/", "/v2/", "/v3/", "/graphql", "/query", "/search",
-    "/login", "/admin", "/user", "/account", "/auth", "/oauth",
-    "/upload", "/download", "/file", "/redirect", "/proxy",
-    "id=", "url=", "path=", "file=", "redirect=", "next=", "cmd=", "q=",
-)
-
-
-def _score_dynamic(url: str) -> int:
-    """Higher = keep first when capping. Ties break on shorter URL."""
-    lo = url.lower()
-    score = sum(1 for h in _DYN_HINTS if h in lo)
-    if "web.archive.org" in lo or "webcache.googleusercontent" in lo:
-        score -= 3
-    return score
-
-
-def _param_signature(url: str) -> tuple:
-    """Collapse near-identical URLs to one representative.
-
-    ``?id=1`` and ``?id=2`` fuzz identically, so we key on
-    scheme+host+path+*param names* (values ignored). A crawl of a large
-    target is mostly the same handful of endpoints with different ids;
-    this is what turns 100k+ URLs into a few thousand distinct shapes.
-    """
-    from urllib.parse import parse_qsl, urlsplit
-    s = urlsplit(url)
-    # ``set`` folds a repeated param name (``?p=a&p=b`` == ``?p=a``) so those
-    # collapse to one shape too — not just distinct-name value variants.
-    names = tuple(sorted({k for k, _ in parse_qsl(s.query, keep_blank_values=True)}))
-    return (s.scheme, s.netloc, s.path, names)
-
-
-def _filter_param_urls(
-    input_file: Path, output_dir: Path, max_urls: int = 0,
-) -> tuple[Path, dict]:
-    """Prepare the dynamic-scan input: keep only parameterised URLs, dedup
-    near-identical param shapes, then cap to ``max_urls`` highest-value.
-
-    Returns ``(file_to_scan, stats)``. When nothing needs changing we
-    return the original file untouched so the common case stays a no-op.
-    ``max_urls <= 0`` disables the cap.
-    """
-    urls = read_lines(input_file)
-    total = len(urls)
-    kept = [u for u in urls if _has_param(u)]
-    dropped = total - len(kept)
-
-    # Dedup by param signature, preserving first-seen order for stable runs.
-    seen: set[tuple] = set()
-    unique: list[str] = []
-    for u in kept:
-        sig = _param_signature(u)
-        if sig in seen:
-            continue
-        seen.add(sig)
-        unique.append(u)
-    deduped = len(kept) - len(unique)
-
-    selected = unique
-    capped = 0
-    if max_urls and max_urls > 0 and len(unique) > max_urls:
-        selected = sorted(unique, key=lambda u: (-_score_dynamic(u), len(u), u))[:max_urls]
-        capped = len(unique) - len(selected)
-
-    stats = {
-        "input": total, "dropped_no_param": dropped,
-        "deduped": deduped, "capped": capped, "selected": len(selected),
-    }
-    if dropped == 0 and deduped == 0 and capped == 0:
-        return input_file, stats
-    filtered = raw_dir(output_dir, "nuclei_dynamic") / "param_urls.txt"
-    write_lines(filtered, selected)
-    return filtered, stats
-
-
-# Status codes that mean "the edge refused us", as opposed to a status
-# that tells us something about the origin. Deliberately EXCLUDES 401: an
-# auth-protected endpoint is a real, informative answer from the app and
-# worth scanning. 403/406/429 in bulk are what a CDN/WAF returns when it
-# never forwarded the request at all.
-_BLOCKED_STATUS = {403, 406, 429}
-# Below this many probed URLs a host has too small a sample to call it
-# blanket-blocked — three 403s could just be three protected paths.
-_WAF_MIN_SAMPLE = 10
-# Fraction of a host's URLs that must carry a blocked status before we
-# treat the whole host as answered-by-the-edge.
-_WAF_RATIO = 0.95
-
-
-def _load_status_map(output_dir: Path) -> dict[str, int]:
-    """``{url: status_code}`` from the httpx probe, or ``{}`` if absent.
-
-    ``processed/alive_urls_detail.json`` is written by ``httpx.check_urls``
-    as a JSON array of probe rows. Missing/malformed is not an error: the
-    caller degrades to "no host is known-blocked", which only costs scan
-    time, never coverage.
-    """
-    detail = output_dir / "processed" / "alive_urls_detail.json"
-    rows = load_json(detail)
-    if not isinstance(rows, list):
-        return {}
-    out: dict[str, int] = {}
-    for r in rows:
-        if not isinstance(r, dict):
-            continue
-        url, sc = r.get("url"), r.get("status_code")
-        if not url:
-            continue
-        try:
-            out[str(url)] = int(sc)
-        except (TypeError, ValueError):
-            continue
-    return out
-
-
-def _blanket_blocked_hosts(
-    urls: list[str], status: dict[str, int],
-) -> set[str]:
-    """Hosts where the CDN/WAF answers every path identically.
-
-    Measured on a real discover.com run: ``apps.discover.com`` returned the
-    Akamai ``errors.edgesuite.net`` "Access Denied" page for EVERY path,
-    including paths that do not exist (``/zzz-random-9931``). 1907 of the
-    2000 selected URLs sat on that one host. From nuclei's point of view
-    those are not 1907 targets — they are one target scanned 1907 times,
-    because exposure/misconfig templates match on the response at a given
-    path and the response here does not depend on the path.
-
-    Note the bodies are NOT byte-identical (Akamai echoes the requested URL
-    and a per-request reference nonce), so response-hash dedup does not
-    catch this. The status distribution does.
-
-    Such a host is capped hard rather than dropped — see the caller. Some
-    path may still reach the origin, and that is not a bet worth losing for
-    a scan that now has budget to spare.
-    """
-    from urllib.parse import urlsplit
-
-    per_host: dict[str, list[str]] = {}
-    for u in urls:
-        h = urlsplit(u).netloc
-        if h:
-            per_host.setdefault(h, []).append(u)
-
-    blocked: set[str] = set()
-    for host, hurls in per_host.items():
-        known = [status[u] for u in hurls if u in status]
-        if len(known) < _WAF_MIN_SAMPLE:
-            continue
-        hits = sum(1 for s in known if s in _BLOCKED_STATUS)
-        if hits / len(known) > _WAF_RATIO:
-            blocked.add(host)
-    return blocked
-
-
-def _filter_endpoint_urls(
-    input_file: Path, output_dir: Path, max_urls: int = 0,
-    *, max_per_host: int = 0, waf_host_max: int = 0,
-) -> tuple[Path, dict]:
-    """Prepare the endpoints-scan input: dedup URLs that share (scheme,
-    host, path) — query-string noise aside they hit the same nuclei
-    templates — then spread the budget across hosts and cap to
-    ``max_urls`` highest-value.
-
-    Unlike ``_filter_param_urls`` this does NOT require a query param:
-    endpoints_scan targets every discovered live URL, not just the
-    parameterised ones, so most inputs here have no ``?`` at all.
-
-    THE PER-HOST CAP IS THE POINT, not a refinement of the global one. A
-    ``max_urls`` cut ranks every URL against every other, so one host with
-    a huge crawled surface takes the whole list: on a real discover.com run
-    the top-2000 selection gave 1907 slots (95%) to a single WAF-blocked
-    host and left 44 other hosts with 0-24 URLs between them. That
-    selection contained 13 URLs that returned 200. Capping at 100/host over
-    the same input yields 634 URLs containing 176 that return 200 — a list
-    three times smaller with 13x more reachable content, because what it
-    drops are near-copies of one "Access Denied" page. Cost falls with it:
-    2000 URLs ≈ 6.9M requests ≈ 4.8h at rate_limit 400, versus ≈ 1.5h.
-
-    Hosts whose every answer comes from the edge (see
-    ``_blanket_blocked_hosts``) get the tighter ``waf_host_max`` instead,
-    keeping a sample in case some path reaches the origin.
-
-    Returns ``(file_to_scan, stats)``. When nothing needs changing we
-    return the original file untouched so the common case stays a no-op.
-    ``max_urls`` / ``max_per_host`` ``<= 0`` disable their cap.
-    """
-    from urllib.parse import urlsplit
-
-    urls = read_lines(input_file)
-    total = len(urls)
-
-    seen: set[tuple] = set()
-    unique: list[str] = []
-    for u in urls:
-        s = urlsplit(u)
-        sig = (s.scheme, s.netloc, s.path)
-        if sig in seen:
-            continue
-        seen.add(sig)
-        unique.append(u)
-    deduped = total - len(unique)
-
-    # Per-host cap. Rank globally FIRST so each host contributes its own
-    # highest-value URLs, then walk that order handing out per-host slots.
-    selected = unique
-    per_host_capped = 0
-    blocked: set[str] = set()
-    if max_per_host and max_per_host > 0:
-        status = _load_status_map(output_dir)
-        blocked = _blanket_blocked_hosts(unique, status) if status else set()
-        ranked = sorted(unique, key=lambda u: (-_score_dynamic(u), len(u), u))
-        used: dict[str, int] = {}
-        kept: list[str] = []
-        for u in ranked:
-            host = urlsplit(u).netloc
-            cap = waf_host_max if host in blocked else max_per_host
-            if cap <= 0:
-                continue
-            if used.get(host, 0) >= cap:
-                continue
-            used[host] = used.get(host, 0) + 1
-            kept.append(u)
-        per_host_capped = len(unique) - len(kept)
-        selected = kept
-
-    capped = 0
-    if max_urls and max_urls > 0 and len(selected) > max_urls:
-        ranked = sorted(selected, key=lambda u: (-_score_dynamic(u), len(u), u))
-        capped = len(selected) - max_urls
-        selected = ranked[:max_urls]
-
-    stats = {
-        "input": total, "deduped": deduped, "per_host_capped": per_host_capped,
-        "capped": capped, "selected": len(selected),
-    }
-    if blocked:
-        stats["waf_hosts"] = sorted(blocked)
-    if deduped == 0 and capped == 0 and per_host_capped == 0:
-        return input_file, stats
-    filtered = raw_dir(output_dir, "nuclei_endpoints") / "endpoint_urls.txt"
-    write_lines(filtered, selected)
-    return filtered, stats
 
 
 def _outputs_exist(out_dir: Path, kind: str) -> bool:
@@ -506,10 +246,9 @@ def _build_nuclei_cmd(
     # but ``dast/`` without the flag fails outright with "no templates
     # provided for scan". They carry ordinary tags (``sqli,error,dast``),
     # so a tags filter alone LOOKS like it selects them while the engine
-    # silently drops every one. That made the dynamic scan — the stage
-    # whose whole job is fuzzing parameterised URLs — run only the
-    # non-fuzzing sqli/xss/... templates. Off by default; the dynamic scan
-    # turns it on (see nuclei.dynamic.dast in config.yml).
+    # silently drops every one — a fuzzing scan configured by tags alone
+    # runs only the non-fuzzing sqli/xss/... templates. Off by default;
+    # turn it on with ``nuclei.default.dast`` in config.yml.
     #
     # NOTE ON ``-tags`` WITH ``-dast``: ``-dast`` is already the filter.
     # It restricts the run to the fuzzing corpus (54 loadable templates in
@@ -520,7 +259,7 @@ def _build_nuclei_cmd(
     # silently dropping cmdi, crlf, open-redirect, rfi, xinclude, csv
     # injection and the DAST CVE templates — measured, not guessed, with
     # ``nuclei -u ... -dast [-tags ...]`` and reading "Templates loaded
-    # for current scan". So the dynamic scan ships with NO tags now.
+    # for current scan". So: with ``dast`` on, ship NO tags.
     if n_cfg.get("dast", False):
         cmd.append("-dast")
         # -fuzz-aggression controls how many payloads each fuzz point gets.
@@ -528,9 +267,8 @@ def _build_nuclei_cmd(
         # a speed one: measured against a local 2-param target with the
         # full dast corpus, one URL costs 191 requests at low, 236 at
         # medium (+24%), 289 at high (+51%). A quarter more traffic for a
-        # materially wider payload set is a good trade on a stage that
-        # already finishes in a fraction of its budget — so the dynamic
-        # scan ships at medium (see nuclei.dynamic.fuzz_aggression).
+        # materially wider payload set is a good trade whenever the scan
+        # finishes well inside its budget (see nuclei.default.fuzz_aggression).
         aggression = str(n_cfg.get("fuzz_aggression", "") or "").strip()
         if aggression:
             cmd.extend(["-fuzz-aggression", aggression])
@@ -613,12 +351,12 @@ def _run(
             error="input file empty or missing",
         )
 
-    # Per-scan sub-config (``nuclei.default`` / ``.endpoints`` / ``.dynamic``)
-    # overrides the shared ``nuclei.*`` defaults, so each scan can tune its
-    # own batch_size / batch_timeout / rate_limit without touching the
-    # others. This is what lets the default scan (562 root hosts) batch at a
-    # smaller size than the global 1000 — otherwise it stays a single run and
-    # a timeout wipes every finding.
+    # The per-scan sub-config (``nuclei.default``) overrides the shared
+    # ``nuclei.*`` defaults, so the scan can tune its own batch_size /
+    # batch_timeout / rate_limit without touching the shared block. This is
+    # what lets the default scan (562 root hosts) batch at a smaller size
+    # than the global 1000 — otherwise it stays a single run and a timeout
+    # wipes every finding.
     global_cfg = cfg.get("nuclei", {})
     scan_cfg = global_cfg.get(kind)
     scan_cfg = scan_cfg if isinstance(scan_cfg, dict) else {}
@@ -737,7 +475,7 @@ def _run(
         # ``timeout`` is the ceiling for the WHOLE stage, batched or not.
         # It used to bound only the single-run path, so a batched scan ran
         # for batches × batch_timeout with nothing capping it — a real
-        # discover.com run spent 4h in nuclei_endpoints under a nominal
+        # discover.com run spent 4h in a nuclei stage under a nominal
         # 3h ``timeout``. Each batch now gets whatever is left of the
         # stage budget, and we stop rather than start a batch too short to
         # get past nuclei's template load.
@@ -942,121 +680,3 @@ def default_scan(
         timeout=int(n_cfg.get("timeout", 7200)),
         skip=skip,
     )
-
-
-def endpoints_scan(
-    alive_urls_file: Path,
-    output_dir: Path,
-    cfg: dict,
-    *,
-    resume: bool = False,
-    dry_run: bool = False,
-    skip: bool = False,
-) -> dict:
-    """Scan the discovered live endpoints (alive_urls.txt) with nuclei.
-
-    Fills the biggest coverage gap in the pipeline: ``default_scan`` only
-    sees ``alive.txt`` (the root hosts), because it runs in parallel with
-    content discovery. The thousands of endpoints that crawling + dirsearch
-    + jsluice + waymore surface — the whole point of discovery — otherwise
-    never get a nuclei pass. This scan runs *after* discovery on the
-    live-verified URL list.
-
-    Defaults to ``critical,high,medium`` (skips info/low): 1000+ endpoints
-    at all-severity would bury real findings under detection noise.
-    """
-    n_cfg = (cfg.get("nuclei") or {}).get("endpoints") or {}
-    fdir = findings_dir(output_dir, "endpoints")
-    outputs = [fdir / "nuclei.txt", fdir / "nuclei.json"]
-    if resume and _outputs_exist(output_dir, "endpoints"):
-        return make_result(
-            "nuclei_endpoints", "success", input_path=alive_urls_file,
-            outputs=outputs,
-            count=len(read_lines(fdir / "nuclei.txt")),
-        )
-    if dry_run:
-        return make_result(
-            "nuclei_endpoints", "skipped", input_path=alive_urls_file,
-            outputs=outputs, count=0, error="dry-run",
-        )
-    if not n_cfg.get("enabled", True):
-        return make_result(
-            "nuclei_endpoints", "skipped", input_path=alive_urls_file,
-            outputs=outputs, count=0, error="disabled in config",
-        )
-
-    # Same lesson dynamic_scan already learned: an uncapped URL list from
-    # a large crawl (10k+) cannot finish inside the timeout and the scan
-    # walls with 0 findings — see logs/stages.json from a real run where
-    # this happened. Dedup near-identical URLs, spread the budget across
-    # hosts, then keep the top ``max_urls`` highest-value ones.
-    max_urls = int(n_cfg.get("max_urls", 5000))
-    scan_file, stats = _filter_endpoint_urls(
-        alive_urls_file, output_dir, max_urls,
-        max_per_host=int(n_cfg.get("max_per_host", 100)),
-        waf_host_max=int(n_cfg.get("waf_host_max", 25)),
-    )
-
-    result = _run(
-        scan_file, "endpoints", cfg, output_dir,
-        severity=n_cfg.get("severity", ["critical", "high", "medium"]),
-        tags=n_cfg.get("tags"),
-        timeout=int(n_cfg.get("timeout", 7200)),
-        skip=skip,
-    )
-    if (stats.get("deduped") or stats.get("capped")
-            or stats.get("per_host_capped")):
-        (result.setdefault("extra", {}))["url_filter"] = stats
-    return result
-
-
-def dynamic_scan(
-    parameterized_urls_file: Path,
-    output_dir: Path,
-    cfg: dict,
-    *,
-    resume: bool = False,
-    dry_run: bool = False,
-    skip: bool = False,
-) -> dict:
-    n_cfg = (cfg.get("nuclei") or {}).get("dynamic") or {}
-    fdir = findings_dir(output_dir, "dynamic")
-    outputs = [fdir / "nuclei.txt", fdir / "nuclei.json"]
-    if resume and _outputs_exist(output_dir, "dynamic"):
-        return make_result(
-            "nuclei_dynamic", "success", input_path=parameterized_urls_file,
-            outputs=outputs,
-            count=len(read_lines(fdir / "nuclei.txt")),
-        )
-    if dry_run:
-        return make_result(
-            "nuclei_dynamic", "skipped", input_path=parameterized_urls_file,
-            outputs=outputs, count=0, error="dry-run",
-        )
-    if not n_cfg.get("enabled", True):
-        return make_result(
-            "nuclei_dynamic", "skipped", input_path=parameterized_urls_file,
-            outputs=outputs, count=0, error="disabled in config",
-        )
-
-    # Enforce "parameterised endpoints only" at the scan boundary and keep
-    # the list to a size nuclei can actually finish. Upstream (arjun +
-    # jsluice) already produce ``?p=&q=`` URLs, but a large crawl can leak
-    # 100k+ of them; without a cap the fuzzing scan walls at its timeout
-    # with 0 findings. Dedup near-identical param shapes, then keep the
-    # top ``max_urls`` highest-value URLs.
-    max_urls = int(n_cfg.get("max_urls", 3000))
-    scan_file, stats = _filter_param_urls(
-        parameterized_urls_file, output_dir, max_urls
-    )
-
-    result = _run(
-        scan_file, "dynamic", cfg, output_dir,
-        severity=n_cfg.get("severity", ["critical", "high", "medium", "low","info"]),
-        tags=n_cfg.get("tags"),
-        timeout=int(n_cfg.get("timeout", 7200)),
-        skip=skip,
-    )
-    if stats.get("dropped_no_param") or stats.get("deduped") or stats.get("capped"):
-        (result.setdefault("extra", {}))["param_filter"] = stats
-    return result

@@ -92,9 +92,9 @@ def test_dast_flag_emitted_only_when_enabled():
     assert "-dast" in _nuclei_cmd({"nuclei": {"dast": True}})
 
 
-def test_dynamic_scan_enables_dast(tmp_path, monkeypatch):
-    """The dynamic scan fuzzes parameterised URLs — the one stage that
-    needs the fuzzing templates — so its per-scan config must reach argv."""
+def test_default_scan_passes_per_scan_dast_to_argv(tmp_path, monkeypatch):
+    """``dast`` is opt-in per scan via ``nuclei.default.dast``; the
+    per-scan sub-config must actually reach the nuclei argv."""
     captured: list[str] = []
 
     def fake_run(cmd, **kw):
@@ -108,13 +108,13 @@ def test_dynamic_scan_enables_dast(tmp_path, monkeypatch):
     monkeypatch.setattr("modules.runner.tool_available", lambda b: True)
     monkeypatch.setattr("modules.runner.which", lambda b: f"/usr/bin/{b}")
 
-    (tmp_path / "findings" / "dynamic").mkdir(parents=True)
+    (tmp_path / "findings" / "default").mkdir(parents=True)
     params = tmp_path / "params.txt"
     params.write_text("https://example.com/a?id=1\n")
 
-    nuclei_mod.dynamic_scan(
+    nuclei_mod.default_scan(
         params, tmp_path,
-        cfg={"nuclei": {"dynamic": {"enabled": True, "dast": True}}},
+        cfg={"nuclei": {"default": {"enabled": True, "dast": True}}},
         resume=False, dry_run=False, skip=False,
     )
     assert "-dast" in captured

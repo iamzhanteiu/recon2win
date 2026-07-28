@@ -144,13 +144,9 @@ def build_model(output_dir: Path, domain: str) -> tuple[list[dict], list[tuple[s
     add("arjun", "arjun params", "proc", L("arjun_params.txt"))
     add("parameterized", "parameterized_urls", "proc", L("parameterized_urls.txt"))
 
-    for kind, nid, label in (
-        ("default", "nuclei_default", "nuclei default"),
-        ("endpoints", "nuclei_endpoints", "nuclei endpoints"),
-        ("dynamic", "nuclei_dynamic", "nuclei dynamic"),
-    ):
-        total, sc = _finding_stats(find / kind / "nuclei.json")
-        add(nid, label, "finding", total, sub=_sev_sub(sc), sev=_top_sev(sc))
+    ndef_total, ndef_sc = _finding_stats(find / "default" / "nuclei.json")
+    add("nuclei_default", "nuclei default", "finding", ndef_total,
+        sub=_sev_sub(ndef_sc), sev=_top_sev(ndef_sc))
 
     stot, ssc = _finding_stats(find / "jsluice_secrets.json")
     add("secrets", "JS secrets", "finding", stot, sub=_sev_sub(ssc), sev=_top_sev(ssc))
@@ -181,11 +177,9 @@ def build_model(output_dir: Path, domain: str) -> tuple[list[dict], list[tuple[s
         ("dynamic_urls", "arjun", "solid"),
         ("arjun", "parameterized", "solid"),
         ("jsluice_params", "parameterized", "solid"),
-        ("alive_urls", "nuclei_endpoints", "solid"),
-        ("parameterized", "nuclei_dynamic", "solid"),
+        ("alive_urls", "report", "solid"),
+        ("parameterized", "report", "solid"),
         ("nuclei_default", "report", "solid"),
-        ("nuclei_endpoints", "report", "solid"),
-        ("nuclei_dynamic", "report", "solid"),
         ("secrets", "report", "solid"),
         # additive / loop-back edges — dashed, excluded from layering
         ("dynamic_urls", "parameterized", "seed"),

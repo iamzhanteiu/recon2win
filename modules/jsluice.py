@@ -23,8 +23,8 @@ Outputs (processed/, findings/):
 
 The urls/endpoints are merged back into ``all_urls.txt`` by stage 6.post
 (``url_merge.append_urls``) exactly like xnLinkFinder's output, so they get
-httpx-probed + nuclei-scanned; any that carry query params flow on to
-arjun + nuclei_dynamic. The two JS tools run in parallel and complement
+httpx-probed; any that carry query params flow on to arjun and the
+parameterised shortlist. The two JS tools run in parallel and complement
 each other (xnLinkFinder = broad/regex, jsluice = deep/AST).
 """
 from __future__ import annotations
@@ -339,7 +339,7 @@ def scan(
 
 
 # ----------------------------------------------------------------------
-# Feed jsluice's param intel into nuclei_dynamic
+# Feed jsluice's param intel into the parameterised shortlist
 # ----------------------------------------------------------------------
 def build_param_urls(params: list[dict]) -> list[str]:
     """Turn jsluice ``params`` records into fuzzable URLs for nuclei.
@@ -350,9 +350,9 @@ def build_param_urls(params: list[dict]) -> list[str]:
 
       * arjun only fuzzes what looks dynamic in the URL (``?x=``) and is
         GET-only + capped at ``max_urls`` — so POST/JSON endpoints and
-        anything past the cap never reach a dynamic scan.
-      * jsluice extracted the real param names from the AST, so we can
-        hand nuclei a precise fuzz target instead of guessing.
+        anything past the cap never reach the shortlist.
+      * jsluice extracted the real param names from the AST, so the
+        shortlist carries precise targets instead of guesses.
 
     Existing query strings on the URL are rebuilt from ``queryParams`` so
     the output is deduped and free of jsluice's ``EXPR`` placeholders.
@@ -385,14 +385,15 @@ def build_param_urls(params: list[dict]) -> list[str]:
 def merge_params_into_nuclei_input(output_dir: Path) -> dict:
     """Append jsluice's param-rich URLs to ``parameterized_urls.txt``.
 
-    Runs between arjun (stage 7) and nuclei_dynamic (stage 8). Reads
+    Runs right after arjun (stage 8). Reads
     ``processed/jsluice_params.json``, builds fuzzable URLs via
     :func:`build_param_urls`, and merges them (deduped) into
-    ``processed/parameterized_urls.txt`` — the file nuclei_dynamic scans.
+    ``processed/parameterized_urls.txt`` — the hand-testing shortlist that
+    also feeds the report and priority_targets.txt.
 
     This is additive and safe when arjun was skipped/failed: the target
-    file is created if missing, so jsluice params alone can drive the
-    dynamic scan. No-op (count 0) when jsluice found no params.
+    file is created if missing, so jsluice params alone can populate the
+    shortlist. No-op (count 0) when jsluice found no params.
     """
     proc = output_dir / "processed"
     params_json = proc / "jsluice_params.json"

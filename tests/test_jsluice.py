@@ -145,7 +145,7 @@ def test_parse_secrets_defaults_severity_to_info():
 
 
 # ----------------------------------------------------------------------
-# build_param_urls — feed jsluice param intel to nuclei_dynamic
+# build_param_urls — feed jsluice param intel to the param shortlist
 # ----------------------------------------------------------------------
 def test_build_param_urls_attaches_query_and_body_params():
     recs = [
@@ -204,7 +204,7 @@ def test_merge_appends_jsluice_params_deduped(tmp_path: Path):
 
 def test_merge_creates_file_when_arjun_skipped(tmp_path: Path):
     """When arjun was skipped, parameterized_urls.txt may be empty/missing —
-    jsluice params alone should still drive nuclei_dynamic."""
+    jsluice params alone should still populate the shortlist."""
     base = create_output_structure("example.com", root=str(tmp_path))
     write_json(base / "processed" / "jsluice_params.json", [
         {"url": "https://x.com/p", "queryParams": ["x"], "bodyParams": ["y"]},

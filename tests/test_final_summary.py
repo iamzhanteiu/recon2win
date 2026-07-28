@@ -28,7 +28,6 @@ def test_final_summary_reads_v2_findings_path(tmp_path: Path):
     the summary (not be swallowed by a stale path)."""
     base = create_output_structure("example.com", root=str(tmp_path))
     _seed_nuclei(base, "default", {"info": 533, "low": 52, "high": 0})
-    _seed_nuclei(base, "dynamic", {"critical": 1})
 
     summary = _build_final_summary("example.com", base)
     extra = summary["extra"]
@@ -36,7 +35,6 @@ def test_final_summary_reads_v2_findings_path(tmp_path: Path):
     assert extra["nuclei_default_findings_by_severity"] == {
         "info": 533, "low": 52, "high": 0,
     }
-    assert extra["nuclei_dynamic_findings_by_severity"] == {"critical": 1}
 
 
 def test_final_summary_does_not_read_v1_flat_path(tmp_path: Path):
@@ -63,4 +61,3 @@ def test_final_summary_empty_when_no_findings(tmp_path: Path):
     summary = _build_final_summary("example.com", base)
     extra = summary["extra"]
     assert extra["nuclei_default_findings_by_severity"] == {}
-    assert extra["nuclei_dynamic_findings_by_severity"] == {}

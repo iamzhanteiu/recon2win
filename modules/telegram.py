@@ -165,9 +165,9 @@ def notify_stage_result(
       * ``result['count']`` must be > 0 — we do NOT notify on empty runs.
 
     The message is stage-aware:
-      * ``nuclei_default`` / ``nuclei_dynamic``  → breakdown by severity.
-      * ``content_discovery``                     → URL count + JS count.
-      * anything else                             → generic "stage done — N".
+      * ``nuclei_default``     → breakdown by severity.
+      * ``content_discovery``  → URL count + JS count.
+      * anything else          → generic "stage done — N".
     """
     if not _enabled(cfg):
         return False
@@ -184,7 +184,7 @@ def notify_stage_result(
 
     extra = result.get("extra") or {}
 
-    if stage in ("nuclei_default", "nuclei_dynamic"):
+    if stage == "nuclei_default":
         sev = extra.get("severity_count") or {}
         msg = (
             f"🔬 <b>{_h(stage)}</b> finished — <code>{count}</code> finding(s)\n"

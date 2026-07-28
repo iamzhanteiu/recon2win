@@ -485,26 +485,25 @@ def derive_subdomains_from_urls(output_dir: Path, domain: str) -> dict:
 def seed_parameterized_urls(output_dir: Path) -> dict:
     """Seed ``parameterized_urls.txt`` with URLs that ALREADY carry params.
 
-    ``nuclei_dynamic`` scans only ``parameterized_urls.txt`` — which is
-    built from arjun's discoveries + jsluice params. But URLs that already
-    show ``?id=1`` in the crawl/waymore results are prime injection targets
-    that reach the dynamic scan *only if arjun happens to re-discover them*.
-    When arjun is skipped, capped (``max_urls``), or fails, those obvious
-    param URLs get **zero** dynamic coverage — even though they were sitting
-    in ``dynamic_urls.txt`` the whole time.
+    ``parameterized_urls.txt`` is the hand-testing shortlist, built from
+    arjun's discoveries + jsluice params. But URLs that already show
+    ``?id=1`` in the crawl/waymore results are prime injection targets that
+    land in it *only if arjun happens to re-discover them*. When arjun is
+    skipped, capped (``max_urls``), or fails, those obvious param URLs are
+    missing entirely — even though they were sitting in
+    ``dynamic_urls.txt`` the whole time.
 
     This step reads ``dynamic_urls.txt``, keeps the ones with a query string,
     and merges them (deduped) into ``parameterized_urls.txt`` — independent
-    of arjun. Runs between arjun (stage 7) and nuclei_dynamic (stage 8), so
-    the final input is::
+    of arjun. Runs right after arjun (stage 8), so the shortlist is::
 
         parameterized_urls.txt = {already-param URLs}
                                ∪ {arjun-discovered}
                                ∪ {jsluice params}
 
     Additive and safe: creates the file if missing, so even a run with
-    ``--skip-arjun`` and no jsluice hits still gives nuclei_dynamic the
-    visible-param URLs to scan.
+    ``--skip-arjun`` and no jsluice hits still surfaces the
+    visible-param URLs.
     """
     proc = output_dir / "processed"
     dyn_file = proc / "dynamic_urls.txt"

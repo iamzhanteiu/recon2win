@@ -28,12 +28,7 @@ def _seed_outputs(root: Path) -> None:
 
     find = root / "findings"
     (find / "default").mkdir(parents=True, exist_ok=True)
-    (find / "dynamic").mkdir(parents=True, exist_ok=True)
     (find / "default" / "nuclei.json").write_text(json.dumps({
-        "findings": [{"info": {"severity": "info"}}],
-        "severity_count": {"info": 1},
-    }))
-    (find / "dynamic" / "nuclei.json").write_text(json.dumps({
         "findings": [{"info": {"severity": "high"}}, {"info": {"severity": "medium"}}],
         "severity_count": {"high": 1, "medium": 1},
     }))
@@ -54,9 +49,9 @@ def test_build_model_counts(tmp_path: Path):
     assert by_id["jsluice_params"]["count"] == 1
     assert by_id["domain"]["count"] is None
     # severity carried onto finding nodes
-    assert by_id["nuclei_dynamic"]["count"] == 2
-    assert by_id["nuclei_dynamic"]["sev"] == "high"
-    assert by_id["nuclei_dynamic"]["sub"] == "1H 1M"
+    assert by_id["nuclei_default"]["count"] == 2
+    assert by_id["nuclei_default"]["sev"] == "high"
+    assert by_id["nuclei_default"]["sub"] == "1H 1M"
     assert by_id["secrets"]["count"] == 1
 
 

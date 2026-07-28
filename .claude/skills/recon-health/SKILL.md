@@ -35,6 +35,10 @@ báo-success, ngân sách vô lý, sổ cái coverage, thời gian đi đâu.
 
 ## Đọc kết quả: 4 archetype lỗi, cả 4 đều gặp thật
 
+> Ví dụ dưới đây lấy từ run trước 2026-07-28, khi pipeline còn 3 scan nuclei
+> (`default` / `endpoints` / `dynamic`). Nay chỉ còn `nuclei_default`; cách
+> đọc không đổi, chỉ tên stage trong log cũ là khác.
+
 **1. Cụt nhưng báo success** — nguy hiểm nhất, vì không ai đọc `error`.
 `nuclei_endpoints` của acronis: `success`, chạy 3,95h, trả về 2 finding, và
 mọi batch đều timeout. Con số "2" trông như kết luận; thật ra là mảnh vụn.
@@ -74,7 +78,7 @@ trả 200 tăng từ 13 lên 177. Chấm theo phần trăm thô thì tưởng l�
 đáng hỏi tiếp: tag set sai? target chặn hết ở edge? (xem skill
 `recon-surface` phase 3).
 
-Đối chiếu: `guildwars2.com` có 7/24 stage hỏng, cả 3 scan nuclei timeout ở
+Đối chiếu: `guildwars2.com` có 7/24 stage hỏng, mọi scan nuclei timeout ở
 7200s với **0 finding cứu được**. Run đó không phải "target sạch" — nó là
 **không có dữ liệu**. Đừng bao giờ báo cáo con số 0 từ một run như vậy.
 
@@ -115,11 +119,9 @@ hay đó là cắt cố ý:
 
 | stage | nguồn cắt | khoá trong `config.yml` |
 |---|---|---|
-| `nuclei_endpoints` | `url_filter` | `nuclei.endpoints.max_urls`, `max_per_host`, `waf_host_max` |
-| `nuclei_dynamic` | `param_filter` | `nuclei.dynamic.max_urls` |
 | `dirsearch` / `ffuf` / `content_discovery` | `selection` | `*.max_hosts`, `dedup_targets` |
 | `arjun` | `input_urls`→`scanned_urls` | `arjun.max_urls` |
-| mọi nuclei | `batches` | `batch_size`, `batch_timeout`, `timeout` |
+| `nuclei_default` | `batches` | `nuclei.default.batch_size`, `batch_timeout`, `timeout` |
 
 **Cắt cố ý không phải lỗi** — cap tồn tại vì ngân sách có hạn. Lỗi là *không
 biết mình đã cắt gì*. Nhiệm vụ của báo cáo là nói ra ranh giới đó.

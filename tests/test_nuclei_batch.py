@@ -58,7 +58,7 @@ def _fake_run_factory(per_batch_findings, timeouts=None):
 
 def _base(tmp_path, urls):
     base = create_output_structure("x.com", root=str(tmp_path))
-    alive = base / "processed" / "alive_urls.txt"
+    alive = base / "processed" / "alive.txt"
     write_lines(alive, urls)
     return base, alive
 
@@ -70,12 +70,12 @@ def test_batch_off_runs_once_no_batch_files(tmp_path, monkeypatch):
 
     base, alive = _base(tmp_path, [f"https://x.com/p{i}" for i in range(10)])
     # No batch_size → single run
-    res = nuclei_mod.endpoints_scan(alive, base, {"nuclei": {}}, skip=False)
+    res = nuclei_mod.default_scan(alive, base, {"nuclei": {}}, skip=False)
 
     assert state["calls"] == 1
     assert res["count"] == 1
     # no batch_* scratch files created
-    assert not list((base / "raw" / "nuclei_endpoints").glob("batch_*"))
+    assert not list((base / "raw" / "nuclei_default").glob("batch_*"))
     assert "batches" not in (res.get("extra") or {})
 
 
@@ -90,8 +90,8 @@ def test_batch_splits_input_and_merges_findings(tmp_path, monkeypatch):
     monkeypatch.setattr("modules.runner.run", fake)
 
     base, alive = _base(tmp_path, [f"https://x.com/p{i}" for i in range(10)])
-    cfg = {"nuclei": {"endpoints": {"max_urls": 0}, "batch_size": 4}}
-    res = nuclei_mod.endpoints_scan(alive, base, cfg, skip=False)
+    cfg = {"nuclei": {"batch_autotune": False, "batch_size": 4}}
+    res = nuclei_mod.default_scan(alive, base, cfg, skip=False)
 
     assert state["calls"] == 3
     assert [len(x) for x in state["inputs"]] == [4, 4, 2]
@@ -100,7 +100,7 @@ def test_batch_splits_input_and_merges_findings(tmp_path, monkeypatch):
     assert res["extra"]["batches"]["run"] == 3
 
     # final nuclei.json holds all three findings
-    saved = json.loads((base / "findings" / "endpoints" / "nuclei.json").read_text())
+    saved = json.loads((base / "findings" / "default" / "nuclei.json").read_text())
     assert len(saved["findings"]) == 3
 
 
@@ -112,8 +112,8 @@ def test_batch_dedups_findings_across_batches(tmp_path, monkeypatch):
     monkeypatch.setattr("modules.runner.run", fake)
 
     base, alive = _base(tmp_path, [f"https://x.com/p{i}" for i in range(8)])
-    cfg = {"nuclei": {"endpoints": {"max_urls": 0}, "batch_size": 4}}
-    res = nuclei_mod.endpoints_scan(alive, base, cfg, skip=False)
+    cfg = {"nuclei": {"batch_autotune": False, "batch_size": 4}}
+    res = nuclei_mod.default_scan(alive, base, cfg, skip=False)
 
     assert res["count"] == 2           # dup collapsed
 
@@ -128,9 +128,9 @@ def test_batch_continues_past_timed_out_batch(tmp_path, monkeypatch):
     monkeypatch.setattr("modules.runner.run", fake)
 
     base, alive = _base(tmp_path, [f"https://x.com/p{i}" for i in range(8)])
-    cfg = {"nuclei": {"endpoints": {"max_urls": 0},
+    cfg = {"nuclei": {"batch_autotune": False,
                       "batch_size": 4, "batch_on_timeout": "continue"}}
-    res = nuclei_mod.endpoints_scan(alive, base, cfg, skip=False)
+    res = nuclei_mod.default_scan(alive, base, cfg, skip=False)
 
     assert state["calls"] == 2         # did NOT stop at the timeout
     assert res["count"] == 2
@@ -149,9 +149,9 @@ def test_batch_stop_mode_halts_after_first_timeout(tmp_path, monkeypatch):
     monkeypatch.setattr("modules.runner.run", fake)
 
     base, alive = _base(tmp_path, [f"https://x.com/p{i}" for i in range(8)])
-    cfg = {"nuclei": {"endpoints": {"max_urls": 0},
+    cfg = {"nuclei": {"batch_autotune": False,
                       "batch_size": 4, "batch_on_timeout": "stop"}}
-    res = nuclei_mod.endpoints_scan(alive, base, cfg, skip=False)
+    res = nuclei_mod.default_scan(alive, base, cfg, skip=False)
 
     assert state["calls"] == 1         # stopped after the first (timed-out) batch
     assert res["count"] == 1           # ...but kept that batch's finding
@@ -177,13 +177,13 @@ def test_every_batch_timing_out_still_keeps_findings(tmp_path, monkeypatch):
     monkeypatch.setattr("modules.runner.run", fake)
 
     base, alive = _base(tmp_path, [f"https://x.com/p{i}" for i in range(8)])
-    cfg = {"nuclei": {"endpoints": {"max_urls": 0},
+    cfg = {"nuclei": {"batch_autotune": False,
                       "batch_size": 4, "batch_on_timeout": "continue"}}
-    res = nuclei_mod.endpoints_scan(alive, base, cfg, skip=False)
+    res = nuclei_mod.default_scan(alive, base, cfg, skip=False)
 
     assert res["count"] == 2                  # NOT 0 — findings survived
     assert res["extra"]["timed_out"] is True
-    canon = base / "findings" / "endpoints" / "nuclei.json"
+    canon = base / "findings" / "default" / "nuclei.json"
     assert len(json.loads(canon.read_text())["findings"]) == 2
 
 
@@ -197,8 +197,8 @@ def test_single_run_timeout_salvages_findings(tmp_path, monkeypatch):
     monkeypatch.setattr("modules.runner.run", fake)
 
     base, alive = _base(tmp_path, [f"https://x.com/p{i}" for i in range(5)])
-    res = nuclei_mod.endpoints_scan(
-        alive, base, {"nuclei": {"endpoints": {"max_urls": 0}}}, skip=False)
+    res = nuclei_mod.default_scan(
+        alive, base, {"nuclei": {}}, skip=False)
 
     assert state["calls"] == 1                # single run, no batching
     assert res["count"] == 1                  # salvaged, not lost
@@ -220,12 +220,12 @@ def test_stale_jsonl_from_previous_run_is_not_reported(tmp_path, monkeypatch):
     monkeypatch.setattr("modules.runner.run", fake)
 
     base, alive = _base(tmp_path, ["https://x.com/p1"])
-    stale = base / "raw" / "nuclei_endpoints" / "scan.jsonl"
+    stale = base / "raw" / "nuclei_default" / "scan.jsonl"
     stale.parent.mkdir(parents=True, exist_ok=True)
     stale.write_text(json.dumps(_finding("old", "https://x.com/gone")) + "\n")
 
-    res = nuclei_mod.endpoints_scan(
-        alive, base, {"nuclei": {"endpoints": {"max_urls": 0}}}, skip=False)
+    res = nuclei_mod.default_scan(
+        alive, base, {"nuclei": {}}, skip=False)
 
     assert res["count"] == 0
 
@@ -251,8 +251,8 @@ def test_truncated_final_jsonl_line_is_skipped(tmp_path, monkeypatch):
     monkeypatch.setattr("modules.runner.run", fake)
 
     base, alive = _base(tmp_path, ["https://x.com/p1"])
-    res = nuclei_mod.endpoints_scan(
-        alive, base, {"nuclei": {"endpoints": {"max_urls": 0}}}, skip=False)
+    res = nuclei_mod.default_scan(
+        alive, base, {"nuclei": {}}, skip=False)
 
     assert res["count"] == 2      # the two intact findings, not a crash
 
@@ -268,7 +268,7 @@ def test_batch_persists_incrementally_after_each_batch(tmp_path, monkeypatch):
         # each batch writes exactly one finding named after its input size
         jpath.write_text(json.dumps(_finding("t", "https://x.com/a")) + "\n")
         # snapshot the canonical output file as it stands right now
-        canon = jpath.parent.parent.parent / "findings" / "endpoints" / "nuclei.json"
+        canon = jpath.parent.parent.parent / "findings" / "default" / "nuclei.json"
         snapshots.append(canon.exists() and
                          len(json.loads(canon.read_text())["findings"]))
         return {"returncode": 0, "stdout": "", "stderr": "", "missing_binary": False,
@@ -279,8 +279,8 @@ def test_batch_persists_incrementally_after_each_batch(tmp_path, monkeypatch):
     monkeypatch.setattr("modules.runner.run", fake)
 
     base, alive = _base(tmp_path, [f"https://x.com/p{i}" for i in range(8)])
-    cfg = {"nuclei": {"endpoints": {"max_urls": 0}, "batch_size": 4}}
-    nuclei_mod.endpoints_scan(alive, base, cfg, skip=False)
+    cfg = {"nuclei": {"batch_autotune": False, "batch_size": 4}}
+    nuclei_mod.default_scan(alive, base, cfg, skip=False)
 
     # At the moment batch 2 started, batch 1's finding was already on disk.
     # (findings dedupe by key, so both batches share one → second snapshot
@@ -301,12 +301,12 @@ def test_complete_flag_true_only_when_every_batch_finished(tmp_path, monkeypatch
     monkeypatch.setattr("modules.runner.run", fake)
 
     base, alive = _base(tmp_path, [f"https://x.com/p{i}" for i in range(8)])
-    cfg = {"nuclei": {"endpoints": {"max_urls": 0}, "batch_size": 4}}
-    nuclei_mod.endpoints_scan(alive, base, cfg, skip=False)
+    cfg = {"nuclei": {"batch_autotune": False, "batch_size": 4}}
+    nuclei_mod.default_scan(alive, base, cfg, skip=False)
 
-    saved = json.loads((base / "findings" / "endpoints" / "nuclei.json").read_text())
+    saved = json.loads((base / "findings" / "default" / "nuclei.json").read_text())
     assert saved["complete"] is True
-    assert nuclei_mod._outputs_exist(base, "endpoints") is True
+    assert nuclei_mod._outputs_exist(base, "default") is True
 
 
 def test_complete_flag_false_when_a_batch_times_out(tmp_path, monkeypatch):
@@ -320,14 +320,14 @@ def test_complete_flag_false_when_a_batch_times_out(tmp_path, monkeypatch):
     monkeypatch.setattr("modules.runner.run", fake)
 
     base, alive = _base(tmp_path, [f"https://x.com/p{i}" for i in range(8)])
-    cfg = {"nuclei": {"endpoints": {"max_urls": 0}, "batch_size": 4}}
-    res = nuclei_mod.endpoints_scan(alive, base, cfg, skip=False)
+    cfg = {"nuclei": {"batch_autotune": False, "batch_size": 4}}
+    res = nuclei_mod.default_scan(alive, base, cfg, skip=False)
 
     assert res["count"] == 1                      # partial findings kept
-    saved = json.loads((base / "findings" / "endpoints" / "nuclei.json").read_text())
+    saved = json.loads((base / "findings" / "default" / "nuclei.json").read_text())
     assert saved["complete"] is False
     assert len(saved["findings"]) == 1
-    assert nuclei_mod._outputs_exist(base, "endpoints") is False
+    assert nuclei_mod._outputs_exist(base, "default") is False
 
 
 def test_complete_flag_false_when_scan_skipped(tmp_path, monkeypatch):
@@ -335,10 +335,10 @@ def test_complete_flag_false_when_scan_skipped(tmp_path, monkeypatch):
     skip flag must still run the scan."""
     monkeypatch.setattr("modules.runner.tool_available", lambda b: True)
     base, alive = _base(tmp_path, ["https://x.com/p1"])
-    nuclei_mod.endpoints_scan(
-        alive, base, {"nuclei": {"endpoints": {"max_urls": 0}}}, skip=True)
+    nuclei_mod.default_scan(
+        alive, base, {"nuclei": {}}, skip=True)
 
-    assert nuclei_mod._outputs_exist(base, "endpoints") is False
+    assert nuclei_mod._outputs_exist(base, "default") is False
 
 
 # ----------------------------------------------------------------------
@@ -354,9 +354,9 @@ def test_batch_halves_size_after_timeout(tmp_path, monkeypatch):
 
     # 16 URLs, batch 8 → batch 0 (8 urls) times out → remaining 8 run at 4
     base, alive = _base(tmp_path, [f"https://x.com/p{i}" for i in range(16)])
-    cfg = {"nuclei": {"endpoints": {"max_urls": 0, "max_per_host": 0},
+    cfg = {"nuclei": {"batch_autotune": False,
                       "batch_size": 8, "batch_min_size": 1}}
-    res = nuclei_mod.endpoints_scan(alive, base, cfg, skip=False)
+    res = nuclei_mod.default_scan(alive, base, cfg, skip=False)
 
     assert [len(x) for x in state["inputs"]] == [8, 4, 4]
     assert res["extra"]["batches"]["resized"] is True
@@ -375,9 +375,9 @@ def test_batch_resize_stops_at_min_size(tmp_path, monkeypatch):
     monkeypatch.setattr("modules.runner.run", fake)
 
     base, alive = _base(tmp_path, [f"https://x.com/p{i}" for i in range(24)])
-    cfg = {"nuclei": {"endpoints": {"max_urls": 0, "max_per_host": 0},
+    cfg = {"nuclei": {"batch_autotune": False,
                       "batch_size": 8, "batch_min_size": 4}}
-    nuclei_mod.endpoints_scan(alive, base, cfg, skip=False)
+    nuclei_mod.default_scan(alive, base, cfg, skip=False)
 
     # 8 → 4 → floor; never smaller even though every batch timed out
     assert min(len(x) for x in state["inputs"]) == 4
@@ -390,9 +390,8 @@ def test_no_resize_when_batches_complete(tmp_path, monkeypatch):
     monkeypatch.setattr("modules.runner.run", fake)
 
     base, alive = _base(tmp_path, [f"https://x.com/p{i}" for i in range(12)])
-    cfg = {"nuclei": {"endpoints": {"max_urls": 0, "max_per_host": 0},
-                      "batch_size": 4}}
-    res = nuclei_mod.endpoints_scan(alive, base, cfg, skip=False)
+    cfg = {"nuclei": {"batch_autotune": False, "batch_size": 4}}
+    res = nuclei_mod.default_scan(alive, base, cfg, skip=False)
 
     assert [len(x) for x in state["inputs"]] == [4, 4, 4]
     assert res["extra"]["batches"]["resized"] is False
@@ -402,7 +401,7 @@ def test_no_resize_when_batches_complete(tmp_path, monkeypatch):
 # ----------------------------------------------------------------------
 # stage deadline — ``timeout`` used to bound only the un-batched path, so a
 # batched scan ran for batches × batch_timeout with nothing capping it. A
-# real discover.com run spent 4h in nuclei_endpoints under a nominal 3h
+# real discover.com run spent 4h in a nuclei stage under a nominal 3h
 # ``timeout``.
 # ----------------------------------------------------------------------
 def _clock(monkeypatch, step: float):
@@ -425,10 +424,9 @@ def test_stage_timeout_bounds_the_batched_path(tmp_path, monkeypatch):
 
     # 40 URLs / batch 4 → 10 batches wanted, but only 1000s of budget
     base, alive = _base(tmp_path, [f"https://x.com/p{i}" for i in range(40)])
-    cfg = {"nuclei": {"endpoints": {"max_urls": 0, "max_per_host": 0,
-                                    "timeout": 1000},
+    cfg = {"nuclei": {"batch_autotune": False, "default": {"timeout": 1000},
                       "batch_size": 4, "batch_timeout": 900}}
-    res = nuclei_mod.endpoints_scan(alive, base, cfg, skip=False)
+    res = nuclei_mod.default_scan(alive, base, cfg, skip=False)
 
     # 400 + 400 + 200 exhausts the 1000s budget; the 4th batch never starts
     assert state["calls"] == 3
@@ -436,9 +434,9 @@ def test_stage_timeout_bounds_the_batched_path(tmp_path, monkeypatch):
     assert res["extra"]["batches"]["unscanned_urls"] == 28
     assert "stage budget" in res["error"]
     # a stage that stopped short is NOT complete → --resume re-runs it
-    saved = json.loads((base / "findings" / "endpoints" / "nuclei.json").read_text())
+    saved = json.loads((base / "findings" / "default" / "nuclei.json").read_text())
     assert saved["complete"] is False
-    assert nuclei_mod._outputs_exist(base, "endpoints") is False
+    assert nuclei_mod._outputs_exist(base, "default") is False
 
 
 def test_batch_timeout_is_clamped_to_remaining_stage_budget(tmp_path, monkeypatch):
@@ -457,10 +455,9 @@ def test_batch_timeout_is_clamped_to_remaining_stage_budget(tmp_path, monkeypatc
     monkeypatch.setattr("modules.runner.run", fake)
 
     base, alive = _base(tmp_path, [f"https://x.com/p{i}" for i in range(12)])
-    cfg = {"nuclei": {"endpoints": {"max_urls": 0, "max_per_host": 0,
-                                    "timeout": 1000},
+    cfg = {"nuclei": {"batch_autotune": False, "default": {"timeout": 1000},
                       "batch_size": 4, "batch_timeout": 900}}
-    nuclei_mod.endpoints_scan(alive, base, cfg, skip=False)
+    nuclei_mod.default_scan(alive, base, cfg, skip=False)
 
     assert seen == [900, 300]      # 2nd batch clamped to what's left, not 900
 
@@ -478,7 +475,7 @@ def test_stage_timeout_does_not_touch_the_single_run_path(tmp_path, monkeypatch)
     monkeypatch.setattr("modules.runner.run", fake)
 
     base, alive = _base(tmp_path, [f"https://x.com/p{i}" for i in range(3)])
-    cfg = {"nuclei": {"endpoints": {"max_urls": 0, "timeout": 1234}}}
-    nuclei_mod.endpoints_scan(alive, base, cfg, skip=False)
+    cfg = {"nuclei": {"default": {"timeout": 1234}}}
+    nuclei_mod.default_scan(alive, base, cfg, skip=False)
 
     assert seen == [1234]

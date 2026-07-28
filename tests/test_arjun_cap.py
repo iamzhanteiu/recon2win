@@ -207,7 +207,7 @@ def test_discover_uses_text_output_flag_not_json(tmp_path: Path, monkeypatch):
 
 def test_discover_parses_text_output_into_parameterized_urls(tmp_path: Path, monkeypatch):
     """The real end-to-end fix: arjun's text output lands in
-    parameterized_urls.txt so nuclei_dynamic actually gets input."""
+    parameterized_urls.txt so the shortlist actually gets entries."""
     captured: list[str] = []
     _fake_arjun_runner(monkeypatch, captured)
 

@@ -1,6 +1,6 @@
-"""Tests for seeding already-parameterized URLs into nuclei_dynamic input.
+"""Tests for seeding already-parameterized URLs into the param shortlist.
 
-nuclei_dynamic scans only parameterized_urls.txt. URLs that already carry
+parameterized_urls.txt is the hand-testing shortlist. URLs that already carry
 ``?id=1`` in the crawl/waymore output are prime injection targets but only
 reached the dynamic scan if arjun re-discovered them — so a --skip-arjun /
 capped / failed arjun run silently dropped them. seed_parameterized_urls

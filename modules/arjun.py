@@ -293,7 +293,7 @@ def discover(
     # ------------------------------------------------------------------
     # Output flag: arjun's ``-o`` writes JSON ({url: {params, method}}),
     # NOT the ``[200] url`` text you see on the console. We want a flat
-    # list of parameterised URLs to feed nuclei_dynamic, so we use
+    # list of parameterised URLs for the shortlist, so we use
     # ``-oT`` (text) which writes exactly ``https://site/page?id=&q=``
     # (one per line; POST/JSON rows are ``url\t<params>``).
     #
@@ -447,7 +447,7 @@ def discover(
         }
     if failed_chunks or unrun or any_timeout:
         # Report as success-with-a-note: the params we DID collect are
-        # real and downstream (nuclei_dynamic) should use them.
+        # real and the shortlist downstream should use them.
         error = (f"{chunks_run}/{len(chunks)} chunks run, "
                  f"{failed_chunks} crashed, {unrun} skipped (stage budget)")
     return make_result(

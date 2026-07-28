@@ -63,7 +63,6 @@ dirsearch:
     - ~/wordlists/SecLists/Discovery/Web-Content/Service-Specific
 nuclei:
   default: { enabled: true, severity: [critical, high, medium, low, info] }
-  dynamic: { enabled: true, tags: [sqli, xss, lfi, rce, ssrf, ssti, idor] }
 telegram:
   enabled: false
   bot_token: ""
@@ -300,7 +299,9 @@ def _nuclei_default() -> list[dict]:
     ]
 
 
-def _nuclei_dynamic() -> list[dict]:
+def _nuclei_param_findings() -> list[dict]:
+    """Findings on parameterised URLs — same default scan, just the
+    fuzzing-flavoured half of the fixture."""
     return [
         {
             "template-id": "sqli-error-based",
@@ -367,11 +368,6 @@ def _stage_results() -> list[dict]:
          "extra": {"endpoints": 17, "urls": 4, "elapsed_seconds": 5.5}},
         {"stage": "arjun",          "status": "success", "count": 5, "error": None,
          "extra": {"elapsed_seconds": 41.6}},
-        {"stage": "nuclei_dynamic", "status": "success", "count": 3, "error": None,
-         "extra": {
-             "severity_count": {"critical": 1, "high": 1, "medium": 0, "low": 1, "info": 0},
-             "elapsed_seconds": 60.0,
-         }},
         {"stage": "report",         "status": "success", "count": 3, "error": None},
     ]
 
@@ -388,10 +384,9 @@ def populate(output_dir: Path, domain: str) -> dict:
     raw_ar = output_dir / "raw" / "arjun"
     proc = output_dir / "processed"
     fnd_def = output_dir / "findings" / "default"
-    fnd_dyn = output_dir / "findings" / "dynamic"
     logs = output_dir / "logs"
     for d in (raw_sub, raw_cd, raw_ds, raw_wm, raw_ar,
-              proc, fnd_def, fnd_dyn, logs):
+              proc, fnd_def, logs):
         d.mkdir(parents=True, exist_ok=True)
 
     subs = _subdomains()
@@ -453,8 +448,7 @@ def populate(output_dir: Path, domain: str) -> dict:
     (raw_ar / "input_subset.txt").write_text("\n".join(param_urls) + "\n")
 
     # findings/<kind>/
-    n_def = _nuclei_default()
-    n_dyn = _nuclei_dynamic()
+    n_def = _nuclei_default() + _nuclei_param_findings()
     (fnd_def / "nuclei.txt").write_text(
         "\n".join(f["matched-at"] for f in n_def) + "\n")
     (fnd_def / "nuclei.json").write_text(json.dumps({
@@ -465,18 +459,6 @@ def populate(output_dir: Path, domain: str) -> dict:
             "medium":   sum(1 for f in n_def if f["info"]["severity"] == "medium"),
             "low":      sum(1 for f in n_def if f["info"]["severity"] == "low"),
             "info":     sum(1 for f in n_def if f["info"]["severity"] == "info"),
-        },
-    }, indent=2))
-    (fnd_dyn / "nuclei.txt").write_text(
-        "\n".join(f["matched-at"] for f in n_dyn) + "\n")
-    (fnd_dyn / "nuclei.json").write_text(json.dumps({
-        "findings": n_dyn,
-        "severity_count": {
-            "critical": sum(1 for f in n_dyn if f["info"]["severity"] == "critical"),
-            "high":     sum(1 for f in n_dyn if f["info"]["severity"] == "high"),
-            "medium":   sum(1 for f in n_dyn if f["info"]["severity"] == "medium"),
-            "low":      sum(1 for f in n_dyn if f["info"]["severity"] == "low"),
-            "info":     sum(1 for f in n_dyn if f["info"]["severity"] == "info"),
         },
     }, indent=2))
 
@@ -494,7 +476,6 @@ def populate(output_dir: Path, domain: str) -> dict:
         "[2026-06-23T10:03:25Z] [httpx_urls] httpx -l processed/all_urls.txt -json",
         f"[2026-06-23T10:03:30Z] [xnlinkfinder] xnlinkfinder -i https://{domain}/static/app.js",
         "[2026-06-23T10:04:15Z] [arjun] arjun -i processed/dynamic_urls.txt -o processed/arjun_params.txt",
-        "[2026-06-23T10:04:56Z] [nuclei_dynamic] nuclei -l processed/parameterized_urls.txt -tags sqli,xss,ssrf",
     ]
     (logs / "commands.log").write_text("\n".join(cmd_lines) + "\n")
     (logs / "stages.json").write_text(json.dumps([], indent=2))
@@ -567,8 +548,7 @@ def main() -> int:
     c = j["counts"]
     print("Counts:")
     for k in ("subdomains", "resolved", "alive_hosts", "all_urls", "js_urls",
-              "dynamic_urls", "parameterized_urls", "nuclei_default_findings",
-              "nuclei_dynamic_findings"):
+              "dynamic_urls", "parameterized_urls", "nuclei_default_findings"):
         print(f"  {k:<28} {c.get(k, 0):>6,}")
     print()
     print(f"High-value targets  : {len(j['high_value_targets'])}")

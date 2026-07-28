@@ -6,7 +6,7 @@ In ra dạng gọn (vài KB) để nạp vào context — KHÔNG dump stages.jso
     python3 .claude/skills/recon-health/audit.py outputs/<domain>
 
 Vì sao cần: ``status`` của stage nói dối. Trong logs/stages.json thật,
-``dirsearch`` và ``nuclei_endpoints`` đều mang ``status: success`` trong khi
+``dirsearch`` và các stage nuclei đều mang ``status: success`` trong khi
 một cái timeout ở 4484s còn cái kia timeout toàn bộ batch — thông tin đó chỉ
 nằm ở ``error`` và ``extra.timed_out``. Một run "26/26 success" có thể đã bỏ
 qua 88% bề mặt mà không dòng nào nói ra.
@@ -38,7 +38,7 @@ def _stages(run: Path) -> list[dict]:
 #   REDUNDANT — bỏ bản sao / bỏ thứ chắc chắn vô ích. Không mất gì.
 #   UNSEEN    — cắt vì hết ngân sách. Đây mới là bề mặt chưa từng nhìn.
 # Thiếu phân biệt này thì một bộ lọc chọn lọc tốt bị chấm điểm như một vụ
-# cắt xén: bản sửa nuclei_endpoints hạ 2000 → 482 URL nhưng số URL trả 200
+# cắt xén: một bản sửa cũ hạ 2000 → 482 URL nhưng số URL trả 200
 # tăng 13 → 177; nhìn riêng phần trăm thì tưởng là bước lùi.
 REDUNDANT_FIELDS = ("deduped", "per_host_capped", "dropped_no_param",
                     "waf_skipped", "param_collapsed")

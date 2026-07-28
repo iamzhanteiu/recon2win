@@ -14,8 +14,7 @@ Automated recon framework that follows a strict 9-stage workflow
    ├─ 4.1  katana + urlfinder + gau collection       → raw/{katana,urlfinder,gau}_urls.txt
    ├─ 4.2  dirsearch (SecLists wordlists +/or sensitive ext) → processed/dirsearch_urls.txt
    ├─ 4.3  ffuf (-ac/-ach + recursive dirs, per host) → processed/ffuf_urls.txt
-   ├─ 4.4  waymore (archived URLs + JS)              → processed/waymore_urls.txt
-   └─ 4.5  nuclei default scan                      → findings/default/nuclei.{txt,json}
+   └─ 4.4  waymore (archived URLs + JS)              → processed/waymore_urls.txt
 5. Merge                                                    → processed/all_urls.txt
    + processed/js_urls.txt, processed/dynamic_urls.txt
    + mine new in-scope subdomains from URLs → processed/url_derived_subdomains.txt
@@ -27,10 +26,9 @@ Automated recon framework that follows a strict 9-stage workflow
        re-merge xnlinkfinder + jsluice output back into all_urls.txt
 7. Arjun on dynamic_urls.txt                        → processed/parameterized_urls.txt
    + seed already-param URLs (arjun-independent) + jsluice params
-8. Nuclei endpoints scan (discovered alive URLs)    → findings/endpoints/nuclei.{txt,json}
-9. Nuclei dynamic scan                              → findings/dynamic/nuclei.{txt,json}
-10. Final Telegram summary  (HTML report path included)
-11. Generate final report   → report/final_report.{html,md} + summary.json + priority_targets.txt + delta.md
+8. Nuclei default scan (alive hosts) — the last scan → findings/default/nuclei.{txt,json}
+9. Final Telegram summary  (HTML report path included)
+10. Generate final report  → report/final_report.{html,md} + summary.json + priority_targets.txt + delta.md
 ```
 
 ## Quick start
@@ -58,7 +56,6 @@ python3 main.py -d example.com --config config.yml
 | `arjun` → `AttributeError: 'dict' object has no attribute 'status_code'` in `logs/arjun.log` | Upstream bug in arjun ≤2.2.7: it prints `request.status_code` on a dict the moment a target answers 400/413/418/429/503, killing the whole invocation | Fixed automatically — the stage patches the installed `arjun/__main__.py` before running (`arjun.patch_upstream: true`, backup kept as `__main__.py.recon2win.bak`). If site-packages is read-only, `extra.upstream_patch` in `stages.json` says `failed: …`; install arjun with `pip install --user` or fix it by hand |
 | `arjun` → hours spent on a handful of URLs (`Processing chunks: n/103` crawling) | `arjun.stable: true` — `--stable` sleeps a random 3–9s before **every** request (~660s per URL) and overrides `rate_limit` | Leave `arjun.stable: false` (the default); only turn it on when arjun reports the target is rate-limiting, and drop `max_urls` to ~20 when you do |
 | `xnlinkfinder` → `failed (count=0, 1200s)` | xnLinkFinder hangs on a single slow JS URL | Lower `xnlinkfinder.timeout` *or* pre-filter `js_urls.txt` |
-| `nuclei_dynamic` → `skipped (input file empty or missing)` | Cascade from `arjun` failing | Fix arjun (above) and the cascade clears |
 
 ### `setup.py` — environment bootstrap
 
@@ -97,7 +94,7 @@ python3 setup.py --no-color            # disable ANSI colors
 | `--config PATH`        | YAML config (default: `config.yml`)                       |
 | `--resume`             | Skip stages whose expected outputs already exist          |
 | `--dry-run`            | Print the plan and exit — never invokes external tools    |
-| `--skip-nuclei`        | Skip both nuclei default and nuclei dynamic scans         |
+| `--skip-nuclei`        | Skip the nuclei default scan                              |
 | `--skip-dirsearch`     | Skip the dirsearch sensitive-extension scan               |
 | `--skip-ffuf`          | Skip the ffuf recursive fuzzing stage                     |
 | `--skip-waymore`       | Skip the waymore archived-URL collection                  |
@@ -122,12 +119,11 @@ at a glance, especially when parallel stages interleave (stage 4 runs
 | `dirsearch`          | bright yellow  |
 | `ffuf`               | orange         |
 | `waymore`            | yellow         |
-| `nuclei_default`     | bright red     |
 | `url_merge`          | white          |
 | `httpx_urls`         | cyan           |
 | `xnlinkfinder`       | bright green   |
 | `arjun`              | green          |
-| `nuclei_dynamic`     | red            |
+| `nuclei_default`     | bright red     |
 | `report`             | bright white   |
 
 Status glyphs:
@@ -217,9 +213,7 @@ outputs/<domain>/
 │   ├── alive_urls.txt, alive_urls_detail.json
 │   └── arjun_params.txt, parameterized_urls.txt
 ├── findings/                           # nuclei + jsluice secrets
-│   ├── default/                        # nuclei.json, nuclei.txt (root hosts)
-│   ├── endpoints/                      # nuclei.json, nuclei.txt (discovered URLs)
-│   ├── dynamic/                        # nuclei.json, nuclei.txt (param URLs)
+│   ├── default/                        # nuclei.json, nuclei.txt (alive hosts)
 │   └── jsluice_secrets.json            # secrets found in JS (kind/severity/url)
 ├── logs/
 │   ├── commands.log                    # cumulative command history (UTC ts + argv)
@@ -675,14 +669,14 @@ jsluice recovered **21** real routes (e.g. `/docs/src/routes/users.php`).
    scope-filters to the target domain (drops CDN/tracker noise).
 4. Writes `processed/jsluice_{urls,endpoints}.txt` +
    `processed/jsluice_params.json` + `findings/jsluice_secrets.json`.
-5. Endpoints/URLs are merged back into `all_urls.txt` (→ httpx → nuclei);
+5. Endpoints/URLs are merged back into `all_urls.txt` (→ httpx);
    parameterised ones flow on to arjun. Secrets fire a Telegram alert.
-6. **Param intel → nuclei_dynamic:** between arjun (7) and nuclei_dynamic
-   (8), `jsluice_params.json` (`{url, method, queryParams, bodyParams}`) is
+6. **Param intel → shortlist:** right after arjun (stage 8),
+   `jsluice_params.json` (`{url, method, queryParams, bodyParams}`) is
    turned into fuzzable URLs (`base?p1=&p2=`) and merged into
-   `parameterized_urls.txt`. This gives nuclei the **POST/JSON body params
+   `parameterized_urls.txt`. This surfaces the **POST/JSON body params
    arjun never sees** (arjun is GET-only + capped) — and still works when
-   arjun is skipped, since jsluice params alone can drive the dynamic scan.
+   arjun is skipped, since jsluice params alone can populate the shortlist.
 
 ```yaml
 jsluice:
@@ -696,36 +690,39 @@ jsluice:
 Skip it entirely with `--skip-jsluice`. If the `jsluice` binary is missing
 the stage is skipped with a warning (optional stage), like the other JS tools.
 
-## Nuclei — three passes + fresh templates
+## Nuclei — one pass, last in the pipeline + fresh templates
 
-Nuclei runs against three target sets so coverage isn't limited to root hosts:
+Nuclei runs exactly once, as the final stage before the report:
 
 | Pass | Input | Templates | Findings dir |
 |---|---|---|---|
-| default | alive hosts | full set | `findings/default/` |
-| endpoints | discovered live URLs (`alive_urls.txt`) | critical/high/medium | `findings/endpoints/` |
-| dynamic | parameterized URLs | the whole DAST corpus (`-dast`, no tag filter) | `findings/dynamic/` |
+| default | alive hosts (`alive.txt`) | full set | `findings/default/` |
 
-Before any pass, `nuclei -update-templates` refreshes the template store
+It deliberately runs **on its own** rather than beside content discovery, so
+it never shares its rate budget with the four crawlers — on a target that
+already answers 403 from the edge, opening connections slowly matters more
+than raw throughput.
+
+> **Known trade-off:** nuclei only sees the root hosts. Endpoints that
+> katana / dirsearch / jsluice / waymore discover are *not* scanned; they
+> land in `processed/alive_urls.txt` and `processed/parameterized_urls.txt`
+> for hand-testing, and feed `report/priority_targets.txt`. Two earlier
+> passes (`endpoints` on discovered URLs, `dynamic` with `-dast` on
+> parameterised URLs) were removed on 2026-07-28.
+
+Before the pass, `nuclei -update-templates` refreshes the template store
 once per run (stale templates miss recent CVEs — the biggest silent quality
 drain on a scanner). It's a fast no-op when already current; disable with
 `nuclei.update_templates: false` (air-gapped hosts / pinned versions).
 
-## What nuclei_dynamic actually scans
+## `parameterized_urls.txt` — the hand-testing shortlist
 
-`nuclei_dynamic` (stage 8) fuzzes nuclei's DAST templates against
-`parameterized_urls.txt`. It runs with `-dast` and **no** `-tags` filter on
-purpose: `-dast` already restricts the run to the fuzzing corpus (54 loadable
-templates on nuclei-templates v10.4.6 — the `dast/` tree holds 249 files but
-192 are `flow: headless` CSP-bypass checks that need `-headless`), so adding
-tags only subtracts. The tag set this repo used to ship cut 54 → 41, silently
-dropping cmdi, crlf, open-redirect, rfi, xinclude, csv-injection and the DAST
-CVE templates. Payload breadth is set by `nuclei.dynamic.fuzz_aggression`
-(`medium` here; measured 191 → 236 requests per 2-param URL vs nuclei's
-`low` default).
+Stage 8 builds `processed/parameterized_urls.txt`: every endpoint the run
+found that takes a parameter. Nothing scans it automatically — it is the
+list you open in Burp/curl, and it feeds `report/priority_targets.txt`.
 
-`parameterized_urls.txt` is the **union** of three sources,
-so an endpoint reaches the dynamic scan if *any* of them has a param for it:
+It is the **union** of three sources, so an endpoint lands in it if *any*
+of them has a param for it:
 
 ```
 parameterized_urls.txt = {URLs that already carry ?a=1 in the crawl output}
@@ -735,10 +732,10 @@ parameterized_urls.txt = {URLs that already carry ?a=1 in the crawl output}
 
 The first set is seeded **independently of arjun** (from `dynamic_urls.txt`).
 This matters: arjun is capped (`max_urls`) and optional (`--skip-arjun`), so
-without the seed, obvious injection targets like `/list?id=1` would be dropped
-from the dynamic scan whenever arjun is skipped, capped, or fails — even though
-they were sitting in the crawl results. On the `vulnweb.com` test target this
-is the difference between nuclei_dynamic scanning **0** URLs and **752**.
+without the seed, obvious injection targets like `/list?id=1` would be missing
+whenever arjun is skipped, capped, or fails — even though they were sitting in
+the crawl results. On the `vulnweb.com` test target this is the difference
+between a shortlist of **0** URLs and **752**.
 
 ## Arjun tunables (input capping)
 

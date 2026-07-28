@@ -5,7 +5,7 @@ Two failure modes from a real large-target run motivate these:
     (``httpx.max_url_check``) to the highest-value URLs first.
   * On timeout httpx has already streamed partial results to ``-o``;
     we salvage them so ``alive_urls.txt`` isn't empty — an empty file
-    silently STARVES nuclei_endpoints (it skips on empty input).
+    silently STARVES every stage that reads alive_urls.txt.
 """
 from __future__ import annotations
 
@@ -128,7 +128,7 @@ def test_check_urls_salvages_partial_on_timeout(tmp_path: Path, monkeypatch):
 
     alive = tmp_path / "processed" / "alive_urls.txt"
     # The critical property: alive_urls.txt is NOT empty after a timeout,
-    # so nuclei_endpoints downstream has real input.
+    # so the stages downstream have real input.
     assert read_lines(alive) == ["https://x.com/a", "https://x.com/b"]
     assert res["status"] == "failed"          # honestly flags the timeout
     assert res["count"] == 2                   # but reports salvaged data

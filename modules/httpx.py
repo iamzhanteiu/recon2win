@@ -88,8 +88,8 @@ def _write_alive_from_detail(detail_json: Path, alive_txt: Path) -> int:
     """Parse the httpx JSONL output and write the de-duped alive URL list.
 
     Shared by the success and salvaged-timeout paths so a partial run
-    still leaves ``alive_urls.txt`` populated for the downstream
-    nuclei_endpoints stage.
+    still leaves ``alive_urls.txt`` populated for the report and the
+    priority ranking downstream.
     """
     rows = _parse_httpx_jsonl(detail_json)
     seen: set[str] = set()
@@ -303,8 +303,8 @@ def check_urls(
     # A hard failure (binary error, not a timeout) leaves nothing to
     # salvage. A timeout is different: httpx streams results to ``-o`` as
     # it goes, so the partial JSONL on disk is real, live-verified data.
-    # Salvaging it keeps alive_urls.txt populated so nuclei_endpoints
-    # isn't starved — we just flag the stage so the operator knows the
+    # Salvaging it keeps alive_urls.txt populated so the downstream
+    # ranking isn't starved — we flag the stage so the operator knows the
     # probe didn't finish the full list.
     timed_out = r.get("timed_out", False)
     if not r["success"] and not r["missing_binary"] and not timed_out:
