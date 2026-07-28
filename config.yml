@@ -621,15 +621,36 @@ nuclei:
     - udp
   default:
     enabled: true
-    # critical,high,medium only — NO info/low. ``info`` alone is the
-    # bulk of nuclei's ~9k-template set (tech/version detection), so
-    # all-severity made even a 180-host default scan wall at the 7200s
-    # timeout and report 0 findings. Drop info/low and it finishes;
-    # re-add them here for a deep pass on a small curated host list.
+    # 2026-07-28: BẬT ĐỦ CẢ 5 SEVERITY theo yêu cầu.
+    #
+    # Ghi chú cũ ở đây nói "info là phần lớn bộ ~9k template, bật vào là
+    # scan chết ở timeout". Điều đó ĐÚNG khi chưa có ``tags`` bên dưới, và
+    # SAI kể từ khi có. Đo bằng ``nuclei -tl`` ngày 2026-07-28:
+    #
+    #                                    có tags   không tags
+    #   critical,high,medium               5.524       7.400
+    #   critical,high,medium,info          7.511      12.419
+    #   + low  (tức đủ 5)                  7.879          —
+    #
+    # Tag filter hấp thụ gần hết phần phình ra: đủ 5 severity chỉ +43%
+    # template (5.524 → 7.879) thay vì +68% như khi không lọc tag.
+    # Chi phí thời gian tương ứng ~+43%. Số đo thật trên discover.com
+    # (157 host, 5.525 template, một run không batch): ~80 phút ⇒ đủ 5
+    # severity là ~115 phút, vẫn dư xa dưới ``timeout: 25200`` (7h).
+    #
+    # ĐÁNH ĐỔI ĐÃ BIẾT: phần lớn cái thêm vào là template phát hiện
+    # công nghệ/phiên bản — nhiều finding, ít cái báo cáo được. Đọc report
+    # thì lọc theo severity trước, đừng đọc từ trên xuống.
+    #
+    # KHI ĐỔI ``tags`` thì phải đo lại: bỏ tag filter đi mà vẫn để đủ 5
+    # severity là vọt lên trên 12.419 template, tức đúng cái kịch bản làm
+    # scan chết mà ghi chú cũ mô tả.
     severity:
       - critical
       - high
       - medium
+      - low
+      - info
     # Template tag filter. severity=critical,high,medium STILL leaves
     # ~7400 templates (measured: `nuclei -tl -severity critical,high,medium`
     # → 7401), and 562 alive hosts × 7401 templates at rate_limit=100 is
