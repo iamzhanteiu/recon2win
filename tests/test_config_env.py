@@ -1,7 +1,5 @@
-import os
 from pathlib import Path
-import yaml
-import pytest
+
 from main import _resolve_env_vars, _load_config
 
 def test_resolve_env_vars(monkeypatch):

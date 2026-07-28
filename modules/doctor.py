@@ -115,7 +115,9 @@ def run(cfg: dict, *, added_paths: list[str] | None = None) -> int:
     key_rows = _check_keys(cfg)
     wl_rows = _check_wordlists(cfg)
 
-    ok = lambda b: console.c("✓", "green") if b else console.c("✗", "red")
+    def ok(b):
+        return console.c("✓", "green") if b else console.c("✗", "red")
+
     warn = console.c("⚠", "yellow")
 
     print(console.phase_header("doctor — preflight check"))
