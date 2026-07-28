@@ -779,6 +779,54 @@ telegram:
   # a "live progress feed" experience; turn off for milestone-only updates.
   per_phase: true
 
+# ---------- API documentation discovery (apidocs) ----------
+# Một tài liệu OpenAPI/Swagger là artefact giá trị nhất trong recon web: nó
+# đưa thẳng mọi route, mọi tham số, mọi auth scheme mà chính dev đã viết ra.
+# Một cú trúng /v3/api-docs đáng giá hơn cả ngày brute-force thư mục.
+#
+# Endpoint moi ra được ghi thành URL tuyệt đối rồi merge vào all_urls.txt
+# (→ httpx → nuclei); tham số khai báo trong spec chảy vào
+# parameterized_urls.txt.
+apidocs:
+  enabled: true
+
+  # --- 1. Dò chủ động trên alive host ---
+  probe: true
+  # CHI PHÍ: mỗi host × mỗi path = MỘT request. Danh sách mặc định ~60 path,
+  # nên 154 host (discover.com) ≈ 9.200 request. Đó là lý do có max_hosts:
+  # 500 host sẽ thành 30.000 request, ngang một stage fuzzing.
+  max_hosts: 300
+  threads: 40
+  http_timeout: 10
+  timeout: 1800
+  # 401/403 vẫn giữ: một /v3/api-docs trả 401 nghĩa là spec CÓ TỒN TẠI và
+  # chỉ thiếu credential — đó là finding, không phải kết quả rỗng.
+  match_codes: "200,401,403"
+  # Thêm path riêng của target (phải bắt đầu bằng "/").
+  extra_paths: []
+
+  # --- 2. OSINT ngoài ---
+  osint: true
+  # Postman public workspace search. Dùng backend search của chính
+  # postman.com — không chính thức, không version, nên mọi lỗi (mạng, đổi
+  # shape, trả HTML) đều bị nuốt và coi như "không có kết quả".
+  #
+  # LỌC BẮT BUỘC: chỉ giữ kết quả có tên chứa token của domain. Đo ngày
+  # 2026-07-28: tìm "discover.com" trả về "Postman Public Workspace" ở
+  # score 252 — cao hơn cả một hit thật của org nhỏ. Tin score suông là
+  # biến stage này thành máy sinh nhiễu.
+  postman: true
+  postman_limit: 25
+  # GitHub code search — BẮT BUỘC có token, API này từ chối request ẩn danh.
+  # Để trống thì bỏ qua, stage vẫn chạy phần probe bình thường.
+  github_token: "${GITHUB_TOKEN}"
+
+  # SwaggerHub CỐ TÌNH KHÔNG CÓ ở đây. Đã thử ngày 2026-07-28:
+  # /specs?query=<q> có lọc (totalCount đổi) nhưng trả kết quả theo thứ tự
+  # ALPHABET chứ không theo độ liên quan — "stripe" ra 4.457 kết quả mà
+  # trang đầu không có cái nào tên Stripe, và sort=BEST_MATCH cũng vậy.
+  # Không có cách nào triage được, nên thêm vào chỉ tổ sinh rác.
+
 # ---------- HackerOne (optional) ----------
 # Pull target scope straight from the H1 Hacker API instead of copy-pasting:
 #   python3 main.py --h1-list                 # list your programs

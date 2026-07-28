@@ -101,11 +101,11 @@ def test_phase_color_mapping():
 # phase_number
 # ----------------------------------------------------------------------
 def test_phase_number_known_stage():
-    assert console.phase_number("subdomain") == "[01/15]"
-    assert console.phase_number("dnsx") == "[02/15]"
-    assert console.phase_number("ffuf") == "[06/15]"
+    assert console.phase_number("subdomain") == "[01/16]"
+    assert console.phase_number("dnsx") == "[02/16]"
+    assert console.phase_number("ffuf") == "[06/16]"
     # nuclei_default is the last scan, right before the report
-    assert console.phase_number("nuclei_default") == "[14/15]"
+    assert console.phase_number("nuclei_default") == "[15/16]"
 
 
 def test_phase_number_unknown_stage_returns_empty():
@@ -114,7 +114,7 @@ def test_phase_number_unknown_stage_returns_empty():
 
 def test_phase_number_zero_pads():
     console.set_enabled(True)
-    assert console.phase_number("arjun").startswith("[13/15")
+    assert console.phase_number("arjun").startswith("[14/16")
 
 
 # ----------------------------------------------------------------------
@@ -126,7 +126,7 @@ def test_phase_header_has_label_when_enabled():
     assert "subdomain" in out
     # Wide rule
     assert "━" in out
-    assert "[01/15]" in out
+    assert "[01/16]" in out
     # Colored bright_cyan + bold
     assert "\033[96m" in out  # bright_cyan
     assert "\033[1m" in out   # bold
@@ -396,10 +396,10 @@ def test_phase_colors_are_distinct_enough():
     for color, count in counts.items():
         if count == 1:
             continue
-        # The only permitted sharing is within the nuclei family: the three
-        # nuclei scans (default/endpoints/dynamic) are the same tool run
-        # sequentially — they never interleave, so a shared red shade is OK
-        # (16 stages vs 15 usable colors; black is invisible on dark themes).
+        # No sharing is permitted any more. The old exception covered the
+        # three nuclei scans (default/endpoints/dynamic) sharing a red
+        # shade; two of them were dropped from the pipeline, which freed
+        # ``red`` for apidocs — so every stage now has its own colour.
         sharers = [s for s, c in console.PHASE_COLORS.items() if c == color]
         assert all(s.startswith("nuclei_") for s in sharers), (
             f"color {color!r} used by non-family stages {sharers} — "

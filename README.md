@@ -21,9 +21,11 @@ Automated recon framework that follows a strict 9-stage workflow
 6. PARALLEL
    ├─ 6.1  httpx on all_urls.txt                    → processed/alive_urls.txt
    ├─ 6.2  xnLinkFinder on js_urls.txt (regex)      → processed/xnlinkfinder_{endpoints,urls}.txt
-   └─ 6.3  jsluice on js_urls.txt (AST)             → processed/jsluice_{endpoints,urls}.txt
-                                                       + findings/jsluice_secrets.json
-       re-merge xnlinkfinder + jsluice output back into all_urls.txt
+   ├─ 6.3  jsluice on js_urls.txt (AST)             → processed/jsluice_{endpoints,urls}.txt
+   │                                                   + findings/jsluice_secrets.json
+   └─ 6.4  api-docs probe + OSINT                   → processed/apidocs_{urls,params}.txt
+                                                       + findings/api_docs.json
+       re-merge xnlinkfinder + jsluice + apidocs output back into all_urls.txt
 7. Arjun on dynamic_urls.txt                        → processed/parameterized_urls.txt
    + seed already-param URLs (arjun-independent) + jsluice params
 8. Nuclei default scan (alive hosts) — the last scan → findings/default/nuclei.{txt,json}
@@ -99,6 +101,7 @@ python3 setup.py --no-color            # disable ANSI colors
 | `--skip-ffuf`          | Skip the ffuf recursive fuzzing stage                     |
 | `--skip-waymore`       | Skip the waymore archived-URL collection                  |
 | `--skip-arjun`         | Skip the arjun parameter discovery                        |
+| `--skip-apidocs`       | Skip the API-docs probe + external OSINT stage             |
 | `--skip-xnlinkfinder`  | Skip the xnLinkFinder JS scan                             |
 | `--skip-jsluice`       | Skip the jsluice AST JS analysis (endpoints + secrets)    |
 | `--color`              | Force ANSI colors even when stdout is not a TTY (CI, tmux capture) |
@@ -297,7 +300,7 @@ After the workflow completes, the framework writes three artefacts to
 | `final_report.md`   | Flat Markdown mirror for quick terminal review. |
 | `summary.json`      | The same structured data the report renders, as JSON (for downstream tooling). |
 
-The report has 13 sections:
+The report has 14 sections:
 
 1. Executive Summary — target / timing / mode / config
 2. Recon Coverage Summary — KPI cards + clickable source counts
@@ -314,6 +317,8 @@ The report has 13 sections:
    7.1 Forms & Input Surface — every `<form>` the crawler saw, **ranked by
    testing value**: uploads first, then POST bodies, then forms carrying
    auth/identity fields
+   7.2 API Documentation — parsed OpenAPI/Swagger specs (paths / auth
+   schemes / document URL), docs UIs, and external Postman/GitHub hits
 8. Nuclei Findings — **grouped by severity**, with template / name / URL / matcher / evidence
 9. High-Value Targets — auto-detected admin / login / API / env / git / backups
 10. Errors / Skipped / Missing Tools — clickable link to `commands.log`
@@ -759,6 +764,63 @@ without the seed, obvious injection targets like `/list?id=1` would be missing
 whenever arjun is skipped, capped, or fails — even though they were sitting in
 the crawl results. On the `vulnweb.com` test target this is the difference
 between a shortlist of **0** URLs and **752**.
+
+## API documentation discovery (stage 6.4)
+
+An OpenAPI/Swagger document is the highest-signal artefact in web recon: it
+hands over every route, parameter and auth scheme the developers wrote
+down. One `/v3/api-docs` hit beats a day of directory brute-forcing.
+
+Two independent sources, both fail-soft:
+
+**1. Active probe.** ~60 well-known paths (`/openapi.json`, `/v3/api-docs`,
+`/swagger-ui.html`, `/graphql`, `/wp-json`, `/actuator`,
+`/.well-known/openid-configuration`, …) against every alive host, via httpx
+with `-irr` so the body comes back. Cost is `hosts × paths` requests — 154
+hosts is ~9.2k — hence `apidocs.max_hosts` (default 300). `401/403` is kept
+as a match: a `/v3/api-docs` behind auth still proves the spec exists.
+
+**A 200 is not a spec.** Plenty of SPA hosts answer 200-with-index.html on
+*every* path, so a status-code check alone would report a swagger doc on
+every host in the run. Nothing counts unless the body parses as OpenAPI or
+Swagger — see `apidocs.parse_spec()`, which requires both the version key
+and a `paths` object.
+
+Parsed specs become absolute URLs merged into `all_urls.txt` (→ httpx →
+nuclei), and their **declared query parameters** go straight to
+`parameterized_urls.txt`. Path templates keep their `{id}` placeholders:
+substituting a guessed value would fabricate a URL nobody observed.
+
+**2. External OSINT.** Public Postman workspaces, plus GitHub code search
+when `apidocs.github_token` is set (GitHub rejects anonymous code search).
+
+Postman results are filtered on **word boundaries against the domain's
+distinctive tokens**, not substrings, and restricted to workspaces and
+collections. Measured against live data on 2026-07-28: searching
+`discover.com` with substring matching returned 25 results — "Bloomreach -
+Discovery Workspace", "Ticketmaster Discovery API", "discover posts" — none
+of them the target, because `discover` is a substring of `Discovery`. Word
+boundaries cut that to 4, all genuinely naming "Discover". Score is not
+usable as a filter on its own: "Postman Public Workspace" scored 252 for
+that query, above where a real hit for a small org would land.
+
+**SwaggerHub is deliberately absent.** Its public `/specs?query=` endpoint
+does filter (totalCount changes) but returns results in *alphabetical*
+order, not by relevance — a `stripe` query yields 4,457 results whose first
+page contains nothing named Stripe, and `sort=BEST_MATCH` behaves the same.
+There is no way to triage that, so including it would only generate noise.
+
+```yaml
+apidocs:
+  enabled: true
+  probe: true
+  max_hosts: 300          # hosts × ~60 paths = requests; cap it
+  match_codes: "200,401,403"
+  extra_paths: []         # target-specific paths, must start with "/"
+  osint: true
+  postman: true
+  github_token: "${GITHUB_TOKEN}"   # empty → GitHub search skipped
+```
 
 ## Arjun tunables (input capping)
 

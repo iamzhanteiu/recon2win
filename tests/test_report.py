@@ -230,6 +230,31 @@ def fake_outputs(tmp_path: Path) -> Path:
          "queryParams": ["q"], "bodyParams": []},
     ]))
 
+    # processed/apidocs_* + findings/api_docs.json — API documentation
+    (proc / "apidocs_urls.txt").write_text(
+        "https://api.example.com/v2/users\n"
+        "https://api.example.com/v2/users/{id}\n"
+    )
+    (proc / "apidocs_params.txt").write_text(
+        "https://api.example.com/v2/users?page=&limit=\n"
+    )
+    (base / "findings" / "api_docs.json").write_text(json.dumps({
+        "specs": [{
+            "url": "https://api.example.com/openapi.json",
+            "kind": "openapi", "version": "3.0.1", "title": "Billing API",
+            "api_version": "2.1", "paths": 2,
+            "methods": {"get": 2, "post": 1},
+            "security_schemes": ["bearerAuth"],
+            "servers": ["https://api.example.com/v2"],
+        }],
+        "ui": [{"url": "https://example.com/swagger-ui.html", "status": 200}],
+        "discovery": [],
+        "osint": [{"source": "postman", "kind": "workspace",
+                   "name": "Example Public API", "score": 310,
+                   "url": "https://www.postman.com/example-api", "id": ""}],
+        "probe": {"hosts": 2, "paths": 60, "requests": 120, "responses": 3},
+    }))
+
     # processed/forms.json — forms/inputs mined from the crawl
     (proc / "forms.json").write_text(json.dumps({
         "forms": [
@@ -1163,3 +1188,44 @@ def test_report_survives_missing_forms_and_jsluice(tmp_path: Path):
     assert "No forms extracted" in html
     md = b.render_markdown(data)
     assert "_No forms extracted from the crawl._" in md
+
+
+# ----------------------------------------------------------------------
+# API documentation section
+# ----------------------------------------------------------------------
+def test_collect_counts_api_docs(fake_outputs: Path):
+    data = ReportBuilder(_make_inputs(fake_outputs)).collect()
+    c = data["counts"]
+    assert c["api_specs"] == 1
+    assert c["api_documented_paths"] == 2
+    assert c["api_docs_ui"] == 1
+    assert c["api_osint"] == 1
+    assert c["apidocs_urls"] == 2
+
+
+def test_html_shows_api_docs_section(fake_outputs: Path):
+    b = ReportBuilder(_make_inputs(fake_outputs))
+    html = b.render_html(b.collect())
+    assert "7.2 API Documentation" in html
+    assert "Billing API" in html
+    assert "bearerAuth" in html
+    assert "swagger-ui.html" in html
+    assert "Example Public API" in html
+
+
+def test_md_shows_api_docs_section(fake_outputs: Path):
+    b = ReportBuilder(_make_inputs(fake_outputs))
+    md = b.render_markdown(b.collect())
+    assert "## 7.2 API Documentation" in md
+    assert "Billing API" in md
+    assert "OSINT `postman`" in md
+
+
+def test_api_docs_section_graceful_when_nothing_found(tmp_path: Path):
+    from modules.utils import create_output_structure
+    base = create_output_structure("bare.com", root=str(tmp_path))
+    b = ReportBuilder(_make_inputs(base))
+    data = b.collect()
+    assert data["counts"]["api_specs"] == 0
+    assert "No OpenAPI/Swagger specs" in b.render_html(data)
+    assert "_No OpenAPI/Swagger specs" in b.render_markdown(data)

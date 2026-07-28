@@ -33,9 +33,12 @@ def test_create_output_structure_creates_per_stage_raw_subdirs(tmp_path: Path):
 
 def test_create_output_structure_creates_findings_per_kind(tmp_path: Path):
     base = create_output_structure("example.com", root=str(tmp_path))
-    for kind in ("default", "endpoints", "dynamic"):
-        assert (base / "findings" / kind).is_dir(), \
-            f"missing findings/{kind} subdir"
+    assert (base / "findings" / "default").is_dir()
+    # endpoints/ and dynamic/ belonged to the two nuclei stages that were
+    # dropped from the pipeline; a fresh run must not create empty dirs for
+    # scans that can no longer produce anything.
+    assert not (base / "findings" / "endpoints").exists()
+    assert not (base / "findings" / "dynamic").exists()
 
 
 def test_create_output_structure_creates_logs_and_report(tmp_path: Path):

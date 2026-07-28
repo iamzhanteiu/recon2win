@@ -523,3 +523,30 @@ def seed_parameterized_urls(output_dir: Path) -> dict:
         outputs=[target], count=len(seeded),
         extra={"seeded": len(seeded), "total": len(existing) + len(seeded)},
     )
+
+
+def append_param_urls(output_dir: Path, source: Path) -> dict:
+    """Merge *source* into ``parameterized_urls.txt``, deduped.
+
+    Generic version of :func:`seed_parameterized_urls` for producers that
+    already emit finished ``?a=&b=`` URLs — currently the apidocs stage,
+    whose params come from an OpenAPI document rather than from guessing.
+
+    Unlike the seeder this does NOT require a query string: a spec path
+    template like ``/users/{id}`` is a parameterised endpoint even though it
+    carries no ``?``. Filtering those out would drop exactly the path-param
+    endpoints that specs are best at revealing.
+
+    Additive and safe: no-op (count 0) when *source* is missing or empty.
+    """
+    target = output_dir / "processed" / "parameterized_urls.txt"
+    existing = read_lines(target)
+    existing_set = set(existing)
+    added = [u for u in read_lines(source) if u not in existing_set]
+    if added:
+        write_lines(target, existing + added)
+    return make_result(
+        "param_append", "success", input_path=str(source),
+        outputs=[target], count=len(added),
+        extra={"added": len(added), "total": len(existing) + len(added)},
+    )

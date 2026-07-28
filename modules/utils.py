@@ -54,10 +54,10 @@ def create_output_structure(domain: str, root: str = "outputs") -> Path:
                 ffuf/                # <host>.json, ffuf_raw.txt, merged_wordlists.txt
                 waymore/             # waymore_raw.txt
                 arjun/               # input_subset.txt
+                apidocs/             # candidates.txt, probe.jsonl
             processed/               # cleaned + merged artefacts, flat
-            findings/                # nuclei only, grouped by kind
+            findings/                # nuclei + api docs + JS secrets
                 default/             # nuclei.json, nuclei.txt
-                dynamic/             # nuclei.json, nuclei.txt
             logs/                    # commands.log, stages.json, <stage>.log
             tests_input/             # reserved for future sample inputs
             report/                  # final_report.{html,md,json}
@@ -74,8 +74,6 @@ def create_output_structure(domain: str, root: str = "outputs") -> Path:
         "processed",
         "findings",
         "findings/default",
-        "findings/endpoints",
-        "findings/dynamic",
         "logs",
         "tests_input",
         "report",
@@ -93,7 +91,8 @@ def raw_dir(output_dir: Path, stage: str) -> Path:
     is not a known subfolder (catches typos at write time).
     """
     valid = {"subdomain", "content_discovery", "dirsearch", "ffuf", "waymore",
-             "arjun", "nuclei_default", "httpx_urls", "responses"}
+             "arjun", "nuclei_default", "httpx_urls", "responses",
+             "apidocs"}
     if stage not in valid:
         raise ValueError(
             f"unknown raw subfolder {stage!r} — valid options: {sorted(valid)}"
@@ -106,8 +105,9 @@ def raw_dir(output_dir: Path, stage: str) -> Path:
 def findings_dir(output_dir: Path, kind: str) -> Path:
     """Return ``<output_dir>/findings/<kind>/`` and create it if missing.
 
-    ``kind`` is one of ``"default"``, ``"endpoints"`` or ``"dynamic"``
-    (the three nuclei scan modes).
+    ``kind`` is ``"default"`` — the only nuclei scan left in the pipeline.
+    ``endpoints`` / ``dynamic`` stay accepted so a ``--resume`` over an
+    output dir from an older run can still read what it already wrote.
     """
     valid = {"default", "endpoints", "dynamic"}
     if kind not in valid:

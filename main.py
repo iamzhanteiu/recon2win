@@ -19,6 +19,7 @@ from pathlib import Path
 import yaml
 
 from modules import (
+    apidocs as apidocs_mod,
     arjun as arjun_mod,
     audit as audit_mod,
     content_discovery as cd_mod,
@@ -68,6 +69,7 @@ _STAGE_NOUN: dict[str, str] = {
     "xnlinkfinder":      "endpoints+urls",
     "jsluice":           "endpoints+urls",
     "arjun":             "parameterized urls",
+    "apidocs":           "api doc hits",
     "report":            "artifacts",
 }
 
@@ -173,6 +175,8 @@ def main() -> int:
     p.add_argument("--skip-arjun", action="store_true")
     p.add_argument("--skip-xnlinkfinder", action="store_true")
     p.add_argument("--skip-jsluice", action="store_true")
+    p.add_argument("--skip-apidocs", action="store_true",
+                   help="skip the API-docs probe + external OSINT stage")
     p.add_argument("--skip-responses", action="store_true",
                    help="Skip capturing full responses for ffuf/dirsearch hits.")
     p.add_argument("--color", dest="color", action="store_true", default=None,
@@ -426,12 +430,14 @@ def main() -> int:
             ))
 
         # ---- 6. parallel: httpx URL check + xnLinkFinder + jsluice ----
-        prog.start_phase("httpx_urls (and 2 others)", num=6)
+        prog.start_phase("httpx_urls (and 3 others)", num=6)
         all_urls_file = output_dir / "processed" / "all_urls.txt"
         js_urls_file = output_dir / "processed" / "js_urls.txt"
         par6: dict[str, dict] = {}
-        with prog.parallel(["httpx_urls", "xnlinkfinder", "jsluice"], num=6):
-            with ThreadPoolExecutor(max_workers=3) as pool:
+        with prog.parallel(
+            ["httpx_urls", "xnlinkfinder", "jsluice", "apidocs"], num=6,
+        ):
+            with ThreadPoolExecutor(max_workers=4) as pool:
                 futures = {
                     pool.submit(_run_stage, "httpx_urls", httpx_mod.check_urls,
                                 all_urls_file, output_dir, cfg,
@@ -444,6 +450,14 @@ def main() -> int:
                                 js_urls_file, output_dir, cfg,
                                 resume=args.resume, dry_run=False,
                                 skip=args.skip_jsluice): "jsluice",
+                    # API docs probe alive HOSTS (not the URL list), so it
+                    # is independent of everything else in this group and
+                    # costs one extra httpx run rather than a stage slot.
+                    pool.submit(_run_stage, "apidocs", apidocs_mod.discover,
+                                alive_file, output_dir, cfg,
+                                domain=domain,
+                                resume=args.resume, dry_run=False,
+                                skip=args.skip_apidocs): "apidocs",
                 }
                 for fut in futures:
                     name = futures[fut]
@@ -468,6 +482,7 @@ def main() -> int:
             output_dir / "processed" / "xnlinkfinder_urls.txt",
             output_dir / "processed" / "jsluice_endpoints.txt",
             output_dir / "processed" / "jsluice_urls.txt",
+            output_dir / "processed" / "apidocs_urls.txt",
         ]
         extras = [p for p in merge_candidates if p.exists() and p.stat().st_size > 0]
         if extras:
@@ -533,6 +548,21 @@ def main() -> int:
             print(console.phase_info_line(
                 f"seed: +{seeded['count']} already-param URL(s) → parameterized_urls "
                 f"(now {seeded['extra']['total']} total)"
+            ))
+
+        # ---- 7.post.c: spec-declared params → the shortlist ----
+        # An OpenAPI document names every query parameter its authors meant
+        # you to send. Nothing else in the run produces targets that precise,
+        # so they go straight in rather than waiting for arjun to rediscover
+        # them.
+        api_params = url_merge_mod.append_param_urls(
+            output_dir, output_dir / "processed" / "apidocs_params.txt")
+        results.append(api_params)
+        if api_params["count"]:
+            print(console.phase_info_line(
+                f"apidocs: +{api_params['count']} spec-declared param URL(s) "
+                f"→ parameterized_urls "
+                f"(now {api_params['extra']['total']} total)"
             ))
 
         # ---- 8. nuclei default — the last scan before the report ----
@@ -855,6 +885,7 @@ def _print_plan(domain: str, output_dir: Path, cfg: dict, args: argparse.Namespa
         ("skip-ffuf     ", args.skip_ffuf),
         ("skip-waymore  ", args.skip_waymore),
         ("skip-arjun    ", args.skip_arjun),
+        ("skip-apidocs  ", args.skip_apidocs),
         ("color enabled ", console.is_enabled()),
     ]:
         print(console.kv(k, v))
@@ -867,7 +898,7 @@ def _print_plan(domain: str, output_dir: Path, cfg: dict, args: argparse.Namespa
         "  3  httpx alive check",
         "  4  PARALLEL: katana/urlfinder + dirsearch + ffuf + waymore",
         "  5  url_merge (crawler + dirsearch + ffuf + waymore -> all_urls / js_urls / dynamic_urls)",
-        "  6  PARALLEL: httpx url check + xnLinkFinder + jsluice -> re-merge",
+        "  6  PARALLEL: httpx url check + xnLinkFinder + jsluice + api-docs -> re-merge",
         "  7  arjun on dynamic_urls (+ seed already-param + jsluice params)",
         "  8  nuclei default on alive hosts (last scan, full rate to itself)",
         "  9  final telegram summary + report + priority + delta",

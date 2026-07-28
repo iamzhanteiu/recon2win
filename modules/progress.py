@@ -243,5 +243,6 @@ _PHASE_NOUN: dict[str, str] = {
     "xnlinkfinder":      "endpoints",
     "jsluice":           "endpoints+secrets",
     "arjun":             "parameterized urls",
+    "apidocs":           "api doc hits",
     "report":            "artifacts",
 }

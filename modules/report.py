@@ -556,10 +556,13 @@ class ReportBuilder:
         ("processed/arjun_params.txt",   "processed", "Arjun raw output"),
         ("processed/parameterized_urls.txt","processed","parameterized URLs"),
         ("processed/forms.json",         "processed", "forms/inputs from crawl (POST/upload/login surface)"),
+        ("processed/apidocs_urls.txt",   "processed", "endpoints from OpenAPI/Swagger specs"),
+        ("processed/apidocs_params.txt", "processed", "spec-declared param URLs"),
         # findings/<kind>/
         ("findings/default/nuclei.txt",  "findings",  "nuclei default matched URLs"),
         ("findings/default/nuclei.json", "findings",  "nuclei default findings"),
         ("findings/jsluice_secrets.json","findings",  "secrets extracted from JS"),
+        ("findings/api_docs.json",       "findings",  "API docs found (specs / UIs / OSINT)"),
         # responses/ (ffuf/dirsearch body previews — no full bodies stored)
         ("responses/index.md",           "responses", "ffuf/dirsearch response previews (status/size/short body snippet)"),
         ("responses/preview.json",       "responses", "response previews (machine-readable)"),
@@ -679,6 +682,20 @@ class ReportBuilder:
             if isinstance(f, dict) and "multipart" in str(f.get("enctype", "")).lower()
         )
 
+        # API documentation — specs, docs UIs, and external OSINT hits.
+        api_docs = load_json_safe(findings / "api_docs.json") or {}
+        if not isinstance(api_docs, dict):
+            api_docs = {}
+        api_specs = api_docs.get("specs") or []
+        api_specs = api_specs if isinstance(api_specs, list) else []
+        counts["api_specs"] = len(api_specs)
+        counts["api_documented_paths"] = sum(
+            int(s.get("paths", 0) or 0) for s in api_specs if isinstance(s, dict)
+        )
+        counts["api_docs_ui"] = len(api_docs.get("ui") or [])
+        counts["api_osint"] = len(api_docs.get("osint") or [])
+        counts["apidocs_urls"] = count_lines(proc / "apidocs_urls.txt")
+
         # jsluice params — {url, method, queryParams, bodyParams} pulled out
         # of JS by AST. The ONLY source of POST/JSON body params in the whole
         # run: arjun is GET-only and only sees what looks dynamic in the URL.
@@ -758,6 +775,7 @@ class ReportBuilder:
                 "severity_count": jsluice_sev,
             },
             "jsluice_params": jsluice_params,
+            "api_docs": api_docs,
             "forms": forms_list,
             "parameterized_sample": list(
                 read_lines(proc / "parameterized_urls.txt")
@@ -838,6 +856,7 @@ class ReportBuilder:
         body.append(self._html_section_secrets(data))
         body.append(self._html_section_params(data))
         body.append(self._html_section_forms(data))
+        body.append(self._html_section_apidocs(data))
         body.append(self._html_section_nuclei(data))
         body.append(self._html_section_high_value(data))
         body.append(self._html_section_errors(data))
@@ -1101,6 +1120,46 @@ class ReportBuilder:
                 )
             if len(_forms) > self.FORM_ROWS:
                 out.append(f"\n_… {len(_forms) - self.FORM_ROWS} more in forms.json._")
+            out.append("")
+
+        # API documentation
+        out.append("## 7.2 API Documentation\n")
+        _ad = data.get("api_docs") or {}
+        _specs = [x for x in (_ad.get("specs") or []) if isinstance(x, dict)]
+        _ui = [x for x in (_ad.get("ui") or []) if isinstance(x, dict)]
+        _disc = [x for x in (_ad.get("discovery") or []) if isinstance(x, dict)]
+        _osint = [x for x in (_ad.get("osint") or []) if isinstance(x, dict)]
+        if not (_specs or _ui or _disc or _osint):
+            out.append("_No OpenAPI/Swagger specs, docs UIs or public "
+                       "Postman/GitHub hits found._\n")
+        else:
+            out.append(f"- Specs parsed: `{c.get('api_specs', 0)}`")
+            out.append(f"- Documented paths: `{c.get('api_documented_paths', 0)}`")
+            out.append(f"- Docs UIs / discovery docs: `{len(_ui) + len(_disc)}`")
+            out.append(f"- External OSINT hits: `{len(_osint)}`")
+            out.append("- Output file: "
+                       "[`../findings/api_docs.json`](../findings/api_docs.json)\n")
+            if _specs:
+                out.append("| Type | Title | Paths | Auth | Document |")
+                out.append("|------|-------|------:|------|----------|")
+                for x in _specs:
+                    out.append(
+                        f"| `{escape(str(x.get('kind','')))} "
+                        f"{escape(str(x.get('version','')))}` "
+                        f"| {escape(str(x.get('title','')))} "
+                        f"| `{int(x.get('paths', 0) or 0)}` "
+                        f"| `{escape(', '.join(x.get('security_schemes') or []) or 'none')}` "
+                        f"| `{escape(str(x.get('url','')))}` |"
+                    )
+                out.append("")
+            for x in _ui + _disc:
+                out.append(f"- docs UI / discovery: `{escape(str(x.get('url','')))}`")
+            for x in _osint:
+                out.append(
+                    f"- OSINT `{escape(str(x.get('source','')))}`: "
+                    f"{escape(str(x.get('name','')))} — "
+                    f"`{escape(str(x.get('url','')))}`"
+                )
             out.append("")
 
         # Nuclei
@@ -1716,6 +1775,93 @@ class ReportBuilder:
             f"<tbody>{''.join(rows)}</tbody></table>{extra}"
             "</details>"
         )
+
+    def _html_section_apidocs(self, data: dict) -> str:
+        """OpenAPI/Swagger specs, docs UIs, and external OSINT hits."""
+        c = data["counts"]
+        blk = data.get("api_docs") or {}
+        specs = [s for s in (blk.get("specs") or []) if isinstance(s, dict)]
+        ui = [u for u in (blk.get("ui") or []) if isinstance(u, dict)]
+        disc = [d for d in (blk.get("discovery") or []) if isinstance(d, dict)]
+        osint = [o for o in (blk.get("osint") or []) if isinstance(o, dict)]
+        if not (specs or ui or disc or osint):
+            return (
+                "<h2>7.2 API Documentation</h2>\n"
+                '<p class="small">No OpenAPI/Swagger specs, docs UIs or '
+                "public Postman/GitHub hits found.</p>"
+            )
+        out = ["<h2>7.2 API Documentation</h2>"]
+        out.append(
+            '<p class="small">A spec hands you every route, parameter and '
+            "auth scheme the developers wrote down — the highest-signal "
+            "artefact in the run. Endpoints below are already merged into "
+            "<code>all_urls.txt</code>; declared params went to the "
+            "shortlist.</p>"
+        )
+        out.append(
+            "<table>"
+            f"<tr><th>Specs parsed</th><td><code>{c.get('api_specs', 0):,}</code></td></tr>"
+            f"<tr><th>Documented paths</th>"
+            f"<td><code>{c.get('api_documented_paths', 0):,}</code></td></tr>"
+            f"<tr><th>Docs UIs / discovery docs</th>"
+            f"<td><code>{len(ui) + len(disc):,}</code></td></tr>"
+            f"<tr><th>External OSINT hits</th><td><code>{len(osint):,}</code></td></tr>"
+            "</table>"
+        )
+        if specs:
+            rows = "".join(
+                "<tr>"
+                f"<td><code>{escape(str(s.get('kind', '')))} "
+                f"{escape(str(s.get('version', '')))}</code></td>"
+                f"<td>{escape(str(s.get('title', '')))}</td>"
+                f"<td><code>{int(s.get('paths', 0) or 0):,}</code></td>"
+                f"<td><span class=\"small\"><code>"
+                f"{escape(', '.join(s.get('security_schemes') or []) or 'none')}"
+                "</code></span></td>"
+                f"<td><a href=\"{escape(str(s.get('url', '')))}\"><code>"
+                f"{escape(str(s.get('url', '')))}</code></a></td>"
+                "</tr>"
+                for s in specs
+            )
+            out.append(
+                f"<details open><summary><strong>{len(specs):,} spec(s)"
+                "</strong></summary>\n"
+                "<table><thead><tr><th>Type</th><th>Title</th><th>Paths</th>"
+                "<th>Auth</th><th>Document</th></tr></thead>"
+                f"<tbody>{rows}</tbody></table></details>"
+            )
+        if ui or disc:
+            items = "".join(
+                f"<li><code>{escape(str(h.get('url', '')))}</code> "
+                f'<span class="small">({h.get("status")})</span></li>'
+                for h in (ui + disc)
+            )
+            out.append(
+                f"<details><summary>{len(ui) + len(disc):,} docs UI / "
+                f"discovery document(s)</summary><ul>{items}</ul></details>"
+            )
+        if osint:
+            rows = "".join(
+                "<tr>"
+                f"<td><code>{escape(str(o.get('source', '')))}</code></td>"
+                f"<td><code>{escape(str(o.get('kind', '')))}</code></td>"
+                f"<td>{escape(str(o.get('name', '')))}</td>"
+                f"<td><a href=\"{escape(str(o.get('url', '')))}\"><code>"
+                f"{escape(str(o.get('url', '')))}</code></a></td>"
+                "</tr>"
+                for o in osint
+            )
+            out.append(
+                f"<details open><summary><strong>{len(osint):,} external "
+                "OSINT hit(s)</strong> — public Postman / GitHub</summary>\n"
+                '<p class="small">Filtered to results naming the target org; '
+                "verify each one actually belongs to the target before "
+                "reporting.</p>\n"
+                "<table><thead><tr><th>Source</th><th>Kind</th><th>Name</th>"
+                "<th>Link</th></tr></thead>"
+                f"<tbody>{rows}</tbody></table></details>"
+            )
+        return "\n".join(out)
 
     def _html_section_nuclei(self, data: dict) -> str:
         out = ["<h2>8. Nuclei Findings</h2>"]
