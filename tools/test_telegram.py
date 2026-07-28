@@ -3,7 +3,12 @@
 
 This is a real-network test: it hits ``api.telegram.org``. The script
 honors the project convention of NEVER sending when ``telegram.enabled``
-is false in ``config.yml`` UNLESS you pass ``--force``.
+is false UNLESS you pass ``--force``.
+
+Config is loaded through ``main._load_config`` — the same path the pipeline
+uses — so the ``config.local.yml`` overlay and ``${ENV_VAR}`` expansion both
+apply. Reading ``config.yml`` alone would miss credentials kept in the
+git-ignored local overlay, which is exactly where they belong.
 
 What it sends (in this order, with a 1-second gap so the chat is readable):
 
@@ -26,7 +31,7 @@ from pathlib import Path
 # Allow ``python3 tools/test_telegram.py`` from the project root.
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-import yaml  # noqa: E402
+from main import _load_config  # noqa: E402
 
 from modules import telegram as tg  # noqa: E402
 
@@ -35,12 +40,12 @@ from modules import telegram as tg  # noqa: E402
 # Helpers
 # ----------------------------------------------------------------------
 def _load_cfg(config_path: Path, force: bool) -> dict:
-    """Load ``config.yml`` and (optionally) force-enable the telegram block.
+    """Load the merged config and (optionally) force-enable telegram.
 
     Without ``--force`` the function returns the config as-is so the
     project-wide convention (do not spam when disabled) is respected.
     """
-    cfg = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
+    cfg = _load_config(config_path)
     tg_cfg = dict(cfg.get("telegram") or {})
     if force and not tg_cfg.get("enabled"):
         tg_cfg["enabled"] = True
@@ -49,7 +54,7 @@ def _load_cfg(config_path: Path, force: bool) -> dict:
 
 
 def _print_config(tg_cfg: dict) -> None:
-    print("Telegram config from config.yml:")
+    print("Telegram config (config.yml + config.local.yml overlay):")
     print(f"  enabled              = {tg_cfg.get('enabled')}")
     print(f"  bot_token            = {(tg_cfg.get('bot_token') or '')[:10]}…"
           f"{'(empty)' if not tg_cfg.get('bot_token') else ''}")
@@ -84,13 +89,13 @@ def _finding_test(tg_cfg: dict) -> bool:
         "matcher-name": "sql-error",
     }
     print("[2/3] Sending nuclei CRITICAL finding notification…")
-    return tg.notify_finding(finding, stage="nuclei_dynamic", cfg=tg_cfg)
+    return tg.notify_finding(finding, stage="nuclei_default", cfg=tg_cfg)
 
 
 def _stage_result_test(tg_cfg: dict) -> bool:
     """Message 3 — stage-complete summary with severity breakdown."""
     result = {
-        "stage": "nuclei_dynamic",
+        "stage": "nuclei_default",
         "status": "success",
         "count": 7,
         "extra": {
@@ -100,7 +105,7 @@ def _stage_result_test(tg_cfg: dict) -> bool:
         },
     }
     print("[3/3] Sending stage-complete summary…")
-    return tg.notify_stage_result("nuclei_dynamic", result, tg_cfg)
+    return tg.notify_stage_result("nuclei_default", result, tg_cfg)
 
 
 # ----------------------------------------------------------------------
@@ -111,7 +116,8 @@ def main() -> int:
         prog="test_telegram",
         description="Send 3 test messages to the Telegram bot in config.yml",
     )
-    p.add_argument("--config", default="config.yml", help="path to config.yml")
+    p.add_argument("--config", default="config.yml",
+                   help="path to config.yml (config.local.yml is merged over it)")
     p.add_argument("--force", action="store_true",
                    help="override telegram.enabled=false in config")
     p.add_argument("--dry-run", action="store_true",
@@ -128,11 +134,12 @@ def main() -> int:
 
     if not tg_cfg.get("enabled"):
         print("[!] telegram.enabled = false — nothing to do.")
-        print("    Re-run with --force to send anyway, or set enabled: true in config.yml.")
+        print("    Re-run with --force to send anyway, or set enabled: true in config.local.yml.")
         return 1
 
     if not (tg_cfg.get("bot_token") and tg_cfg.get("chat_id")):
-        print("[!] bot_token or chat_id is empty — fix config.yml first.", file=sys.stderr)
+        print("[!] bot_token or chat_id is empty — fix config.local.yml first.",
+              file=sys.stderr)
         return 2
 
     if args.dry_run:
