@@ -10,7 +10,15 @@ làm điểm mốc đầu tiên.
 
 ## [Unreleased]
 
-Chưa có mục nào.
+### Added
+
+* **Structured logging** — `modules/runlog.py` ghi `logs/run.log` (leveled,
+  UTC, `stdlib logging`), song song với terminal, không thay thế. Config
+  mới: `logging.enabled` / `logging.level` trong `config.yml`.
+* **Typed stage-result contract** — `StageResult`/`StageStatus` (`TypedDict`)
+  trong `modules/utils.py`, additive (không đổi runtime, không sửa từng
+  module gọi `make_result()`).
+* `CHANGELOG.md` (file này).
 
 ## [0.1.0] - 2026-08-07
 

@@ -15,6 +15,7 @@ from unittest.mock import patch
 
 
 from main import _run_stage
+from modules import runlog
 from modules.utils import make_result
 
 
@@ -167,3 +168,27 @@ def test_run_stage_dry_run_prints_planned_command(capsys, tmp_path: Path):
     _run_stage("planned", with_plan, Path("/in"), output_dir, cfg)
     captured = capsys.readouterr()
     assert "fake-tool --flag value" in captured.out
+
+
+def test_run_stage_writes_to_run_log_when_runlog_is_set_up(tmp_path: Path):
+    """Mirrors the real main() flow: runlog.setup() runs once before the
+    pipeline starts, then every _run_stage call logs through the same
+    logger. Success -> INFO, failure -> WARNING, both land in run.log."""
+    output_dir = tmp_path / "out"
+    cfg = {"telegram": {"enabled": False}}
+    runlog.setup(output_dir, cfg)
+
+    _run_stage("fake_stage", _fake_stage, Path("/in"), output_dir, cfg, count=7)
+
+    def failing(input_path, output_dir, cfg):
+        return make_result("failed", "failed", count=0, error="boom")
+    _run_stage("failed", failing, Path("/in"), output_dir, cfg)
+
+    for h in runlog.get().handlers:
+        h.flush()
+    text = (output_dir / "logs" / "run.log").read_text(encoding="utf-8")
+    assert "stage fake_stage status=success count=7" in text
+    assert "INFO" in text
+    assert "stage failed status=failed count=0" in text
+    assert "error='boom'" in text
+    assert "WARNING" in text

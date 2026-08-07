@@ -4,6 +4,8 @@ The one rule enforced here: **no test reaches the network by accident.**
 """
 from __future__ import annotations
 
+import logging
+
 import pytest
 
 from modules import baseline
@@ -36,6 +38,31 @@ def _no_baseline_probe(monkeypatch, request):
             {"targets": len(targets), "error": "stubbed in tests"},
         ),
     )
+
+
+@pytest.fixture(autouse=True)
+def _isolated_runlog():
+    """Reset the recon2win logger between tests.
+
+    ``runlog`` is a module-level singleton (``logging.getLogger`` returns the
+    same object for the same name across the whole pytest process). Without
+    this, a test that calls ``main._run_stage`` directly — bypassing
+    ``main()``, which is the only real caller of ``runlog.setup()`` — would
+    silently inherit whatever file handler a PREVIOUS test's ``runlog.setup``
+    call left attached, writing into (or erroring against) an unrelated
+    test's already-torn-down ``tmp_path``. Every test starts and ends with
+    a clean, handler-less logger; only tests that call ``runlog.setup()``
+    themselves get a real file handler.
+    """
+    yield
+    logger = logging.getLogger("recon2win")
+    for h in list(logger.handlers):
+        try:
+            h.close()
+        except Exception:  # noqa: BLE001
+            pass
+        logger.removeHandler(h)
+    logger.addHandler(logging.NullHandler())
 
 
 def pytest_configure(config):

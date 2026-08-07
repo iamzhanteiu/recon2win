@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 import sys
 import time
 from datetime import datetime, timezone
@@ -44,6 +45,7 @@ from modules import (
     priority as priority_mod,
     progress as progress_mod,
     responses as responses_mod,
+    runlog,
     scandiff as scandiff_mod,
     report as report_mod,
     subdomain as sub_mod,
@@ -110,6 +112,8 @@ def _run_stage(name: str, fn, *args, **kwargs) -> dict:
         cfg = args[2]
 
     print(console.phase_header(name), flush=True)
+    log = runlog.get()
+    log.debug("stage start: %s", name)
     t0 = time.time()
     try:
         res = fn(*args, **kwargs)
@@ -117,6 +121,7 @@ def _run_stage(name: str, fn, *args, **kwargs) -> dict:
         res = make_result(name, "failed", error=f"exception: {exc}")
     dt = round(time.time() - t0, 2)
     res.setdefault("extra", {})["elapsed_seconds"] = dt
+    _log_stage_result(log, name, res, dt)
     noun = _STAGE_NOUN.get(name, "results")
     # ``success`` stages: green ✓ + result line.
     # ``failed`` stages: red ✗ + result line + the error message below.
@@ -153,6 +158,21 @@ def _run_stage(name: str, fn, *args, **kwargs) -> dict:
     if planned:
         print(console.cmd_echo(name, planned), flush=True)
     return res
+
+
+def _log_stage_result(log, name: str, res: dict, dt: float) -> None:
+    """Mirror what the console already shows into ``logs/run.log``, leveled
+    by outcome: WARNING for failed (worth noticing in a log scan), INFO for
+    success/skipped."""
+    status = res.get("status")
+    level = logging.WARNING if status == "failed" else logging.INFO
+    err = res.get("error")
+    log.log(
+        level,
+        "stage %s status=%s count=%s elapsed=%.2fs%s",
+        name, status, res.get("count"), dt,
+        f" error={err!r}" if err else "",
+    )
 
 
 # ----------------------------------------------------------------------
@@ -289,6 +309,17 @@ def main() -> int:
     if args.dry_run:
         _print_plan(domain, output_dir, cfg, args)
         return 0
+
+    # Leveled, incrementally-flushed run log (logs/run.log) — additive to the
+    # console output above and logs/stages.json (only written at the very
+    # end): a run killed mid-way still leaves a trail of what happened.
+    # dry-run is deliberately excluded (stays side-effect-free, see --dry-run
+    # above); real runs only.
+    log = runlog.setup(output_dir, cfg)
+    log.info(
+        "run start domain=%s config=%s resume=%s",
+        domain, cfg_path, args.resume,
+    )
 
     # Capture scan timing + tool versions up-front so the final report has
     # accurate metadata even if a later stage crashes.
@@ -873,6 +904,10 @@ def main() -> int:
             print(console.c(f"  [{t['score']:>5}] ", "bright_yellow")
                   + console.c(t["url"], "bright_white")
                   + console.c(f"  — {reasons}", "bright_black"))
+
+    runlog.get().info(
+        "run end domain=%s report=%s", domain, report_info.get("html"),
+    )
     return 0
 
 

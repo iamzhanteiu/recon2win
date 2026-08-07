@@ -204,6 +204,29 @@ sự trả `list[str]`) — đã sửa bằng cách bỏ dòng gán trung gian, 
 `List[str]` ở cả 2 nhánh. Hành vi runtime không đổi (verify bằng pytest đầy
 đủ).
 
+### Structured logging (`logs/run.log`) — song song với console, không thay thế
+
+**Vấn đề:** `_run_stage` in narrative ra terminal, nhưng gần như không gì
+sống sót trên đĩa theo thời gian thực — `logs/stages.json` chỉ ghi MỘT LẦN ở
+cuối run. Một run bị giết giữa chừng (mất SSH, OOM lúc nuclei chạy lâu,
+VPS reboot) không để lại dấu vết nào về việc gì đã xảy ra trước đó, ngoài
+output thô per-stage.
+
+**Quyết định:** `modules/runlog.py` — `stdlib logging`, ghi `logs/run.log`
+(leveled, UTC, flush ngay mỗi dòng). Cố tình KHÔNG gắn console/stream
+handler — `console.py`/`print()` đã sở hữu terminal, gắn thêm handler ở đây
+sẽ in trùng hoặc đụng màu/format. `main.py::_run_stage` log start (DEBUG) +
+kết quả (INFO khi success/skipped, WARNING khi failed) — cùng thông tin đã
+in ra console, chỉ khác là bền trên đĩa. `--dry-run` cố tình không gọi
+`runlog.setup()` — giữ đúng cam kết "không đụng gì" đã có từ trước.
+
+Bẫy phát hiện khi viết test: `logging.getLogger("recon2win")` là singleton
+toàn tiến trình pytest — một test gọi `main._run_stage` trực tiếp (bỏ qua
+`main()`, nơi DUY NHẤT gọi `runlog.setup()` thật) sẽ kế thừa file handler
+còn sót từ test TRƯỚC ĐÓ, ghi nhầm vào `tmp_path` đã bị pytest dọn. Fix:
+`tests/conftest.py::_isolated_runlog` (autouse) đóng + gỡ mọi handler sau
+mỗi test — cùng tinh thần với `_no_baseline_probe` đã có sẵn trong file đó.
+
 ## Nợ kỹ thuật đã biết (chưa xử lý, ghi lại để không phải phát hiện lại)
 
 | Nợ | Mô tả | Mức ảnh hưởng |

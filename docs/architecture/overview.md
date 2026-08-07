@@ -124,6 +124,7 @@ truncated/skipped/failed/absent`), suy ra từ chính `extra["blocked"]`/
 | Lớp | Module | Vai trò |
 |---|---|---|
 | Subprocess | `runner.py` | Điểm gọi duy nhất cho tool ngoài — log lệnh, bắt timeout, capture stdout/stderr |
+| Run log | `runlog.py` | `logs/run.log` — bản ghi leveled (`stdlib logging`), ghi ngay theo thời gian thực, song song với terminal (không in ra console) |
 | Đường dẫn | `layout.py` | SSOT cho vị trí artefact trong `processed/` |
 | Kết quả stage | `utils.py::make_result` | Hình dạng dict chuẩn cho mọi stage |
 | Chọn target fuzz | `fuzz_targets.py` | Dedup host cùng response (wildcard DNS), cap theo `score_subdomain` |

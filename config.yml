@@ -5,6 +5,17 @@
 # ---------- Global ----------
 output_root: outputs           # root folder under which <domain>/ is created
 
+# ---------- Run log (logs/run.log) ----------
+# Leveled, plain-text log of the run — additive to the colored terminal
+# output (modules/console.py) and logs/stages.json (only written once, at
+# the very end). A run killed mid-way (SSH drop, OOM on a long nuclei scan)
+# still leaves logs/run.log with a trail of what happened before the crash.
+# Does NOT print to the terminal — file only, so it never duplicates or
+# fights the existing console output.
+logging:
+  enabled: true
+  level: INFO   # DEBUG | INFO | WARNING | ERROR
+
 # ---------- Scope filtering ----------
 # Content discovery runs katana with ``-do`` (display-out-scope) ON PURPOSE:
 # it emits the out-of-scope JS/assets an in-scope page pulls from a CDN / S3 /
