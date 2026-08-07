@@ -12,6 +12,7 @@ nguồn sự thật, sửa tài liệu này theo code.
 | Kiến trúc tổng thể, pipeline, data flow | [`architecture/overview.md`](architecture/overview.md) |
 | Vai trò + quan hệ giữa các module trong `modules/` | [`architecture/modules.md`](architecture/modules.md) |
 | Vì sao một tham số/ngưỡng có giá trị như hiện tại (design decisions, technical debt) | [`architecture/decisions.md`](architecture/decisions.md) |
+| Đã đổi gì qua từng version | [`../CHANGELOG.md`](../CHANGELOG.md) |
 | Spec thiết kế báo cáo ASM (mô hình dữ liệu từ output thật) | [`report-design.md`](report-design.md) |
 | Spec thiết kế web console (read API, state store) | [`ui-design.md`](ui-design.md) |
 | Quy ước duy trì tài liệu + ngôn ngữ trả lời | [`../CLAUDE.md`](../CLAUDE.md) |
