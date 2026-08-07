@@ -56,6 +56,8 @@ wordlists/**/SecLists/
 # Local config overrides
 config.local.yml
 *.local.yml
+*.vps-bak
+*-bak.yml
 
 # Local scratch / WIP (kept out of the repo, not deliverables)
 parameters.txt
