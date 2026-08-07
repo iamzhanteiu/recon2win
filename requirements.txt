@@ -18,3 +18,8 @@ rich>=13.0
 # recon2win from a browser with a live terminal view. Optional: the
 # CLI workflow works without it.
 flask>=3.0
+# openpyxl renders report/final_report.xlsx (modules/xlsx_report.py),
+# enabled via --xlsx-report or report.xlsx: true in config.yml. Optional:
+# import is guarded, so a run without it just skips that one file with a
+# warning — everything else (HTML/MD/JSON report) works without it.
+openpyxl>=3.1

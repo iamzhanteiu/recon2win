@@ -101,7 +101,7 @@ def test_expected_wordlist_paths_matches_catalogue():
     assert paths == SECLISTS_PATHS
     assert "Discovery/Web-Content/common.txt" in paths
     assert "Discovery/Web-Content/quickhits.txt" in paths
-    assert "Discovery/Web-Content/raft-small-files.txt" in paths
+    assert "Discovery/Web-Content/graphql.txt" in paths
 
 
 def test_seclists_paths_match_config_yml():
@@ -139,7 +139,7 @@ def test_verify_wordlists_marks_existing_paths(tmp_path: Path):
     res = verify_wordlists(root)
     assert res["Discovery/Web-Content/common.txt"] is True
     assert res["Discovery/Web-Content/quickhits.txt"] is True
-    assert res["Discovery/Web-Content/raft-small-files.txt"] is False
+    assert res["Discovery/Web-Content/graphql.txt"] is False
 
 
 def test_missing_wordlists_returns_only_missing(tmp_path: Path):
@@ -149,7 +149,7 @@ def test_missing_wordlists_returns_only_missing(tmp_path: Path):
     missing = missing_wordlists(root)
     assert "Discovery/Web-Content/common.txt" not in missing
     assert "Discovery/Web-Content/quickhits.txt" in missing
-    assert "Discovery/Web-Content/raft-small-files.txt" in missing
+    assert "Discovery/Web-Content/graphql.txt" in missing
 
 
 def test_verify_wordlists_expands_user(tmp_path: Path, monkeypatch):

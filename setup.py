@@ -230,9 +230,28 @@ TOOLS: dict[str, dict] = {
 SECLISTS_PATHS = [
     # ffuf (4.3) — directory, wordlist nhỏ vì recursion nhân nó lên
     "Discovery/Web-Content/common.txt",
-    # dirsearch (4.2) — file + extension nhạy cảm
+    # dirsearch (4.2) — file + extension nhạy cảm. Bộ này nhỏ và ĐẶC, chọn
+    # theo ngân sách request thật (~5.200 từ/target ở 55 req/s đo được), chứ
+    # không phải "càng nhiều càng tốt": bộ cũ 13.799 từ vượt 2,7 lần ngân
+    # sách nên stage timeout ở mọi lần chạy và bỏ sót ~50% host.
     "Discovery/Web-Content/quickhits.txt",
-    "Discovery/Web-Content/raft-small-files.txt",
+    "Discovery/Web-Content/Common-DB-Backups.txt",
+    "Discovery/Web-Content/UnixDotfiles.fuzz.txt",
+    "Discovery/Web-Content/Logins.fuzz.txt",
+    "Discovery/Web-Content/api/api-endpoints.txt",
+    "Discovery/Web-Content/api/actions.txt",
+    "Discovery/Web-Content/common-api-endpoints-mazen160.txt",
+    "Discovery/Web-Content/graphql.txt",
+    "Discovery/Web-Content/oauth-oidc-scopes.txt",
+    "Discovery/Web-Content/raft-medium-directories.txt",
+    # 2026-08-02: thêm sau khi rà toàn bộ Discovery/Web-Content — nhỏ, không
+    # trùng list đã có, chi phí request không đáng kể (xem config.yml).
+    "Discovery/Web-Content/versioning_metafiles.txt",
+    "Discovery/Web-Content/CMS/cms-configuration-files.txt",
+    "Discovery/Web-Content/vulnerability-scan_j2ee-websites_WEB-INF.txt",
+    "Discovery/Web-Content/reverse-proxy-inconsistencies.txt",
+    "Discovery/Web-Content/ntlm-directories.txt",
+    "Discovery/Web-Content/mcp-server.txt",
 ]
 SECLISTS_REPO = "https://github.com/danielmiessler/SecLists.git"
 
