@@ -27,9 +27,9 @@ import time
 from pathlib import Path
 from typing import Iterable
 
-from . import console, fuzz_targets, runner
+from . import behavior, console, fuzz_depth, fuzz_targets, layout, runner
 from .sensitive_ext import SENSITIVE_EXT, to_dirsearch_flag, to_wordlist_lines
-from .utils import make_result, raw_dir, read_lines, write_lines
+from .utils import load_json, make_result, raw_dir, read_lines, write_lines
 
 
 # Matches "<status>  <len>  <url>" or "<status>  <len>B  <url> [-> <redirect>]".
@@ -44,6 +44,56 @@ LINE_RE = re.compile(
     r"^\s*(\d{3})\s+\S+\s+(https?://\S+?)"
     r"(?:\s*->\s*(?:REDIRECTS TO:\s*)?https?://\S+)?\s*$"
 )
+
+# Same line, but keeping the two columns ``normalize_output`` throws away:
+# the size and the redirect target. Both are needed to tell a real hit from
+# a host answering everything the same way — dirsearch reports no words,
+# lines, or content-type, so size and redirect destination are the whole of
+# the signal available here.
+HIT_RE = re.compile(
+    r"^\s*(\d{3})\s+(\S+)\s+(https?://\S+?)"
+    r"(?:\s*->\s*(?:REDIRECTS TO:\s*)?(https?://\S+))?\s*$"
+)
+
+_SIZE_RE = re.compile(r"^([\d.]+)\s*([KMG]?B)?$", re.IGNORECASE)
+_SIZE_MULT = {"B": 1, "KB": 1024, "MB": 1024 ** 2, "GB": 1024 ** 3}
+
+
+def parse_size(text: str) -> int:
+    """``"198B"`` → 198, ``"10KB"`` → 10240. ``UNKNOWN`` when unparseable.
+
+    dirsearch rounds to two significant figures once it reaches KB, so the
+    resolution here is coarse — which is fine for spotting "every response
+    is the same size" and useless for spotting a 3-byte difference. That
+    coarseness is why :func:`behavior.fingerprint` buckets length rather
+    than comparing it exactly.
+    """
+    m = _SIZE_RE.match((text or "").strip())
+    if not m:
+        return behavior.UNKNOWN
+    try:
+        value = float(m.group(1))
+    except ValueError:
+        return behavior.UNKNOWN
+    return int(value * _SIZE_MULT.get((m.group(2) or "B").upper(), 1))
+
+
+def parse_hits(raw_lines: Iterable[str]) -> list[behavior.Behavior]:
+    """Full response shape per hit, for :func:`behavior.screen_by_host`."""
+    out: list[behavior.Behavior] = []
+    for ln in raw_lines:
+        m = HIT_RE.match(ln)
+        if not m:
+            continue
+        status, size, url, redirect = m.groups()
+        out.append(behavior.Behavior(
+            url=url.strip(),
+            status=int(status),
+            length=parse_size(size),
+            content_type="",          # dirsearch does not report it
+            location=(redirect or "").strip(),
+        ))
+    return out
 
 
 # ----------------------------------------------------------------------
@@ -321,8 +371,19 @@ def _plan_budget(
 # Resume / dry-run helpers
 # ----------------------------------------------------------------------
 def _outputs_exist(out_dir: Path) -> bool:
-    p = out_dir / "processed" / "dirsearch_urls.txt"
+    p = layout.path(out_dir, "dirsearch_urls.txt")
     return p.exists() and p.stat().st_size > 0
+
+
+def _dedup(items: list[str]) -> list[str]:
+    """Order-preserving dedup for combining two tiers' URL lists."""
+    seen: set[str] = set()
+    out: list[str] = []
+    for x in items:
+        if x and x not in seen:
+            seen.add(x)
+            out.append(x)
+    return out
 
 
 # ----------------------------------------------------------------------
@@ -339,11 +400,10 @@ def scan(
 ) -> dict:
     stage = "dirsearch"
     raw_ds = raw_dir(output_dir, "dirsearch")
-    proc = output_dir / "processed"
-    proc.mkdir(parents=True, exist_ok=True)
+    layout.ensure_tree(output_dir)
     raw_out = raw_ds / "dirsearch_raw.txt"
     merged_wl_path = raw_ds / "merged_wordlists.txt"
-    proc_out = proc / "dirsearch_urls.txt"
+    proc_out = layout.path(output_dir, "dirsearch_urls.txt")
 
     if skip:
         raw_out.write_text("")
@@ -430,6 +490,13 @@ def scan(
         max_hosts=int(d_cfg.get("max_hosts", 50)),
         dedup=bool(d_cfg.get("dedup_targets", True)),
         skip_waf=bool(d_cfg.get("skip_waf", False)),
+        cfg=cfg,
+        # dirsearch's -i is the same idea as ffuf's -mc: the statuses it
+        # will report. A host that answers those to a path that is not
+        # there will "find" every word in the list.
+        match_status=[int(s) for s in (d_cfg.get("include_status") or [])
+                      if str(s).isdigit()],
+        stage=stage,
     )
     # Tập rỗng nghĩa là bộ lọc đã loại hết (vd skip_waf=true và mọi host đều
     # sau WAF) — phải dừng, KHÔNG được rơi về alive_file gốc. Fallback kiểu đó
@@ -447,6 +514,25 @@ def scan(
     if sel_stats.get("deduped") or sel_stats.get("capped"):
         print(console.phase_info_line(
             f"[dirsearch] {fuzz_targets.summary_line(sel_stats)}"))
+
+    # Adaptive fuzz depth: which of the selected hosts get the expensive
+    # extras (bigger wordlist, its own time slice). Never re-filters/re-caps
+    # — that stays fuzz_targets' job.
+    depth_cfg = cfg.get("fuzz_depth", {}) if isinstance(cfg, dict) else {}
+    if depth_cfg.get("enabled", True):
+        detail_rows = load_json(layout.path(output_dir, "alive_detail.json"))
+        detail_rows = detail_rows if isinstance(detail_rows, list) else []
+        # Tech confirmed by misconfig_probe on a PRIOR scan of this same
+        # target (this run's own probe hasn't run yet — see fuzz_depth
+        # module docstring) enriches the tier + tech-aware wordlist call.
+        detail_rows = fuzz_depth.merge_confirmed_tech(
+            detail_rows, fuzz_depth.load_confirmed_tech(output_dir))
+        tiers, depth_stats = fuzz_depth.tier_targets(targets, detail_rows, cfg)
+    else:
+        tiers, depth_stats = {"deep": [], "standard": targets, "light": []}, {}
+    if depth_stats.get("deep"):
+        print(console.phase_info_line(
+            f"[dirsearch] {fuzz_depth.summary_line(depth_stats)}"))
 
     threads = int(d_cfg.get("threads", 30))
     recursive = bool(d_cfg.get("recursive", True))
@@ -503,20 +589,49 @@ def scan(
         wordlist_file = fallback_wordlist
         combine = True
 
+    # Host tier "deep" được cấp thêm wordlist merge trên NỀN wordlist chuẩn
+    # (bao gồm cả trường hợp fallback sensitive_files ở trên) — chỉ tính khi
+    # có ít nhất 1 host "deep" VÀ có cấu hình wordlist bổ sung, để không tốn
+    # công merge một cách vô ích.
+    deep_wordlist_file: Path | None = wordlist_file
+    deep_wl_paths: list[Path] = []
+    deep_merge_stats: dict | None = None
+    if tiers.get("deep"):
+        # Static config additions PLUS auto-detected tech (fuzz_depth maps
+        # tech actually seen on this run's deep-tier hosts — e.g. "jenkins"
+        # — to its dedicated SecLists file; see TECH_WORDLIST_MAP). Order
+        # preserved, deduped, so an explicit config entry and an auto-picked
+        # one that happen to match don't get resolved twice.
+        extra_wl = list(depth_cfg.get("deep_wordlists") or [])
+        if depth_cfg.get("tech_aware_wordlists", True):
+            extra_wl += depth_stats.get("deep_tech_wordlists") or []
+        extra_wl = list(dict.fromkeys(extra_wl))
+        if extra_wl and wordlist_file is not None:
+            resolved_extra = _resolve_wordlists(extra_wl, missing_callback=print)
+            if resolved_extra:
+                merged_path, lines_in, lines_out = _merge_wordlists(
+                    [wordlist_file] + resolved_extra,
+                    raw_ds / "merged_wordlists_deep.txt",
+                )
+                deep_wordlist_file = merged_path
+                deep_wl_paths = resolved_extra
+                deep_merge_stats = {
+                    "files": len(resolved_extra) + 1,
+                    "lines_in": lines_in, "lines_out": lines_out,
+                    "path": str(merged_path),
+                }
+
     max_rate = int(d_cfg.get("max_rate", 0) or 0)
-    ceiling = int(d_cfg.get("timeout", 3600))
-    timeout, budget = _plan_budget(
-        targets=len(targets), wordlist=wordlist_file,
-        extensions=extensions if combine else None,
-        max_rate=max_rate,
-        per_host=int(d_cfg.get("timeout_per_host", 300)),
-        ceiling=ceiling,
-    )
-    if budget["over_ceiling"]:
-        print(console.phase_info_line(
-            f"[dirsearch] {budget['basis']} ≈ {budget['wanted']}s vượt trần "
-            f"{budget['ceiling']}s → sẽ bị cắt ở {timeout}s (kết quả một phần "
-            f"vẫn được giữ). Tăng max_rate/timeout, hoặc giảm max_hosts/wordlist."))
+    stage_ceiling = int(d_cfg.get("timeout", 3600))
+    chunk_size = int(d_cfg.get("chunk_size", 10) or 0)
+    min_chunk = max(1, int(d_cfg.get("chunk_min_size", 3) or 1))
+    screen_cfg = d_cfg.get("screen") or {}
+    screen_on = bool(screen_cfg.get("enabled", True))
+    follow_redirects = bool(d_cfg.get("follow_redirects", True))
+    include_status = d_cfg.get("include_status") or []
+    exclude_status = d_cfg.get("exclude_status") or []
+    delay = float(d_cfg.get("delay", 0) or 0)
+    per_host = int(d_cfg.get("timeout_per_host", 300))
 
     # ------------------------------------------------------------------
     # CHIA THEO HOST. Trước đây stage này gọi dirsearch ĐÚNG MỘT LẦN trên
@@ -536,124 +651,317 @@ def scan(
     # Nên chia nhỏ, y như nuclei: mỗi chunk có ngân sách riêng tính từ
     # chính số host của nó, chạy xong ghi kết quả ngay, và một chunk chết
     # chỉ tốn đúng chunk đó. ``chunk_size <= 0`` giữ hành vi một-lần cũ.
+    #
+    # THÊM TIER: host tier "deep" không chỉ được cấp wordlist to hơn mà còn
+    # chạy TÁCH RIÊNG khỏi nhóm "standard"+"light", mỗi nhóm một phần ngân
+    # sách stage (``fuzz_depth.deep_time_share``) — logic chunk/backoff dưới
+    # đây được TRÍCH Y NGUYÊN từ bản gốc một-nhóm, chỉ tham số hoá phần khác
+    # nhau giữa 2 nhóm (wordlist/extensions/ceiling/thư mục raw) để không
+    # phải viết lại công thức ngân sách/backoff hai lần.
     # ------------------------------------------------------------------
-    chunk_size = int(d_cfg.get("chunk_size", 10) or 0)
-    min_chunk = max(1, int(d_cfg.get("chunk_min_size", 3) or 1))
-    chunked = chunk_size > 0 and len(targets) > chunk_size
-
-    def _run_one(target_file: Path, out_file: Path, per_timeout: int) -> dict:
-        cmd = _build_cmd(
-            target_file, out_file, wordlist_file,
-            extensions=extensions,
-            threads=threads,
-            recursive=recursive,
-            combine=combine,
-            follow_redirects=bool(d_cfg.get("follow_redirects", True)),
-            include_status=d_cfg.get("include_status") or [],
-            exclude_status=d_cfg.get("exclude_status") or [],
-            max_rate=max_rate,
-            delay=float(d_cfg.get("delay", 0) or 0),
+    def _run_group(
+        group_targets: list[str],
+        group_wordlist: Path | None,
+        group_extensions: list[str] | None,
+        group_combine: bool,
+        ceiling: int,
+        group_raw_ds: Path,
+        group_raw_out: Path,
+        prior_urls: list[str],
+        group_label: str,
+    ) -> tuple[list[str], dict]:
+        group_raw_ds.mkdir(parents=True, exist_ok=True)
+        chunked = chunk_size > 0 and len(group_targets) > chunk_size
+        timeout, budget = _plan_budget(
+            targets=len(group_targets), wordlist=group_wordlist,
+            extensions=group_extensions if group_combine else None,
+            max_rate=max_rate, per_host=per_host, ceiling=ceiling,
         )
-        return runner.run(cmd, stage=stage, output_dir=output_dir,
-                          timeout=per_timeout)
+        if budget["over_ceiling"]:
+            print(console.phase_info_line(
+                f"[dirsearch:{group_label}] {budget['basis']} ≈ {budget['wanted']}s "
+                f"vượt trần {budget['ceiling']}s → sẽ bị cắt ở {timeout}s (kết quả "
+                f"một phần vẫn được giữ). Tăng max_rate/timeout, hoặc giảm "
+                f"max_hosts/wordlist."))
 
-    started = time.monotonic()
-    pending = list(targets)
-    cur_size = chunk_size if chunked else 0
-    rate_factor = 1.0
-    idx = 0
-    raw_files: list[Path] = []
-    chunks_run = 0
-    any_timeout = False
-    deadline_hit = False
-    resized = False
-    hard_failed = 0
-    last_err = ""
-    urls: list[str] = []
-    n = 0
-
-    while pending:
-        chunk = pending[:cur_size] if cur_size > 0 else pending
-        pending = pending[len(chunk):]
-
-        if chunked:
-            c_targets = fuzz_targets.write_target_file(
-                chunk, raw_ds / f"chunk_{idx:03d}_targets.txt")
-            c_raw = raw_ds / f"chunk_{idx:03d}.txt"
-            remaining = ceiling - (time.monotonic() - started)
-            if remaining <= _MIN_CHUNK_BUDGET:
-                deadline_hit = True
-                pending = chunk + pending          # chưa chạy, trả lại
-                break
-            # Ngân sách chunk tính từ chính số host của nó, NHƯNG theo tốc
-            # độ đã học được (rate_factor), không phải max_rate danh nghĩa.
-            # Xem chú thích ở _RATE_BACKOFF: thiếu chỗ này thì việc chia đôi
-            # chunk hoàn toàn vô tác dụng.
-            per_timeout, _ = _plan_budget(
-                targets=len(chunk), wordlist=wordlist_file,
-                extensions=extensions if combine else None,
-                max_rate=max(1, int(max_rate * rate_factor)),
-                per_host=int(d_cfg.get("timeout_per_host", 300)),
-                ceiling=int(remaining),
+        def _run_one(target_file: Path, out_file: Path, per_timeout: int) -> dict:
+            cmd = _build_cmd(
+                target_file, out_file, group_wordlist,
+                extensions=group_extensions,
+                threads=threads,
+                recursive=recursive,
+                combine=group_combine,
+                follow_redirects=follow_redirects,
+                include_status=include_status,
+                exclude_status=exclude_status,
+                max_rate=max_rate,
+                delay=delay,
             )
-        else:
-            c_targets, c_raw, per_timeout = alive_file, raw_out, timeout
-        idx += 1
+            return runner.run(cmd, stage=stage, output_dir=output_dir,
+                              timeout=per_timeout)
 
-        r = _run_one(c_targets, c_raw, per_timeout)
-        chunks_run += 1
-        raw_files.append(c_raw)
+        screen_dropped = 0
+        blanket_hosts: list[str] = []
 
-        # SALVAGE FIRST. dirsearch's ``-o`` plain report is written
-        # INCREMENTALLY (one line per hit, as it finds them) — unlike
-        # nuclei's ``-json-export``, a run killed at its timeout still
-        # leaves every hit it had already made on disk. The old code
-        # returned failed/count=0 without ever opening the file, so the
-        # 6000s timeout on the 2026-07-25 acronis.com run threw away real
-        # results. Parse first, decide status after.
-        lines: list[str] = []
-        for p in raw_files:
-            if p.exists():
-                lines.extend(p.read_text(errors="ignore").splitlines())
-        if not lines:
-            lines = (r.get("stdout") or "").splitlines()
-        urls = normalize_output(lines)
-        n = write_lines(proc_out, urls)     # ghi sau MỖI chunk
+        started = time.monotonic()
+        pending = list(group_targets)
+        cur_size = chunk_size if chunked else 0
+        rate_factor = 1.0
+        # MEASURED throughput, req/s. ``rate_factor`` alone only ever learns
+        # from a chunk that already died — it costs a full chunk budget per
+        # lesson, which is why the discover.com run burned its 6000s ceiling
+        # after 5 of 14 chunks. A chunk that COMPLETES is a free, exact
+        # measurement: requests_planned ÷ elapsed. Use it, and the nominal
+        # ``max_rate`` (which the target never actually grants) stops
+        # driving the budget after the first chunk.
+        #
+        # Only completions update it. A timed-out chunk sent an unknown
+        # number of requests ≤ planned, so planned÷elapsed would OVERSTATE
+        # the rate — the one direction that must never happen. Timeouts
+        # keep using the conservative halving instead.
+        measured_rps: float | None = None
+        chunk_words = _count_words(group_wordlist)
+        chunk_ext_mult = 1 + len(group_extensions) if (group_extensions and group_combine) else 1
+        idx = 0
+        raw_files: list[Path] = []
+        chunks_run = 0
+        any_timeout = False
+        deadline_hit = False
+        resized = False
+        hard_failed = 0
+        last_err = ""
+        urls: list[str] = []
+        n = 0
 
-        if r.get("timed_out"):
-            any_timeout = True
+        while pending:
+            chunk = pending[:cur_size] if cur_size > 0 else pending
+            pending = pending[len(chunk):]
+
             if chunked:
-                # Một chunk timeout nghĩa là GIẢ ĐỊNH TỐC ĐỘ SAI, không phải
-                # chunk quá to. Hạ ước lượng rate đúng bằng hệ số ta chia
-                # đôi chunk, nên wall-clock mỗi chunk giữ nguyên còn thời
-                # gian MỖI HOST tăng gấp đôi — đó mới là thứ sửa được lỗi.
-                rate_factor *= _RATE_BACKOFF
-                if cur_size > min_chunk:
-                    cur_size = max(min_chunk, cur_size // 2)
-                    resized = True
-        elif not r["success"] and not r["missing_binary"]:
-            hard_failed += 1
-            last_err = (r["stderr"] or "").strip()
+                c_targets = fuzz_targets.write_target_file(
+                    chunk, group_raw_ds / f"chunk_{idx:03d}_targets.txt")
+                c_raw = group_raw_ds / f"chunk_{idx:03d}.txt"
+                remaining = ceiling - (time.monotonic() - started)
+                if remaining <= _MIN_CHUNK_BUDGET:
+                    deadline_hit = True
+                    pending = chunk + pending          # chưa chạy, trả lại
+                    break
+                # Ngân sách chunk tính từ chính số host của nó, NHƯNG theo
+                # tốc độ đã học được (rate_factor), không phải max_rate danh
+                # nghĩa. Xem chú thích ở _RATE_BACKOFF: thiếu chỗ này thì
+                # việc chia đôi chunk hoàn toàn vô tác dụng.
+                eff_rate = (max(1, int(measured_rps)) if measured_rps
+                            else max(1, int(max_rate * rate_factor)))
+                per_timeout, _ = _plan_budget(
+                    targets=len(chunk), wordlist=group_wordlist,
+                    extensions=group_extensions if group_combine else None,
+                    max_rate=eff_rate,
+                    per_host=per_host,
+                    ceiling=int(remaining),
+                )
+            else:
+                c_targets = fuzz_targets.write_target_file(
+                    group_targets, group_raw_ds / "targets.txt")
+                c_raw, per_timeout = group_raw_out, timeout
+            idx += 1
 
-    if chunked and raw_files:
-        # Gộp lại thành raw_out để consumer cũ (report/audit) không đổi.
-        raw_out.write_text("\n".join(
-            p.read_text(errors="ignore") for p in raw_files if p.exists()))
+            chunk_started = time.monotonic()
+            r = _run_one(c_targets, c_raw, per_timeout)
+            chunk_elapsed = time.monotonic() - chunk_started
+            chunks_run += 1
+            raw_files.append(c_raw)
 
-    extra = {"wordlists": [str(p) for p in wl_paths],
-             "merge": merge_stats,
-             "selection": sel_stats,
-             "budget": budget,
-             "mode": "wordlist" if wl_paths else "extension"}
-    if chunked:
-        left = -(-len(pending) // cur_size) if pending and cur_size else \
-            (1 if pending else 0)
-        extra["chunks"] = {
-            "total": chunks_run + left, "run": chunks_run,
-            "size": cur_size, "initial_size": chunk_size,
-            "resized": resized, "failed": hard_failed,
-            "unrun": len(pending),
+            if chunked and not r.get("timed_out") and chunk_elapsed > 1:
+                planned = len(chunk) * chunk_words * chunk_ext_mult
+                if planned > 0:
+                    sample = planned / chunk_elapsed
+                    # Even weighting: throughput drifts down as a CDN
+                    # tightens, so the newest chunk must move the estimate
+                    # quickly, while keeping some memory guards against one
+                    # anomalous chunk.
+                    measured_rps = (sample if measured_rps is None
+                                    else (measured_rps + sample) / 2)
+
+            # SALVAGE FIRST. dirsearch's ``-o`` plain report is written
+            # INCREMENTALLY (one line per hit, as it finds them) — unlike
+            # nuclei's ``-json-export``, a run killed at its timeout still
+            # leaves every hit it had already made on disk. Parse first,
+            # decide status after.
+            lines: list[str] = []
+            for p in raw_files:
+                if p.exists():
+                    lines.extend(p.read_text(errors="ignore").splitlines())
+            if not lines:
+                lines = (r.get("stdout") or "").splitlines()
+            # Behavioural screen, same idea as ffuf's — but here the only
+            # signals dirsearch reports are status, size and redirect
+            # target, so the fingerprint leans on a bucketed length.
+            hits = parse_hits(lines)
+            kept_hits, screen_verdicts = behavior.screen_by_host(
+                hits,
+                min_cluster=int(screen_cfg.get("min_cluster", 25)),
+                min_share=float(screen_cfg.get("min_share", 0.5)),
+                length_tolerance=int(screen_cfg.get("length_tolerance", 16)),
+            ) if screen_on and hits else (hits, {})
+            screen_dropped = len(hits) - len(kept_hits)
+            blanket_hosts = sorted(h for h, v in screen_verdicts.items() if v.blanket)
+
+            # Fall back to the URL-only parse when the screen has nothing to
+            # say (screen disabled, or no line matched HIT_RE) so a parsing
+            # change can never silently shrink the stage's output.
+            urls = ([b.url for b in kept_hits] if screen_on and hits
+                    else normalize_output(lines))
+            # ghi sau MỖI chunk — kèm urls của (các) nhóm chạy trước, để
+            # proc_out luôn phản ánh MỌI kết quả đã cứu được tính tới lúc
+            # này, kể cả khi tiến trình chết giữa nhóm thứ hai.
+            n = write_lines(proc_out, prior_urls + urls)
+
+            if r.get("timed_out"):
+                any_timeout = True
+                if chunked:
+                    # Một chunk timeout nghĩa là GIẢ ĐỊNH TỐC ĐỘ SAI, không
+                    # phải chunk quá to. Hạ ước lượng rate đúng bằng hệ số ta
+                    # chia đôi chunk, nên wall-clock mỗi chunk giữ nguyên còn
+                    # thời gian MỖI HOST tăng gấp đôi — đó mới là thứ sửa
+                    # được lỗi.
+                    rate_factor *= _RATE_BACKOFF
+                    if measured_rps:
+                        measured_rps *= _RATE_BACKOFF
+                    if cur_size > min_chunk:
+                        cur_size = max(min_chunk, cur_size // 2)
+                        resized = True
+            elif not r["success"] and not r["missing_binary"]:
+                hard_failed += 1
+                last_err = (r["stderr"] or "").strip()
+
+        if chunked and raw_files:
+            # Gộp lại thành group_raw_out để consumer cũ (report/audit)
+            # không đổi.
+            group_raw_out.write_text("\n".join(
+                p.read_text(errors="ignore") for p in raw_files if p.exists()))
+
+        if measured_rps:
+            # The gap between what we asked for and what we got is the
+            # whole reason this stage kept blowing its ceiling — put it in
+            # the log.
+            budget = dict(budget)
+            budget["measured_rps"] = round(measured_rps, 1)
+            budget["nominal_rps"] = max_rate
+
+        extra_partial: dict = {
+            "budget": budget,
+            "screen": {"enabled": screen_on, "dropped": screen_dropped,
+                       "kept": n, "blanket_hosts": blanket_hosts},
+            "timeout": timeout, "ceiling": ceiling, "chunked": chunked,
+            "any_timeout": any_timeout, "deadline_hit": deadline_hit,
+            "hard_failed": hard_failed, "chunks_run": chunks_run,
+            "last_err": last_err, "pending_left": len(pending),
+            "resized": resized, "chunk_size": chunk_size, "cur_size": cur_size,
+            "n": n,
         }
+        if chunked:
+            left = -(-len(pending) // cur_size) if pending and cur_size else \
+                (1 if pending else 0)
+            extra_partial["chunks"] = {
+                "total": chunks_run + left, "run": chunks_run,
+                "size": cur_size, "initial_size": chunk_size,
+                "resized": resized, "failed": hard_failed,
+                "unrun": len(pending),
+            }
+        return urls, extra_partial
+
+    deep_targets = tiers.get("deep") or []
+    standard_targets = (tiers.get("standard") or []) + (tiers.get("light") or [])
+
+    extra: dict = {
+        "wordlists": [str(p) for p in wl_paths],
+        "merge": merge_stats,
+        "selection": sel_stats,
+        "depth": depth_stats,
+        "deep_wordlists": [str(p) for p in deep_wl_paths],
+        "deep_merge": deep_merge_stats,
+        "mode": "wordlist" if wl_paths else "extension",
+    }
+
+    if deep_targets:
+        deep_time_share = min(max(float(depth_cfg.get("deep_time_share", 0.35) or 0), 0.0), 1.0)
+        deep_ceiling = max(60, int(stage_ceiling * deep_time_share))
+        standard_ceiling = max(60, stage_ceiling - deep_ceiling)
+        deep_raw_out = raw_ds / "dirsearch_raw_deep.txt"
+        standard_raw_out = raw_ds / "dirsearch_raw_standard.txt"
+
+        deep_urls, deep_extra = _run_group(
+            deep_targets, deep_wordlist_file, extensions, combine,
+            deep_ceiling, raw_ds / "deep", deep_raw_out, [], "deep",
+        )
+        standard_urls, standard_extra = _run_group(
+            standard_targets, wordlist_file, extensions, combine,
+            standard_ceiling, raw_ds / "standard", standard_raw_out, deep_urls, "standard",
+        )
+        urls = _dedup(deep_urls + standard_urls)
+        n = write_lines(proc_out, urls)
+        raw_out.write_text(
+            (deep_raw_out.read_text(errors="ignore") if deep_raw_out.exists() else "")
+            + (standard_raw_out.read_text(errors="ignore") if standard_raw_out.exists() else "")
+        )
+
+        extra["groups"] = {"deep": deep_extra, "standard": standard_extra}
+        hard_failed_total = deep_extra["hard_failed"] + standard_extra["hard_failed"]
+        chunks_run_total = deep_extra["chunks_run"] + standard_extra["chunks_run"]
+        any_timeout = deep_extra["any_timeout"] or standard_extra["any_timeout"]
+        deadline_hit = deep_extra["deadline_hit"] or standard_extra["deadline_hit"]
+        last_err = standard_extra["last_err"] or deep_extra["last_err"]
+
+        if hard_failed_total == chunks_run_total and chunks_run_total and not urls:
+            return make_result(
+                stage, "failed", input_path=alive_file,
+                outputs=[raw_out, proc_out], count=0,
+                error=last_err[:300] or "every dirsearch chunk failed", extra=extra,
+            )
+
+        error = None
+        if any_timeout or deadline_hit:
+            extra["timed_out"] = True
+            if deadline_hit:
+                extra["deadline_hit"] = True
+            error = (
+                f"deep: {'hết ngân sách' if deep_extra['deadline_hit'] else ('timeout, chạy tiếp qua chunk' if deep_extra['any_timeout'] else 'xong')}; "
+                f"standard: {'hết ngân sách' if standard_extra['deadline_hit'] else ('timeout, chạy tiếp qua chunk' if standard_extra['any_timeout'] else 'xong')}; "
+                f"giữ {n} kết quả"
+            )
+        elif hard_failed_total:
+            error = f"{last_err[:200] or 'failed'} — salvaged {n} results"
+        return make_result(
+            stage, "success", input_path=alive_file,
+            outputs=[raw_out, proc_out], count=n, error=error, extra=extra,
+        )
+
+    # Không có host tier "deep" trong run này: MỘT nhóm với TOÀN BỘ ngân
+    # sách, ghi thẳng vào raw_out — hành vi BYTE-IDENTICAL với trước khi có
+    # fuzz_depth (không chia nhóm, không đổi đường dẫn file, không đổi câu
+    # thông báo lỗi).
+    urls, se = _run_group(
+        standard_targets, wordlist_file, extensions, combine,
+        stage_ceiling, raw_ds, raw_out, [], "standard",
+    )
+    extra["budget"] = se["budget"]
+    extra["screen"] = se["screen"]
+    if "chunks" in se:
+        extra["chunks"] = se["chunks"]
+
+    chunked = se["chunked"]
+    ceiling = se["ceiling"]
+    timeout = se["timeout"]
+    chunks_run = se["chunks_run"]
+    cur_size = se["cur_size"]
+    chunk_size_initial = se["chunk_size"]
+    resized = se["resized"]
+    n = se["n"]
+    hard_failed = se["hard_failed"]
+    last_err = se["last_err"]
+    pending_left = se["pending_left"]
+    any_timeout = se["any_timeout"]
+    deadline_hit = se["deadline_hit"]
 
     # Only a failure that salvaged NOTHING is a dead stage.
     if hard_failed == chunks_run and chunks_run and not urls:
@@ -671,10 +979,10 @@ def scan(
         if not chunked:
             error = f"timeout after {timeout}s — salvaged {n} partial results"
         else:
-            note = (f"hết ngân sách stage {ceiling}s, còn {len(pending)} host"
+            note = (f"hết ngân sách stage {ceiling}s, còn {pending_left} host"
                     if deadline_hit else "chạy tiếp qua chunk timeout")
             if resized:
-                note += f"; chunk {chunk_size}→{cur_size}"
+                note += f"; chunk {chunk_size_initial}→{cur_size}"
             error = (f"{chunks_run}/{extra['chunks']['total']} chunk chạy, "
                      f"{note}; giữ {n} kết quả")
     elif hard_failed:

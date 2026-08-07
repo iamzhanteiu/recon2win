@@ -96,3 +96,50 @@ def test_normalize_handles_real_dirsearch_redirect_format():
         "https://example.com/admin",
         "https://example.com/old",
     ]
+
+
+# ----------------------------------------------------------------------
+# parse_hits / parse_size — the behavioural columns normalize_output drops
+# ----------------------------------------------------------------------
+def test_parse_size_handles_the_units_dirsearch_prints():
+    from modules.dirsearch import parse_size
+    from modules.behavior import UNKNOWN
+
+    assert parse_size("198B") == 198
+    assert parse_size("10KB") == 10240
+    assert parse_size("1.5KB") == 1536
+    assert parse_size("2MB") == 2 * 1024 ** 2
+    assert parse_size("0B") == 0
+    assert parse_size("weird") == UNKNOWN
+
+
+def test_parse_hits_keeps_status_size_and_redirect_target():
+    from modules.dirsearch import parse_hits
+
+    hits = parse_hits([
+        "200   198B   https://x.com/robots.txt",
+        "302   0B     https://x.com/admin    -> REDIRECTS TO: https://x.com/login",
+    ])
+    assert [(h.status, h.length) for h in hits] == [(200, 198), (302, 0)]
+    assert hits[0].location == ""
+    assert hits[1].location == "https://x.com/login"
+
+
+def test_parse_hits_ignores_banner_and_blank_lines():
+    from modules.dirsearch import parse_hits
+
+    assert parse_hits(["# Dirsearch started ...", "", "not a hit"]) == []
+
+
+def test_screen_collapses_a_host_that_403s_every_path():
+    # qa.ops.src.apis.discover.com on the real run: 230 hits, every one of
+    # them the same {"message":"Forbidden"} — including the .bak paths that
+    # looked like findings.
+    from modules import behavior
+    from modules.dirsearch import parse_hits
+
+    lines = [f"403   23B   https://qa.x.com/{name}"
+             for name in [f"p{i}.bak" for i in range(230)]]
+    kept, verdicts = behavior.screen_by_host(parse_hits(lines))
+    assert kept == []
+    assert verdicts["qa.x.com"].blanket is True

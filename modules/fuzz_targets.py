@@ -26,6 +26,7 @@ from pathlib import Path
 from typing import Any, Iterable
 from urllib.parse import urlsplit
 
+from . import baseline, layout
 from .utils import load_json, read_lines, score_subdomain, write_lines
 
 
@@ -99,11 +100,25 @@ def select_targets(
     max_hosts: int = 50,
     dedup: bool = True,
     skip_waf: bool = False,
+    baselines: dict[str, Any] | None = None,
+    match_status: Iterable[int] | None = None,
 ) -> tuple[list[str], dict]:
     """Rút danh sách alive host xuống tập đáng fuzz.
 
     ``detail_rows`` là ``alive_detail.json`` của httpx. Thiếu nó thì vẫn chạy
     được — chỉ mất bước gom nhóm, phần xếp hạng + cap vẫn có tác dụng.
+
+    ``baselines`` (``modules.baseline.measure``) là tín hiệu TỐT HƠN cho cả
+    hai việc, và khi có thì nó thay thế ``detail_rows`` ở bước gom nhóm:
+
+      * **Bỏ host không fuzz được.** Host trả cùng một response cho path
+        không tồn tại — và response đó nằm trong ``match_status`` — sẽ "tìm
+        thấy" nguyên wordlist. Đo trên discover.com: 11 host như vậy, ffuf
+        đốt trọn 3.600s để sinh 44.230 bản sao trang chặn.
+      * **Gom nhóm đúng thứ.** ``response_fingerprint`` gom theo TRANG CHỦ,
+        nhưng thứ quyết định giá trị fuzz là cách host trả lời path không có
+        thật. Đúng 11 host nói trên có trang chủ khác nhau nên không bao giờ
+        bị gom, dù hành xử y hệt nhau ở mọi path khác.
 
     Trả về ``(targets, stats)``; ``stats`` đi thẳng vào ``extra`` của stage
     result nên operator nhìn báo cáo là biết đã cắt được bao nhiêu.
@@ -129,11 +144,32 @@ def select_targets(
             stats["waf_skipped"] = len(candidates) - len(kept)
             candidates = kept
 
-    if dedup and by_url:
+    if baselines:
+        wanted = set(match_status or ())
+        blanket = [u for u in candidates
+                   if u in baselines and baselines[u].is_blanket(wanted)]
+        if blanket:
+            drop = set(blanket)
+            candidates = [u for u in candidates if u not in drop]
+            stats["blanket_skipped"] = len(blanket)
+            stats["blanket_sample"] = blanket[:5]
+
+    # Mốc để tính ``deduped``. Phải lấy SAU khi bỏ WAF và blanket, nếu không
+    # một con số lại tính cả phần của con số kia và tổng không khớp đầu vào.
+    before_dedup = len(candidates)
+
+    if dedup and (baselines or by_url):
         groups: dict[tuple, list[str]] = {}
         unique: list[str] = []          # không đủ dữ liệu để gom → giữ nguyên
         for u in candidates:
-            fp = response_fingerprint(by_url.get(u, {}))
+            # Baseline shape is the better key, but a host we could not probe
+            # must still get the home-page grouping rather than none at all —
+            # otherwise a failed probe silently turns dedup off and we go back
+            # to fuzzing 200 copies of one app.
+            bl = (baselines or {}).get(u)
+            fp = bl.shape if (bl is not None and bl.consistent) else None
+            if fp is None:
+                fp = response_fingerprint(by_url.get(u, {}))
             if fp is None:
                 unique.append(u)
             else:
@@ -142,7 +178,7 @@ def select_targets(
         # Giữ thứ tự xuất hiện ban đầu để kết quả ổn định giữa các lần chạy.
         keep = set(collapsed) | set(unique)
         candidates = [u for u in candidates if u in keep]
-        stats["deduped"] = len(all_urls) - len(candidates) - stats["waf_skipped"]
+        stats["deduped"] = before_dedup - len(candidates)
         stats["groups"] = len(groups)
         biggest = max((len(g) for g in groups.values()), default=0)
         if biggest > 1:
@@ -162,14 +198,52 @@ def load_targets(
     max_hosts: int = 50,
     dedup: bool = True,
     skip_waf: bool = False,
+    cfg: dict | None = None,
+    match_status: Iterable[int] | None = None,
+    stage: str = "baseline",
 ) -> tuple[list[str], dict]:
-    """``select_targets`` nhưng đọc sẵn alive.txt + alive_detail.json từ đĩa."""
+    """``select_targets`` nhưng đọc sẵn alive.txt + alive_detail.json từ đĩa.
+
+    Chạy luôn baseline probe (``baseline.measure``) trừ khi tắt trong config.
+    Chi phí: ``số host × baseline.probes`` request — 154 × 3 = 462 trên
+    discover.com, so với 690.000 request của chính stage fuzzing. Mỗi stage
+    tự probe thay vì dùng chung, vì stage 4 chạy song song và một cache chung
+    sẽ thành race; giá phải trả là vài trăm request, đổi lại không có trạng
+    thái chia sẻ nào giữa các stage.
+    """
     urls = read_lines(alive_file)
-    detail = load_json(output_dir / "processed" / "alive_detail.json")
+    detail = load_json(layout.path(output_dir, "alive_detail.json"))
     rows = detail if isinstance(detail, list) else []
-    return select_targets(
+
+    # The probe is real network I/O, so it happens only when the caller
+    # actually hands over a config. A caller with no ``cfg`` cannot have
+    # configured the probe and is either a unit test or legacy code — both
+    # want the old, purely-on-disk behaviour rather than a surprise round of
+    # requests from a function called "load".
+    baselines: dict[str, Any] | None = None
+    probe_stats: dict = {}
+    b_cfg = (cfg or {}).get("baseline") or {}
+    if cfg is not None and urls and b_cfg.get("enabled", True):
+        # Probe with the client that will do the fuzzing. Probing ffuf's
+        # targets with httpx measures a different target: on discover.com
+        # httpx got a clean 404 from webapp.src while ffuf got a 403 bot-block
+        # for every path, so the probe cleared a host that ffuf could learn
+        # nothing from. ``baseline.client`` can pin this; "auto" follows the
+        # stage.
+        client = str(b_cfg.get("client", "auto")).lower()
+        if client == "auto":
+            client = "ffuf" if stage == "ffuf" else "httpx"
+        baselines, probe_stats = baseline.measure(
+            urls, output_dir, cfg, stage=stage, client=client,
+        )
+
+    targets, stats = select_targets(
         urls, rows, max_hosts=max_hosts, dedup=dedup, skip_waf=skip_waf,
+        baselines=baselines, match_status=match_status,
     )
+    if probe_stats:
+        stats["baseline"] = probe_stats
+    return targets, stats
 
 
 def write_target_file(targets: list[str], path: Path) -> Path:
@@ -181,6 +255,14 @@ def write_target_file(targets: list[str], path: Path) -> Path:
 def summary_line(stats: dict) -> str:
     """Một dòng cho console: đã cắt được gì so với đầu vào."""
     parts = [f"{stats.get('input', 0)} alive"]
+    # A failed probe must never be invisible: without it nothing gets
+    # skipped, and the line would otherwise read exactly like a run where
+    # the target simply had no blanket hosts.
+    probe_err = (stats.get("baseline") or {}).get("error")
+    if probe_err:
+        parts.append(f"[baseline HỎNG: {probe_err}]")
+    if stats.get("blanket_skipped"):
+        parts.append(f"-{stats['blanket_skipped']} trả như nhau mọi path")
     if stats.get("deduped"):
         parts.append(f"-{stats['deduped']} trùng response")
     if stats.get("waf_skipped"):

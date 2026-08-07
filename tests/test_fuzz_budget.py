@@ -7,23 +7,21 @@ chia đều cho mọi host: 3600s / 50 host = 72s/host.
 import json
 from pathlib import Path
 
-from modules import dirsearch, ffuf
+from modules import dirsearch, ffuf, layout
 from modules.utils import read_lines
 
 
 def _setup(tmp_path: Path, n_hosts: int = 1):
     out = tmp_path / "out"
-    proc = out / "processed"
-    proc.mkdir(parents=True)
     urls = [f"https://h{i}.example.com" for i in range(n_hosts)]
-    (proc / "alive.txt").write_text("\n".join(urls) + "\n")
+    (layout.path(out, "alive.txt")).write_text("\n".join(urls) + "\n")
     # words khác nhau → không host nào bị gom, giữ đủ số target để test cap
-    (proc / "alive_detail.json").write_text(json.dumps([
+    (layout.path(out, "alive_detail.json")).write_text(json.dumps([
         {"url": u, "status_code": 200, "words": i, "lines": 1,
          "title": f"t{i}", "webserver": "nginx"} for i, u in enumerate(urls)]))
     wl = tmp_path / "wl.txt"
     wl.write_text("admin\n")
-    return proc / "alive.txt", out, wl
+    return layout.path(out, "alive.txt"), out, wl
 
 
 # ----------------------------------------------------------------------
@@ -337,7 +335,7 @@ def test_dirsearch_salvages_partial_results_on_timeout(tmp_path: Path, monkeypat
     assert res["count"] == 2
     assert res["extra"]["timed_out"] is True
     assert "salvaged 2" in res["error"]
-    assert len(read_lines(out / "processed" / "dirsearch_urls.txt")) == 2
+    assert len(read_lines(layout.path(out, "dirsearch_urls.txt"))) == 2
 
 
 def test_dirsearch_fails_only_when_nothing_salvaged(tmp_path: Path, monkeypatch):

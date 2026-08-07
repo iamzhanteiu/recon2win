@@ -7,7 +7,7 @@ sao chiếm chỗ.
 import json
 from pathlib import Path
 
-from modules import fuzz_targets
+from modules import fuzz_targets, layout
 from modules.fuzz_targets import (
     is_waf,
     load_targets,
@@ -176,22 +176,18 @@ def test_skip_waf_drops_them():
 # ----------------------------------------------------------------------
 def test_load_targets_reads_both_files(tmp_path: Path):
     out = tmp_path / "out"
-    proc = out / "processed"
-    proc.mkdir(parents=True)
     urls = [f"https://h{i}.example.com" for i in range(4)]
-    (proc / "alive.txt").write_text("\n".join(urls) + "\n")
-    (proc / "alive_detail.json").write_text(json.dumps([_row(u) for u in urls]))
-    targets, stats = load_targets(proc / "alive.txt", out, max_hosts=50)
+    (layout.path(out, "alive.txt")).write_text("\n".join(urls) + "\n")
+    (layout.path(out, "alive_detail.json")).write_text(json.dumps([_row(u) for u in urls]))
+    targets, stats = load_targets(layout.path(out, "alive.txt"), out, max_hosts=50)
     assert len(targets) == 1          # cả 4 cùng response
     assert stats["deduped"] == 3
 
 
 def test_load_targets_without_detail_json(tmp_path: Path):
     out = tmp_path / "out"
-    proc = out / "processed"
-    proc.mkdir(parents=True)
-    (proc / "alive.txt").write_text("https://a.example.com\n")
-    targets, stats = load_targets(proc / "alive.txt", out, max_hosts=50)
+    (layout.path(out, "alive.txt")).write_text("https://a.example.com\n")
+    targets, stats = load_targets(layout.path(out, "alive.txt"), out, max_hosts=50)
     assert targets == ["https://a.example.com"]
 
 
@@ -213,11 +209,9 @@ def test_summary_line_mentions_each_reduction():
 def test_ffuf_uses_deduped_targets(tmp_path: Path, monkeypatch):
     from modules import ffuf
     out = tmp_path / "out"
-    proc = out / "processed"
-    proc.mkdir(parents=True)
     urls = [f"https://h{i}.example.com" for i in range(20)]
-    (proc / "alive.txt").write_text("\n".join(urls) + "\n")
-    (proc / "alive_detail.json").write_text(json.dumps([_row(u) for u in urls]))
+    (layout.path(out, "alive.txt")).write_text("\n".join(urls) + "\n")
+    (layout.path(out, "alive_detail.json")).write_text(json.dumps([_row(u) for u in urls]))
     wl = tmp_path / "wl.txt"
     wl.write_text("admin\n")
 
@@ -230,7 +224,7 @@ def test_ffuf_uses_deduped_targets(tmp_path: Path, monkeypatch):
 
     monkeypatch.setattr(ffuf.runner, "tool_available", lambda _b: True)
     monkeypatch.setattr(ffuf.runner, "run", fake_run)
-    res = ffuf.scan(proc / "alive.txt", out, {"ffuf": {"wordlists": [str(wl)]}})
+    res = ffuf.scan(layout.path(out, "alive.txt"), out, {"ffuf": {"wordlists": [str(wl)]}})
     assert len(calls) == 1                      # 20 host → 1 process
     assert res["extra"]["selection"]["deduped"] == 19
 
@@ -238,11 +232,9 @@ def test_ffuf_uses_deduped_targets(tmp_path: Path, monkeypatch):
 def test_dirsearch_writes_deduped_target_file(tmp_path: Path, monkeypatch):
     from modules import dirsearch
     out = tmp_path / "out"
-    proc = out / "processed"
-    proc.mkdir(parents=True)
     urls = [f"https://h{i}.example.com" for i in range(20)]
-    (proc / "alive.txt").write_text("\n".join(urls) + "\n")
-    (proc / "alive_detail.json").write_text(json.dumps([_row(u) for u in urls]))
+    (layout.path(out, "alive.txt")).write_text("\n".join(urls) + "\n")
+    (layout.path(out, "alive_detail.json")).write_text(json.dumps([_row(u) for u in urls]))
     wl = tmp_path / "wl.txt"
     wl.write_text("admin\n")
 
@@ -256,7 +248,7 @@ def test_dirsearch_writes_deduped_target_file(tmp_path: Path, monkeypatch):
     monkeypatch.setattr(dirsearch.runner, "tool_available", lambda _b: True)
     monkeypatch.setattr(dirsearch.runner, "run", fake_run)
     res = dirsearch.scan(
-        proc / "alive.txt", out, {"dirsearch": {"wordlists": [str(wl)]}})
+        layout.path(out, "alive.txt"), out, {"dirsearch": {"wordlists": [str(wl)]}})
     # dirsearch nhận -l trỏ vào file target đã lọc, không phải alive.txt
     assert seen[0].endswith("targets.txt")
     assert Path(seen[0]).read_text().strip().count("\n") == 0   # đúng 1 host
@@ -273,11 +265,9 @@ def test_empty_selection_must_not_fall_back_to_full_alive_list(
     """
     from modules import dirsearch
     out = tmp_path / "out"
-    proc = out / "processed"
-    proc.mkdir(parents=True)
     urls = ["https://a.example.com", "https://b.example.com"]
-    (proc / "alive.txt").write_text("\n".join(urls) + "\n")
-    (proc / "alive_detail.json").write_text(
+    (layout.path(out, "alive.txt")).write_text("\n".join(urls) + "\n")
+    (layout.path(out, "alive_detail.json")).write_text(
         json.dumps([_row(u, cdn_type="waf") for u in urls]))
     wl = tmp_path / "wl.txt"
     wl.write_text("admin\n")
@@ -290,7 +280,7 @@ def test_empty_selection_must_not_fall_back_to_full_alive_list(
             "success": True, "stderr": "", "stdout": "", "missing_binary": False},
     )
     res = dirsearch.scan(
-        proc / "alive.txt", out,
+        layout.path(out, "alive.txt"), out,
         {"dirsearch": {"wordlists": [str(wl)], "skip_waf": True}},
     )
     assert called == []                       # dirsearch không được chạy

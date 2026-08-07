@@ -16,7 +16,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from modules import dirsearch as ds
+from modules import dirsearch as ds, layout
 from modules.utils import create_output_structure, read_lines, write_lines
 
 
@@ -47,7 +47,7 @@ def _fake_run_factory(timeouts=None, hits_per_call=1):
 
 def _base(tmp_path, n_hosts, wordlist_words=10):
     base = create_output_structure("x.com", root=str(tmp_path))
-    alive = base / "processed" / "alive.txt"
+    alive = layout.path(base, "alive.txt")
     write_lines(alive, [f"https://h{i}.x.com" for i in range(n_hosts)])
     wl = tmp_path / "wl.txt"
     write_lines(wl, [f"w{i}" for i in range(wordlist_words)])
@@ -187,6 +187,205 @@ def test_stage_ceiling_bounds_the_chunked_run(tmp_path, monkeypatch):
     assert res["extra"]["deadline_hit"] is True
     assert res["extra"]["chunks"]["unrun"] == 28
     assert "ngân sách stage" in res["error"]
+
+
+def _base_with_deep_host(tmp_path, n_standard_hosts, wordlist_words=10):
+    """One deep-tier host (``admin.x.com``, scores well above the default
+    threshold) plus N generic hosts that classify as "standard"."""
+    base = create_output_structure("x.com", root=str(tmp_path))
+    alive = layout.path(base, "alive.txt")
+    hosts = ["https://admin.x.com"] + [
+        f"https://h{i}.x.com" for i in range(n_standard_hosts)]
+    write_lines(alive, hosts)
+    wl = tmp_path / "wl.txt"
+    write_lines(wl, [f"w{i}" for i in range(wordlist_words)])
+    return base, alive, wl, hosts
+
+
+# ----------------------------------------------------------------------
+# fuzz_depth two-tier execution
+# ----------------------------------------------------------------------
+def test_no_deep_tier_host_is_byte_identical_single_group(tmp_path, monkeypatch):
+    """Regression guard for the _run_group extraction: a run with only
+    generic (non-deep) hostnames must produce the exact same top-level
+    ``extra`` shape as before fuzz_depth existed — no "groups" key, no
+    behaviour change."""
+    fake, state = _fake_run_factory()
+    monkeypatch.setattr("modules.runner.tool_available", lambda b: True)
+    monkeypatch.setattr("modules.runner.run", fake)
+
+    base, alive, wl = _base(tmp_path, 10)
+    res = ds.scan(alive, base, _cfg(wl), skip=False)
+
+    assert "groups" not in res["extra"]
+    assert res["extra"]["chunks"]["run"] == 3
+    assert res["extra"]["depth"]["deep"] == 0
+
+
+def test_deep_and_standard_groups_both_run(tmp_path, monkeypatch):
+    fake, state = _fake_run_factory()
+    monkeypatch.setattr("modules.runner.tool_available", lambda b: True)
+    monkeypatch.setattr("modules.runner.run", fake)
+
+    base, alive, wl, hosts = _base_with_deep_host(tmp_path, 8)
+    cfg = _cfg(wl, max_hosts=0)
+    cfg["fuzz_depth"] = {"deep_time_share": 0.5}
+    res = ds.scan(alive, base, cfg, skip=False)
+
+    assert res["status"] == "success"
+    assert set(res["extra"]["groups"].keys()) == {"deep", "standard"}
+    # every host reached dirsearch exactly once, across BOTH groups
+    all_targets = [t for chunk in state["targets"] for t in chunk]
+    assert sorted(all_targets) == sorted(hosts)
+    urls = read_lines(layout.path(base, "dirsearch_urls.txt"))
+    assert any("admin.x.com" in u for u in urls)
+    assert any("h0.x.com" in u for u in urls)
+
+
+def test_deep_tier_tech_signal_pulls_in_its_dedicated_wordlist(tmp_path, monkeypatch):
+    """A deep-tier host detected as running Jenkins (fuzz_depth.TECH_HINTS,
+    via alive_detail.json ``tech``) must get Jenkins's own SecLists file
+    merged in automatically — no config.dirsearch.fuzz_depth.deep_wordlists
+    entry needed. A host with no matched tech gets the base wordlist only."""
+    from modules import fuzz_depth
+    from modules.utils import write_json
+
+    used_wordlists: dict[str, str] = {}
+
+    def fake(cmd, **kw):
+        targets = read_lines(Path(cmd[cmd.index("-l") + 1]))
+        wl_used = cmd[cmd.index("-w") + 1]
+        for t in targets:
+            used_wordlists[t] = wl_used
+        out = Path(cmd[cmd.index("-o") + 1])
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_text("".join(f"200    26B   {t}/hit\n" for t in targets[:1]))
+        return {"returncode": 0, "stdout": "", "stderr": "",
+                "missing_binary": False, "timed_out": False, "success": True}
+
+    monkeypatch.setattr("modules.runner.tool_available", lambda b: True)
+    monkeypatch.setattr("modules.runner.run", fake)
+
+    base = create_output_structure("x.com", root=str(tmp_path))
+    alive = layout.path(base, "alive.txt")
+    hosts = ["https://app3.x.com", "https://app4.x.com"]
+    write_lines(alive, hosts)
+    write_json(layout.path(base, "alive_detail.json"), [
+        {"url": "https://app3.x.com", "tech": ["Jenkins"]},
+        {"url": "https://app4.x.com", "tech": ["nginx"]},
+    ])
+    wl = tmp_path / "wl.txt"
+    write_lines(wl, ["w0"])
+    jenkins_wl = tmp_path / "jenkins.txt"
+    write_lines(jenkins_wl, ["script", "scriptText"])
+    monkeypatch.setattr(fuzz_depth, "TECH_WORDLIST_MAP", {"jenkins": str(jenkins_wl)})
+
+    cfg = _cfg(wl, max_hosts=0)
+    cfg["fuzz_depth"] = {"deep_time_share": 0.5}
+    res = ds.scan(alive, base, cfg, skip=False)
+
+    assert res["status"] == "success"
+    assert res["extra"]["depth"]["deep"] == 1
+    assert res["extra"]["depth"]["deep_tech_hits"] == {"jenkins": 1}
+    assert str(jenkins_wl) in res["extra"]["deep_wordlists"]
+    assert used_wordlists["https://app3.x.com"] != used_wordlists["https://app4.x.com"]
+    assert used_wordlists["https://app4.x.com"] == str(wl)
+    merged_content = Path(used_wordlists["https://app3.x.com"]).read_text()
+    assert "script" in merged_content
+
+
+def test_tech_aware_wordlists_can_be_disabled(tmp_path, monkeypatch):
+    """``fuzz_depth.tech_aware_wordlists: false`` must fall back to
+    ``deep_wordlists`` only — no automatic tech-specific merge."""
+    from modules import fuzz_depth
+    from modules.utils import write_json
+
+    used_wordlists: dict[str, str] = {}
+
+    def fake(cmd, **kw):
+        targets = read_lines(Path(cmd[cmd.index("-l") + 1]))
+        wl_used = cmd[cmd.index("-w") + 1]
+        for t in targets:
+            used_wordlists[t] = wl_used
+        out = Path(cmd[cmd.index("-o") + 1])
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_text("".join(f"200    26B   {t}/hit\n" for t in targets[:1]))
+        return {"returncode": 0, "stdout": "", "stderr": "",
+                "missing_binary": False, "timed_out": False, "success": True}
+
+    monkeypatch.setattr("modules.runner.tool_available", lambda b: True)
+    monkeypatch.setattr("modules.runner.run", fake)
+
+    base = create_output_structure("x.com", root=str(tmp_path))
+    alive = layout.path(base, "alive.txt")
+    write_lines(alive, ["https://app3.x.com"])
+    write_json(layout.path(base, "alive_detail.json"), [
+        {"url": "https://app3.x.com", "tech": ["Jenkins"]},
+    ])
+    wl = tmp_path / "wl.txt"
+    write_lines(wl, ["w0"])
+    jenkins_wl = tmp_path / "jenkins.txt"
+    write_lines(jenkins_wl, ["script"])
+    monkeypatch.setattr(fuzz_depth, "TECH_WORDLIST_MAP", {"jenkins": str(jenkins_wl)})
+
+    cfg = _cfg(wl, max_hosts=0)
+    cfg["fuzz_depth"] = {"deep_time_share": 0.5, "tech_aware_wordlists": False}
+    res = ds.scan(alive, base, cfg, skip=False)
+
+    assert res["status"] == "success"
+    assert used_wordlists["https://app3.x.com"] == str(wl)
+
+
+def test_deep_time_share_splits_the_stage_ceiling(tmp_path, monkeypatch):
+    fake, state = _fake_run_factory()
+    monkeypatch.setattr("modules.runner.tool_available", lambda b: True)
+    monkeypatch.setattr("modules.runner.run", fake)
+
+    base, alive, wl, hosts = _base_with_deep_host(tmp_path, 8)
+    cfg = _cfg(wl, max_hosts=0, timeout=1000)
+    cfg["fuzz_depth"] = {"deep_time_share": 0.3}
+    res = ds.scan(alive, base, cfg, skip=False)
+
+    groups = res["extra"]["groups"]
+    assert groups["deep"]["ceiling"] == 300          # 1000 * 0.3
+    assert groups["standard"]["ceiling"] == 700       # remainder
+
+
+def test_deep_group_hard_failure_does_not_fail_stage_when_standard_salvaged(
+        tmp_path, monkeypatch):
+    """One tier failing outright must not sink the whole stage if the other
+    tier produced real results."""
+    calls = {"n": 0}
+
+    def fake(cmd, **kw):
+        i = calls["n"]
+        calls["n"] += 1
+        tfile = Path(cmd[cmd.index("-l") + 1])
+        chunk = read_lines(tfile)
+        out = Path(cmd[cmd.index("-o") + 1])
+        out.parent.mkdir(parents=True, exist_ok=True)
+        if i == 0:
+            # deep group's one-and-only (non-chunked) call: hard failure.
+            return {"returncode": 1, "stdout": "", "stderr": "boom",
+                    "missing_binary": False, "timed_out": False,
+                    "success": False}
+        out.write_text("".join(f"200    26B   {h}/hit{i}\n" for h in chunk[:1]))
+        return {"returncode": 0, "stdout": "", "stderr": "",
+                "missing_binary": False, "timed_out": False, "success": True}
+
+    monkeypatch.setattr("modules.runner.tool_available", lambda b: True)
+    monkeypatch.setattr("modules.runner.run", fake)
+
+    base, alive, wl, hosts = _base_with_deep_host(tmp_path, 8)
+    cfg = _cfg(wl, max_hosts=0)
+    cfg["fuzz_depth"] = {"deep_time_share": 0.5}
+    res = ds.scan(alive, base, cfg, skip=False)
+
+    assert res["status"] == "success"
+    assert res["count"] > 0
+    urls = read_lines(layout.path(base, "dirsearch_urls.txt"))
+    assert not any("admin.x.com" in u for u in urls)
+    assert any("h0.x.com" in u for u in urls)
 
 
 def test_per_chunk_timeout_is_clamped_to_the_remaining_budget(tmp_path, monkeypatch):

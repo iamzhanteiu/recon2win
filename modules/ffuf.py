@@ -45,10 +45,10 @@ from pathlib import Path
 from typing import Iterable
 from urllib.parse import urlsplit
 
-from . import console, fuzz_targets, runner
+from . import behavior, console, fuzz_depth, fuzz_targets, layout, runner
 from .dirsearch import _merge_wordlists, _resolve_wordlists
 from .sensitive_ext import SENSITIVE_EXT, to_wordlist_lines
-from .utils import make_result, raw_dir, read_lines, write_lines
+from .utils import load_json, make_result, raw_dir, read_lines, write_lines
 
 
 # Anything outside this set becomes "_" in a raw report filename, so a
@@ -93,15 +93,27 @@ def report_name(target: str) -> str:
     return _UNSAFE_RE.sub("_", stripped).strip("_") + ".json"
 
 
-def parse_report(text: str) -> list[tuple[int, int, str]]:
-    """Extract ``(status, length, url)`` triples from one ffuf JSON report.
+def _int(value, default: int = behavior.UNKNOWN) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
 
-    ffuf writes ``{"results": [{"url": ..., "status": ..., "length": ...,
-    "input": {...}}]}``. ``length`` is the response body size in bytes — the
-    signal you scan for to spot the odd-sized hit among a wall of same-size
-    soft-404s. A report can be missing, empty, or truncated when ffuf is
-    killed by the per-host timeout — every one of those yields ``[]`` rather
-    than raising, because one dead host must not fail the stage for the rest.
+
+def parse_report(text: str) -> list[behavior.Behavior]:
+    """Extract one :class:`behavior.Behavior` per hit from a ffuf JSON report.
+
+    ffuf reports ``{"results": [{"url", "status", "length", "words", "lines",
+    "content-type", "redirectlocation", ...}]}``. This used to keep only
+    ``(status, length, url)`` and throw the rest away — which is precisely
+    why 44,230 identical block pages survived as "hits" on the discover.com
+    run: the byte length varied (the block page echoes the requested path)
+    while ``words`` was 13 for every one of them. Keep the whole shape and
+    :func:`behavior.cluster` can collapse them.
+
+    A report can be missing, empty, or truncated when ffuf is killed by the
+    per-host timeout — every one of those yields ``[]`` rather than raising,
+    because one dead host must not fail the stage for the rest.
     """
     if not text or not text.strip():
         return []
@@ -114,22 +126,22 @@ def parse_report(text: str) -> list[tuple[int, int, str]]:
     results = data.get("results")
     if not isinstance(results, list):
         return []
-    out: list[tuple[int, int, str]] = []
+    out: list[behavior.Behavior] = []
     for item in results:
         if not isinstance(item, dict):
             continue
         url = str(item.get("url") or "").strip()
         if not url.startswith("http"):
             continue
-        try:
-            status = int(item.get("status") or 0)
-        except (TypeError, ValueError):
-            status = 0
-        try:
-            length = int(item.get("length") or 0)
-        except (TypeError, ValueError):
-            length = 0
-        out.append((status, length, url))
+        out.append(behavior.Behavior(
+            url=url,
+            status=_int(item.get("status"), 0),
+            length=_int(item.get("length"), 0),
+            words=_int(item.get("words")),
+            lines=_int(item.get("lines")),
+            content_type=str(item.get("content-type") or ""),
+            location=str(item.get("redirectlocation") or ""),
+        ))
     return out
 
 
@@ -230,7 +242,7 @@ def _build_cmd(
 # Resume / dry-run helpers
 # ----------------------------------------------------------------------
 def _outputs_exist(out_dir: Path) -> bool:
-    p = out_dir / "processed" / "ffuf_urls.txt"
+    p = layout.path(out_dir, "ffuf_urls.txt")
     return p.exists() and p.stat().st_size > 0
 
 
@@ -288,11 +300,10 @@ def scan(
 ) -> dict:
     stage = "ffuf"
     raw_ff = raw_dir(output_dir, "ffuf")
-    proc = output_dir / "processed"
-    proc.mkdir(parents=True, exist_ok=True)
+    layout.ensure_tree(output_dir)
     raw_out = raw_ff / "ffuf_raw.txt"
     merged_wl_path = raw_ff / "merged_wordlists.txt"
-    proc_out = proc / "ffuf_urls.txt"
+    proc_out = layout.path(output_dir, "ffuf_urls.txt")
 
     f_cfg = cfg.get("ffuf", {}) if isinstance(cfg, dict) else {}
 
@@ -329,11 +340,36 @@ def scan(
         max_hosts=max_hosts,
         dedup=bool(f_cfg.get("dedup_targets", True)),
         skip_waf=bool(f_cfg.get("skip_waf", False)),
+        cfg=cfg,
+        # What ffuf will COUNT as a hit. A host whose answer to a
+        # nonexistent path is already in this set cannot tell real paths
+        # from fake ones, so fuzzing it can only produce the wordlist back.
+        match_status=[int(s) for s in (f_cfg.get("match_status") or [])
+                      if str(s).isdigit()],
+        stage=stage,
     )
     targets = normalize_targets(read_lines(alive_file))
     capped = normalize_targets(selected)
     if sel_stats.get("deduped") or sel_stats.get("capped"):
         print(console.phase_info_line(f"[ffuf] {fuzz_targets.summary_line(sel_stats)}"))
+
+    # Adaptive fuzz depth: which of the already-selected hosts get the
+    # expensive extras (bigger wordlist). Never re-filters/re-caps — that
+    # stays fuzz_targets' job.
+    depth_cfg = cfg.get("fuzz_depth", {}) if isinstance(cfg, dict) else {}
+    if depth_cfg.get("enabled", True):
+        detail_rows = load_json(layout.path(output_dir, "alive_detail.json"))
+        detail_rows = detail_rows if isinstance(detail_rows, list) else []
+        # Tech confirmed by misconfig_probe on a PRIOR scan of this same
+        # target (this run's own probe hasn't run yet — see fuzz_depth
+        # module docstring) enriches the tier + tech-aware wordlist call.
+        detail_rows = fuzz_depth.merge_confirmed_tech(
+            detail_rows, fuzz_depth.load_confirmed_tech(output_dir))
+        tiers, depth_stats = fuzz_depth.tier_targets(capped, detail_rows, cfg)
+    else:
+        tiers, depth_stats = {"deep": [], "standard": capped, "light": []}, {}
+    if depth_stats.get("deep"):
+        print(console.phase_info_line(f"[ffuf] {fuzz_depth.summary_line(depth_stats)}"))
 
     def _build(target: str, wordlist: Path | None) -> list[str]:
         return _build_cmd(
@@ -403,6 +439,30 @@ def scan(
         merge_stats = {"files": 0, "path": str(merged_wl_path),
                        "source": "sensitive_files fallback"}
 
+    # Deep-tier hosts get an EXTRA wordlist merged on top of the base one —
+    # only built when there is at least one deep-tier host and extra
+    # wordlists are actually configured, so the common case (no deep tier /
+    # no deep_wordlists) costs nothing beyond a set() build.
+    deep_wordlist = wordlist
+    deep_wl_paths: list[Path] = []
+    deep_merge_stats: dict | None = None
+    deep_targets_set = set(tiers.get("deep") or [])
+    if deep_targets_set:
+        # Static config additions PLUS auto-detected tech (fuzz_depth maps
+        # tech actually seen on this run's deep-tier hosts — e.g. "jenkins"
+        # — to its dedicated SecLists file; see TECH_WORDLIST_MAP). Order
+        # preserved, deduped, so an explicit config entry and an auto-picked
+        # one that happen to match don't get resolved twice.
+        extra_wl = list(depth_cfg.get("deep_wordlists") or [])
+        if depth_cfg.get("tech_aware_wordlists", True):
+            extra_wl += depth_stats.get("deep_tech_wordlists") or []
+        extra_wl = list(dict.fromkeys(extra_wl))
+        if extra_wl:
+            deep_wordlist, deep_wl_paths, deep_merge_stats = _cfg_wordlist(
+                {**f_cfg, "wordlists": list(f_cfg.get("wordlists") or []) + list(extra_wl)},
+                raw_ff / "merged_wordlists_deep.txt",
+            )
+
     results: dict[str, list[tuple[int, int, str]]] = {}
     failures: list[str] = []
     skipped_over_budget: list[str] = []
@@ -433,7 +493,8 @@ def scan(
             host_timeout = min(timeout, max(1, int(deadline - time.monotonic())))
             budget_capped = host_timeout < timeout
         r = runner.run(
-            _build(target, wordlist), stage=stage, output_dir=output_dir,
+            _build(target, deep_wordlist if target in deep_targets_set else wordlist),
+            stage=stage, output_dir=output_dir,
             timeout=host_timeout, log_name=stage,
         )
         # ffuf exits non-zero on a timeout or a dead host. That is one
@@ -454,20 +515,59 @@ def scan(
     with ThreadPoolExecutor(max_workers=concurrency) as pool:
         list(pool.map(_run_one, capped))
 
+    # ---- behavioural screen -------------------------------------------
+    # ffuf's own -ac/-ach cannot see this: it filters on byte length, and the
+    # block pages that dominate a blocked host echo the requested path, so
+    # their length differs on every request while the response is identical.
+    # Screen per host on the full response shape instead. Measured on the
+    # discover.com run: 44,230 of 44,442 hits collapse to one cluster each on
+    # 11 hosts, while app.discover.com's 89 varied hits survive intact.
+    scr_cfg = f_cfg.get("screen") or {}
+    screen_on = bool(scr_cfg.get("enabled", True))
+    screened: dict[str, behavior.Verdict] = {}
+    blanket_hosts: list[str] = []
+    dropped_total = 0
+    for target in capped:
+        hits = results.get(target, [])
+        if not screen_on:
+            screened[target] = behavior.Verdict(hits, [], [], False)
+            continue
+        v = behavior.screen(
+            hits,
+            min_cluster=int(scr_cfg.get("min_cluster", 25)),
+            min_share=float(scr_cfg.get("min_share", 0.5)),
+            length_tolerance=int(scr_cfg.get("length_tolerance", 16)),
+        )
+        screened[target] = v
+        dropped_total += v.n_dropped
+        if v.blanket:
+            blanket_hosts.append(target)
+        if v.n_dropped:
+            print(console.phase_info_line(
+                f"[ffuf] {target}: bỏ {v.n_dropped}/{len(hits)} hit — "
+                + "; ".join(v.clusters[:2])
+                + (" (host trả như nhau cho mọi path)" if v.blanket else "")
+            ))
+
     raw_lines: list[str] = []
     urls: list[str] = []
     seen: set[str] = set()
     for target in capped:
-        for status, length, url in results.get(target, []):
+        for b in screened[target].kept:
             # "<status> <length> <url>" — length (response bytes) lets you eyeball
             # the odd-sized hit among a block of identical soft-404s.
-            raw_lines.append(f"{status} {length} {url}")
-            if url not in seen:
-                seen.add(url)
-                urls.append(url)
+            raw_lines.append(f"{b.status} {b.length} {b.url}")
+            if b.url not in seen:
+                seen.add(b.url)
+                urls.append(b.url)
 
     write_lines(raw_out, raw_lines)
     n = write_lines(proc_out, urls)
+
+    if blanket_hosts:
+        print(console.phase_info_line(
+            f"[ffuf] {len(blanket_hosts)} host trả cùng một response cho mọi "
+            f"path (bị chặn / wildcard) — không rút ra được gì từ chúng"))
 
     if skipped_over_budget:
         print(console.phase_info_line(
@@ -492,5 +592,15 @@ def scan(
             "selection": sel_stats,
             "wordlists": [str(p) for p in wl_paths],
             "merge": merge_stats,
+            "depth": depth_stats,
+            "deep_wordlists": [str(p) for p in deep_wl_paths],
+            "deep_merge": deep_merge_stats,
+            "screen": {
+                "enabled": screen_on,
+                "raw_hits": sum(len(v) for v in results.values()),
+                "dropped": dropped_total,
+                "kept": n,
+                "blanket_hosts": blanket_hosts,
+            },
         },
     )

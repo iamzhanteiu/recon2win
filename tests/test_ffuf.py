@@ -9,7 +9,7 @@ Covers:
 """
 from pathlib import Path
 
-from modules import ffuf
+from modules import ffuf, layout
 from modules.ffuf import (
     _build_cmd,
     _fmt_ext,
@@ -60,6 +60,10 @@ def test_report_name_is_unique_per_scheme_host_pair():
 # ----------------------------------------------------------------------
 # parse_report
 # ----------------------------------------------------------------------
+def _triples(behaviors):
+    return [(b.status, b.length, b.url) for b in behaviors]
+
+
 def test_parse_report_extracts_status_length_and_url():
     text = """
     {"results": [
@@ -67,15 +71,28 @@ def test_parse_report_extracts_status_length_and_url():
         {"url": "https://a.example.com/api/v1/", "status": 301, "length": 0, "input": {"FUZZ": "api"}}
     ]}
     """
-    assert parse_report(text) == [
+    assert _triples(parse_report(text)) == [
         (200, 4096, "https://a.example.com/admin"),
         (301, 0, "https://a.example.com/api/v1/"),
     ]
 
 
+def test_parse_report_keeps_the_echo_proof_size_signals():
+    # words/lines are what let the screen collapse a block page whose byte
+    # length changes per request; dropping them was the original defect.
+    text = ('{"results": [{"url": "https://a.example.com/x", "status": 403, '
+            '"length": 378, "words": 13, "lines": 11, '
+            '"content-type": "text/html; charset=utf-8", '
+            '"redirectlocation": "https://a.example.com/login"}]}')
+    b = parse_report(text)[0]
+    assert (b.words, b.lines) == (13, 11)
+    assert b.content_type.startswith("text/html")
+    assert b.location.endswith("/login")
+
+
 def test_parse_report_defaults_missing_length_to_zero():
     text = '{"results": [{"url": "https://a.example.com/x", "status": 200}]}'
-    assert parse_report(text) == [(200, 0, "https://a.example.com/x")]
+    assert _triples(parse_report(text)) == [(200, 0, "https://a.example.com/x")]
 
 
 def test_parse_report_handles_empty_and_truncated_json():
@@ -93,7 +110,7 @@ def test_parse_report_skips_entries_without_a_usable_url():
 
 def test_parse_report_defaults_unparseable_status_to_zero():
     text = '{"results": [{"url": "https://a.example.com/x", "status": "?"}]}'
-    assert parse_report(text) == [(0, 0, "https://a.example.com/x")]
+    assert _triples(parse_report(text)) == [(0, 0, "https://a.example.com/x")]
 
 
 # ----------------------------------------------------------------------
@@ -211,7 +228,7 @@ def test_build_cmd_without_wordlist_omits_dash_w():
 def _alive(tmp_path: Path, body: str = "") -> tuple[Path, Path]:
     out_dir = tmp_path / "out"
     (out_dir / "processed").mkdir(parents=True)
-    alive = out_dir / "processed" / "alive.txt"
+    alive = layout.path(out_dir, "alive.txt")
     alive.write_text(body)
     return alive, out_dir
 
@@ -221,7 +238,7 @@ def test_scan_skip_flag(tmp_path: Path):
     res = ffuf.scan(alive, out_dir, {}, skip=True)
     assert res["status"] == "skipped"
     assert res["error"] == "--skip-ffuf"
-    assert (out_dir / "processed" / "ffuf_urls.txt").read_text() == ""
+    assert (layout.path(out_dir, "ffuf_urls.txt")).read_text() == ""
 
 
 def test_scan_disabled_in_config(tmp_path: Path):
@@ -259,7 +276,7 @@ def test_scan_dry_run_reports_planned_cmd(tmp_path: Path):
 
 def test_scan_resume_reuses_existing_output(tmp_path: Path):
     alive, out_dir = _alive(tmp_path, "https://a.example.com\n")
-    (out_dir / "processed" / "ffuf_urls.txt").write_text(
+    (layout.path(out_dir, "ffuf_urls.txt")).write_text(
         "https://a.example.com/admin\nhttps://a.example.com/api\n"
     )
     res = ffuf.scan(alive, out_dir, {}, resume=True)
@@ -289,10 +306,155 @@ def test_scan_merges_hits_from_every_target(tmp_path: Path, monkeypatch):
     res = ffuf.scan(alive, out_dir, {"ffuf": {"wordlists": [str(wl)]}})
     assert res["status"] == "success"
     assert res["count"] == 2
-    urls = (out_dir / "processed" / "ffuf_urls.txt").read_text().split()
+    urls = (layout.path(out_dir, "ffuf_urls.txt")).read_text().split()
     assert urls == ["https://a.example.com/admin", "https://b.example.com/admin"]
     raw = (out_dir / "raw" / "ffuf" / "ffuf_raw.txt").read_text()
     assert "200 512 https://a.example.com/admin" in raw
+
+
+def test_scan_deep_tier_host_gets_merged_deep_wordlist(tmp_path: Path, monkeypatch):
+    """A deep-tier host (fuzz_depth) must be fuzzed with the base wordlist
+    PLUS deep_wordlists merged in; a standard-tier host keeps the base
+    wordlist only."""
+    alive, out_dir = _alive(
+        tmp_path,
+        "https://admin.example.com\nhttps://cdn-assets-3.example.com\n",
+    )
+    wl = tmp_path / "wl.txt"
+    wl.write_text("admin\n")
+    deep_wl = tmp_path / "deep_wl.txt"
+    deep_wl.write_text("actuator\n")
+
+    used_wordlists: dict[str, str] = {}
+
+    def fake_run(cmd, **kwargs):
+        host = cmd[cmd.index("-u") + 1].replace("/FUZZ", "")
+        used_wordlists[host] = cmd[cmd.index("-w") + 1]
+        Path(cmd[cmd.index("-o") + 1]).write_text('{"results": []}')
+        return {"success": True, "stderr": "", "missing_binary": False}
+
+    monkeypatch.setattr(ffuf.runner, "tool_available", lambda _b: True)
+    monkeypatch.setattr(ffuf.runner, "run", fake_run)
+
+    res = ffuf.scan(
+        alive, out_dir,
+        {"ffuf": {"wordlists": [str(wl)], "concurrency": 1},
+         "fuzz_depth": {"deep_wordlists": [str(deep_wl)]}},
+    )
+    assert res["status"] == "success"
+    assert res["extra"]["depth"]["deep"] == 1
+    assert used_wordlists["https://admin.example.com"] != used_wordlists["https://cdn-assets-3.example.com"]
+    assert "merged_wordlists_deep" in used_wordlists["https://admin.example.com"]
+    assert used_wordlists["https://cdn-assets-3.example.com"] == str(wl)
+
+
+def test_scan_no_deep_tier_hosts_uses_base_wordlist_for_everyone(tmp_path: Path, monkeypatch):
+    alive, out_dir = _alive(
+        tmp_path, "https://cdn-assets-3.example.com\nhttps://cdn-assets-4.example.com\n",
+    )
+    wl = tmp_path / "wl.txt"
+    wl.write_text("admin\n")
+    used_wordlists: dict[str, str] = {}
+
+    def fake_run(cmd, **kwargs):
+        host = cmd[cmd.index("-u") + 1].replace("/FUZZ", "")
+        used_wordlists[host] = cmd[cmd.index("-w") + 1]
+        Path(cmd[cmd.index("-o") + 1]).write_text('{"results": []}')
+        return {"success": True, "stderr": "", "missing_binary": False}
+
+    monkeypatch.setattr(ffuf.runner, "tool_available", lambda _b: True)
+    monkeypatch.setattr(ffuf.runner, "run", fake_run)
+
+    res = ffuf.scan(
+        alive, out_dir,
+        {"ffuf": {"wordlists": [str(wl)], "concurrency": 1},
+         "fuzz_depth": {"deep_wordlists": [str(tmp_path / "unused.txt")]}},
+    )
+    assert res["status"] == "success"
+    assert res["extra"]["depth"]["deep"] == 0
+    assert set(used_wordlists.values()) == {str(wl)}
+
+
+def test_scan_tech_detected_host_gets_tech_specific_wordlist(tmp_path: Path, monkeypatch):
+    """A deep-tier host whose alive_detail.json ``tech`` matches a
+    TECH_WORDLIST_MAP entry (fuzz_depth) must be fuzzed with that tech's
+    dedicated wordlist merged in — not applied to a host with a different
+    (or no) tech signal, and with no config.fuzz_depth.deep_wordlists
+    entry needed."""
+    from modules import fuzz_depth
+    from modules.utils import write_json
+
+    alive, out_dir = _alive(
+        tmp_path, "https://app3.example.com\nhttps://app4.example.com\n",
+    )
+    write_json(layout.path(out_dir, "alive_detail.json"), [
+        {"url": "https://app3.example.com", "tech": ["Jenkins"]},
+        {"url": "https://app4.example.com", "tech": ["nginx"]},
+    ])
+    wl = tmp_path / "wl.txt"
+    wl.write_text("admin\n")
+    jenkins_wl = tmp_path / "jenkins.txt"
+    jenkins_wl.write_text("script\nscriptText\n")
+    monkeypatch.setattr(fuzz_depth, "TECH_WORDLIST_MAP", {"jenkins": str(jenkins_wl)})
+
+    used_wordlists: dict[str, str] = {}
+
+    def fake_run(cmd, **kwargs):
+        host = cmd[cmd.index("-u") + 1].replace("/FUZZ", "")
+        used_wordlists[host] = cmd[cmd.index("-w") + 1]
+        Path(cmd[cmd.index("-o") + 1]).write_text('{"results": []}')
+        return {"success": True, "stderr": "", "missing_binary": False}
+
+    monkeypatch.setattr(ffuf.runner, "tool_available", lambda _b: True)
+    monkeypatch.setattr(ffuf.runner, "run", fake_run)
+
+    res = ffuf.scan(
+        alive, out_dir,
+        {"ffuf": {"wordlists": [str(wl)], "concurrency": 1}},
+    )
+    assert res["status"] == "success"
+    assert res["extra"]["depth"]["deep"] == 1
+    assert res["extra"]["depth"]["deep_tech_hits"] == {"jenkins": 1}
+    assert used_wordlists["https://app3.example.com"] != used_wordlists["https://app4.example.com"]
+    assert used_wordlists["https://app4.example.com"] == str(wl)
+    merged_content = Path(used_wordlists["https://app3.example.com"]).read_text()
+    assert "script" in merged_content
+
+
+def test_scan_tech_aware_wordlists_can_be_disabled(tmp_path: Path, monkeypatch):
+    """``fuzz_depth.tech_aware_wordlists: false`` must fall back to
+    ``deep_wordlists`` only — no automatic tech-specific merge."""
+    from modules import fuzz_depth
+    from modules.utils import write_json
+
+    alive, out_dir = _alive(tmp_path, "https://app3.example.com\n")
+    write_json(layout.path(out_dir, "alive_detail.json"), [
+        {"url": "https://app3.example.com", "tech": ["Jenkins"]},
+    ])
+    wl = tmp_path / "wl.txt"
+    wl.write_text("admin\n")
+    jenkins_wl = tmp_path / "jenkins.txt"
+    jenkins_wl.write_text("script\n")
+    monkeypatch.setattr(fuzz_depth, "TECH_WORDLIST_MAP", {"jenkins": str(jenkins_wl)})
+
+    used_wordlists: dict[str, str] = {}
+
+    def fake_run(cmd, **kwargs):
+        host = cmd[cmd.index("-u") + 1].replace("/FUZZ", "")
+        used_wordlists[host] = cmd[cmd.index("-w") + 1]
+        Path(cmd[cmd.index("-o") + 1]).write_text('{"results": []}')
+        return {"success": True, "stderr": "", "missing_binary": False}
+
+    monkeypatch.setattr(ffuf.runner, "tool_available", lambda _b: True)
+    monkeypatch.setattr(ffuf.runner, "run", fake_run)
+
+    res = ffuf.scan(
+        alive, out_dir,
+        {"ffuf": {"wordlists": [str(wl)], "concurrency": 1},
+         "fuzz_depth": {"tech_aware_wordlists": False}},
+    )
+    assert res["status"] == "success"
+    assert used_wordlists["https://app3.example.com"] == str(wl)
 
 
 def test_scan_caps_targets_at_max_hosts(tmp_path: Path, monkeypatch):
