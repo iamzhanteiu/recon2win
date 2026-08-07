@@ -20,7 +20,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from modules import nuclei as nuclei_mod
+from modules import layout, nuclei as nuclei_mod
 from modules.utils import create_output_structure, read_lines, write_lines
 
 
@@ -58,7 +58,7 @@ def _fake_run_factory(per_batch_findings, timeouts=None):
 
 def _base(tmp_path, urls):
     base = create_output_structure("x.com", root=str(tmp_path))
-    alive = base / "processed" / "alive.txt"
+    alive = layout.path(base, "alive.txt")
     write_lines(alive, urls)
     return base, alive
 

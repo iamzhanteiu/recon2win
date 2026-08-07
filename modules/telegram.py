@@ -194,6 +194,10 @@ def notify_stage_result(
             f"• low:      <code>{sev.get('low', 0)}</code>\n"
             f"• info:     <code>{sev.get('info', 0)}</code>"
         )
+        # Templates that declare no severity. Only shown when there are any,
+        # so the usual message keeps its familiar five lines.
+        if sev.get("unknown"):
+            msg += f"\n• unknown:  <code>{sev['unknown']}</code>"
     elif stage == "content_discovery":
         js = extra.get("js_urls", 0)
         msg = (

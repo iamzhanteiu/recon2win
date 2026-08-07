@@ -27,7 +27,11 @@ from .utils import (
 from .telegram import notify_finding, notify_stage_result
 
 
-SEV_ORDER = ["info", "low", "medium", "high", "critical"]
+# Every severity nuclei can emit, lowest first. ``unknown`` is what nuclei
+# gives a template that declares no severity — it is a real filter value
+# (`-severity unknown`), so leaving it out of a "run everything" list drops
+# those templates silently.
+SEV_ORDER = ["unknown", "info", "low", "medium", "high", "critical"]
 
 # Don't start a batch with less than this left of the stage budget. nuclei
 # spends ~10-30s loading templates before its first request, so a 30s slice
@@ -52,8 +56,15 @@ _TL_CACHE: dict[tuple, Optional[int]] = {}
 
 def _template_count(
     severity: list[str], tags: Optional[list[str]],
+    exclude_tags: Optional[list[str]] = None,
+    exclude_ids: Optional[list[str]] = None,
 ) -> Optional[int]:
-    """Đếm template mà bộ lọc severity+tags này thực sự nạp.
+    """Đếm template mà bộ lọc severity+tags+exclude này thực sự nạp.
+
+    Các bộ loại trừ PHẢI có mặt ở đây. Thiếu chúng thì phép đo đếm cả
+    template sẽ không bao giờ chạy, batch_size được tính từ một corpus to
+    hơn thực tế — đúng cái bẫy mà chính config.yml cảnh báo ("sửa tags một
+    dòng là corpus đổi kích thước còn batch_size đứng yên").
 
     Dùng ``nuclei -tl``, tức đúng thứ mà config bảo operator chạy tay khi
     retune. Trả ``None`` khi không đo được (nuclei thiếu, lệnh lỗi) — người
@@ -64,7 +75,8 @@ def _template_count(
     13k template non-fuzzing, sai hai bậc độ lớn (xem nuclei.default.dast
     trong config.yml). Người gọi phải tự loại trường hợp đó.
     """
-    key = (tuple(severity or ()), tuple(tags or ()))
+    key = (tuple(severity or ()), tuple(tags or ()),
+           tuple(exclude_tags or ()), tuple(exclude_ids or ()))
     if key in _TL_CACHE:
         return _TL_CACHE[key]
 
@@ -76,6 +88,10 @@ def _template_count(
         cmd = ["nuclei", "-tl", "-severity", ",".join(severity)]
         if tags:
             cmd += ["-tags", ",".join(tags)]
+        if exclude_tags:
+            cmd += ["-etags", ",".join(exclude_tags)]
+        if exclude_ids:
+            cmd += ["-exclude-id", ",".join(exclude_ids)]
         try:
             p = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
             lines = [ln for ln in (p.stdout or "").splitlines() if ln.strip()]
@@ -278,6 +294,17 @@ def _build_nuclei_cmd(
     clean_excludes = [str(t).strip() for t in exclude_tags if str(t).strip()]
     if clean_excludes:
         cmd.extend(["-etags", ",".join(clean_excludes)])
+    # ``-eid`` excludes by TEMPLATE ID, which is a different axis from
+    # ``-etags``. The hygiene templates that dominate a report
+    # (http-missing-security-headers, cookies-without-httponly, …) share no
+    # single tag worth excluding — dropping their tags would take real
+    # findings with them — so they have to be named individually.
+    # Measured on the discover.com run: 329 of 343 findings were `info`,
+    # and the top six template IDs alone accounted for 296 of them.
+    exclude_ids = n_cfg.get("exclude_ids") or []
+    clean_ids = [str(t).strip() for t in exclude_ids if str(t).strip()]
+    if clean_ids:
+        cmd.extend(["-exclude-id", ",".join(clean_ids)])
     return cmd
 
 
@@ -399,7 +426,13 @@ def _run(
     tune: dict = {}
     # ``-dast`` loại trừ: ``-tl`` lờ đi flag đó nên số đếm sẽ sai hai bậc.
     if autotune and batch_size > 0 and not n_cfg.get("dast", False):
-        tmpl_count = _template_count(severity, tags)
+        tmpl_count = _template_count(
+            severity, tags,
+            [str(t).strip() for t in (n_cfg.get("exclude_tags") or [])
+             if str(t).strip()],
+            [str(t).strip() for t in (n_cfg.get("exclude_ids") or [])
+             if str(t).strip()],
+        )
         if tmpl_count:
             safe = _safe_batch_size(tmpl_count, n_cfg, batch_timeout)
             tune = {"templates": tmpl_count, "safe_size": safe}
