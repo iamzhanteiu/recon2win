@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from modules import url_merge
+from modules import layout, url_merge
 from modules.url_merge import (
     _is_meaningful_value,
     collapse_param_shapes,
@@ -79,16 +79,14 @@ def test_param_template_key_different_endpoints_differ():
 # ----------------------------------------------------------------------
 # merge() integration — collapse applied to all_urls + dynamic_urls
 # ----------------------------------------------------------------------
-def _seed(proc: Path, urls: list[str]) -> None:
-    proc.mkdir(parents=True, exist_ok=True)
-    write_lines(proc / "crawler_urls.txt", urls)
+def _seed(out: Path, urls: list[str]) -> None:
+    write_lines(layout.path(out, "crawler_urls.txt"), urls)
     for name in ("dirsearch_urls.txt", "ffuf_urls.txt", "waymore_urls.txt"):
-        write_lines(proc / name, [])
+        write_lines(layout.path(out, name), [])
 
 
 def test_merge_collapses_param_variants(tmp_path: Path):
-    proc = tmp_path / "processed"
-    _seed(proc, [
+    _seed(tmp_path, [
         "https://guildwars2.com/e?id=1",
         "https://guildwars2.com/e?id=2",
         "https://guildwars2.com/e?id=3",
@@ -98,7 +96,7 @@ def test_merge_collapses_param_variants(tmp_path: Path):
     cfg = {"scope": {"filter_urls": True}, "url_dedup": {"collapse_params": True}}
 
     res = url_merge.merge(tmp_path, "guildwars2.com", cfg)
-    all_urls = read_lines(proc / "all_urls.txt")
+    all_urls = read_lines(layout.path(tmp_path, "all_urls.txt"))
 
     assert "https://guildwars2.com/e?id=1" in all_urls
     assert "https://guildwars2.com/e?id=2" not in all_urls   # folded
@@ -108,10 +106,9 @@ def test_merge_collapses_param_variants(tmp_path: Path):
 
 
 def test_merge_collapse_disabled(tmp_path: Path):
-    proc = tmp_path / "processed"
-    _seed(proc, ["https://guildwars2.com/e?id=1", "https://guildwars2.com/e?id=2"])
+    _seed(tmp_path, ["https://guildwars2.com/e?id=1", "https://guildwars2.com/e?id=2"])
     cfg = {"scope": {"filter_urls": True}, "url_dedup": {"collapse_params": False}}
 
     url_merge.merge(tmp_path, "guildwars2.com", cfg)
-    all_urls = read_lines(proc / "all_urls.txt")
+    all_urls = read_lines(layout.path(tmp_path, "all_urls.txt"))
     assert len(all_urls) == 2  # nothing folded

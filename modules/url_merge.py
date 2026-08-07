@@ -8,12 +8,22 @@ Inputs:
 
 Outputs:
   processed/all_urls.txt       — normalised + de-duped
+  processed/all_urls.jsonl     — same list + which tool(s) produced each URL
   processed/js_urls.txt        — JS URLs only
   processed/dynamic_urls.txt   — likely-dynamic, static assets removed
 
 The earlier ``all_urls_raw.txt`` intermediate was dropped in v2 — it
 was just the input to the dedup step, and any caller that needs the
 raw union can re-merge the three source files deterministically.
+
+``all_urls.jsonl`` (added v3) exists because the merge used to be lossy in
+the one way that mattered: it flattened sources of wildly different quality
+into an anonymous list. On a real discover.com run, jsluice-mined URLs came
+back 23.6%% HTTP 200 while ffuf's 44,431 hits were a near-pure wildcard-403
+artefact — yet after the merge nothing downstream could tell them apart, so
+``arjun.max_urls=200`` sliced its 200 URLs off the top of 57k and drew them
+almost entirely from the ffuf noise. Provenance lets a capped consumer sort
+before it cuts (see :func:`rank_urls_by_source`).
 
 Pure helper functions (dedupe_urls, normalize_url, is_js_url, is_dynamic_url)
 are exposed at module level so the unit tests can import them.
@@ -25,8 +35,149 @@ from pathlib import Path
 from typing import Iterable
 from urllib.parse import parse_qsl, urlsplit, urlunsplit
 
+from . import layout
 from .sensitive_ext import STATIC_EXT
-from .utils import make_result, read_lines, write_lines
+from .utils import make_result, read_jsonl, read_lines, write_jsonl, write_lines
+
+
+# ----------------------------------------------------------------------
+# Provenance — which tool produced a URL.
+# ----------------------------------------------------------------------
+# Every producer writes ``processed/<name>_urls.txt``; the filename IS the
+# provenance, we just have to stop throwing it away at merge time.
+SOURCE_BY_FILE: dict[str, str] = {
+    "crawler_urls.txt": "crawler",
+    "dirsearch_urls.txt": "dirsearch",
+    "ffuf_urls.txt": "ffuf",
+    "waymore_urls.txt": "waymore",
+    "xnlinkfinder_endpoints.txt": "xnlinkfinder",
+    "xnlinkfinder_urls.txt": "xnlinkfinder",
+    "jsluice_endpoints.txt": "jsluice",
+    "jsluice_urls.txt": "jsluice",
+    "apidocs_urls.txt": "apidocs",
+}
+
+# How much a source's output is worth to a *capped* consumer. Higher wins.
+# Grounded in measured alive-rates from the discover.com run rather than
+# taste: what fraction of each source's URLs came back HTTP 200.
+#
+#   apidocs       — parsed from a served OpenAPI document; the endpoints
+#                   are declared by the target, not guessed.
+#   jsluice       — AST-extracted from the app's own bundles: 23.6% 200.
+#   xnlinkfinder  — same idea, regex instead of AST, so noisier.
+#   crawler       — katana actually followed the link, so it existed.
+#   waymore       — archived: real once, often 404 now.
+#   dirsearch     — guessed; survives a status filter but wildcard-prone.
+#   ffuf          — guessed, and the worst wildcard offender: 4,081
+#                   identical "hits" per host across 11 hosts, ~0% 200.
+#
+# UNKNOWN_SOURCE_RANK sits above ffuf/dirsearch on purpose: a URL with no
+# recorded provenance (an older run's file, a hand-added list) should not
+# be sorted below known-noise.
+SOURCE_QUALITY: dict[str, int] = {
+    "apidocs": 100,
+    "jsluice": 90,
+    "xnlinkfinder": 70,
+    "crawler": 60,
+    "waymore": 40,
+    "dirsearch": 20,
+    "ffuf": 10,
+}
+UNKNOWN_SOURCE_RANK = 30
+
+PROVENANCE_FILE = "all_urls.jsonl"
+
+
+def source_label(path: Path | str) -> str:
+    """Map a producer file to its source name (``"unknown"`` if unlisted)."""
+    return SOURCE_BY_FILE.get(Path(path).name, "unknown")
+
+
+def source_score(sources: Iterable[str]) -> int:
+    """Quality of the BEST source that produced a URL.
+
+    Best-of rather than sum/average: a URL found by both jsluice and ffuf is
+    a real endpoint that ffuf also happened to stumble onto — the ffuf hit
+    does not make it more suspect.
+    """
+    ranks = [SOURCE_QUALITY.get(s, UNKNOWN_SOURCE_RANK) for s in sources]
+    return max(ranks) if ranks else UNKNOWN_SOURCE_RANK
+
+
+def load_url_sources(output_dir: Path) -> dict[str, list[str]]:
+    """``{url: [source, ...]}`` from ``processed/all_urls.jsonl``.
+
+    Returns ``{}`` when the file is absent — every caller must stay
+    functional on an output tree from before provenance existed, and on a
+    ``--resume`` that never re-ran the merge.
+    """
+    out: dict[str, list[str]] = {}
+    for row in read_jsonl(layout.path(output_dir, PROVENANCE_FILE)):
+        if isinstance(row, dict) and row.get("url"):
+            out[str(row["url"])] = [str(s) for s in (row.get("sources") or [])]
+    return out
+
+
+def rank_urls_by_source(
+    urls: Iterable[str], sources: dict[str, list[str]],
+) -> list[str]:
+    """Order *urls* best-source-first, stable within a quality tier.
+
+    For consumers that apply a hard cap (arjun's ``max_urls``, any batching
+    limit): sorting before the cut is what turns "we scanned 200 random
+    URLs" into "we scanned the 200 most likely to be real".
+    """
+    ranked = list(urls)
+    ranked.sort(key=lambda u: -source_score(sources.get(u, ())))
+    return ranked
+
+
+def _write_provenance(
+    output_dir: Path, urls: list[str], prov: dict[str, set[str]],
+) -> int:
+    """Write ``all_urls.jsonl`` parallel to ``all_urls.txt``, same order."""
+    return write_jsonl(
+        layout.path(output_dir, PROVENANCE_FILE),
+        (
+            {"url": u, "sources": sorted(prov.get(u) or {"unknown"})}
+            for u in urls
+        ),
+    )
+
+
+def _source_counts(
+    urls: Iterable[str], prov: dict[str, set[str]],
+) -> dict[str, int]:
+    """``{source: how many surviving URLs it contributed}``, biggest first.
+
+    Reported in the stage result so the run log answers "what is this
+    corpus actually made of?" without anyone having to open the JSONL. A
+    source at 76%% of the corpus is the shape of a wildcard blow-up.
+    """
+    counts: dict[str, int] = {}
+    for u in urls:
+        for s in prov.get(u) or ("unknown",):
+            counts[s] = counts.get(s, 0) + 1
+    return dict(sorted(counts.items(), key=lambda kv: -kv[1]))
+
+
+def _collect_provenance(
+    files: Iterable[Path], into: dict[str, set[str]] | None = None,
+) -> dict[str, set[str]]:
+    """Accumulate ``{normalised_url: {source, ...}}`` over producer files.
+
+    Keyed on the NORMALISED URL because that is what lands in
+    ``all_urls.txt``; two sources emitting ``http://x/`` and ``http://x``
+    are the same URL and must merge into one record with both sources.
+    """
+    prov: dict[str, set[str]] = into if into is not None else {}
+    for f in files:
+        label = source_label(f)
+        for raw in read_lines(f):
+            n = normalize_url(raw)
+            if n:
+                prov.setdefault(n, set()).add(label)
+    return prov
 
 
 # ----------------------------------------------------------------------
@@ -299,35 +450,36 @@ def merge(
     dry_run: bool = False,
 ) -> dict:
     stage = "url_merge"
-    proc = output_dir / "processed"
-    proc.mkdir(parents=True, exist_ok=True)
+    layout.ensure_tree(output_dir)
     files = [
-        proc / "crawler_urls.txt",
-        proc / "dirsearch_urls.txt",
-        proc / "ffuf_urls.txt",
-        proc / "waymore_urls.txt",
+        layout.path(output_dir, "crawler_urls.txt"),
+        layout.path(output_dir, "dirsearch_urls.txt"),
+        layout.path(output_dir, "ffuf_urls.txt"),
+        layout.path(output_dir, "waymore_urls.txt"),
     ]
 
-    out_all = proc / "all_urls.txt"
-    out_js = proc / "js_urls.txt"
-    out_dyn = proc / "dynamic_urls.txt"
+    out_all = layout.path(output_dir, "all_urls.txt")
+    out_js = layout.path(output_dir, "js_urls.txt")
+    out_dyn = layout.path(output_dir, "dynamic_urls.txt")
+    out_prov = layout.path(output_dir, PROVENANCE_FILE)
 
     if resume and all(p.exists() and p.stat().st_size > 0 for p in (out_all, out_js, out_dyn)):
         return make_result(
             stage, "success", input_path=",".join(str(f) for f in files),
-            outputs=[out_all, out_js, out_dyn],
+            outputs=[out_all, out_js, out_dyn, out_prov],
             count=len(read_lines(out_all)),
         )
 
     if dry_run:
         return make_result(
             stage, "skipped", input_path=",".join(str(f) for f in files),
-            outputs=[out_all, out_js, out_dyn], count=0, error="dry-run",
+            outputs=[out_all, out_js, out_dyn, out_prov], count=0, error="dry-run",
         )
 
     all_lines: list[str] = []
     for f in files:
         all_lines.extend(read_lines(f))
+    prov = _collect_provenance(files)
 
     normalised = [normalize_url(u) for u in dedupe_urls(all_lines)]
     normalised = [u for u in normalised if u]
@@ -351,12 +503,17 @@ def merge(
         in_scope = collapse_param_shapes(in_scope)
     collapsed = kept_before - len(in_scope)
 
-    n_all = write_lines(out_all, in_scope)
+    # Dedupe explicitly rather than leaning on write_lines' internal dedup:
+    # all_urls.jsonl must line up with all_urls.txt record-for-record, so
+    # both writers have to see the same final list.
+    final = dedupe_urls(in_scope)
+    n_all = write_lines(out_all, final)
+    _write_provenance(output_dir, final, prov)
 
-    dyn_urls = [u for u in in_scope if is_dynamic_url(u)]
+    dyn_urls = [u for u in final if is_dynamic_url(u)]
     n_dyn = write_lines(out_dyn, dyn_urls)
 
-    extra = {"js": n_js, "dynamic": n_dyn}
+    extra = {"js": n_js, "dynamic": n_dyn, "sources": _source_counts(final, prov)}
     if filter_on:
         extra["scope_dropped"] = dropped
         extra["scope_kept"] = n_all
@@ -364,7 +521,7 @@ def merge(
         extra["param_collapsed"] = collapsed
     return make_result(
         stage, "success", input_path=",".join(str(f) for f in files),
-        outputs=[out_all, out_js, out_dyn],
+        outputs=[out_all, out_js, out_dyn, out_prov],
         count=n_all, extra=extra,
     )
 
@@ -384,10 +541,18 @@ def append_urls(
     whatever merge() already put there) so nothing that fed JS analysis is lost.
     """
     stage = "url_merge_append"
-    proc = output_dir / "processed"
-    out_all = proc / "all_urls.txt"
-    out_js = proc / "js_urls.txt"
-    out_dyn = proc / "dynamic_urls.txt"
+    out_all = layout.path(output_dir, "all_urls.txt")
+    out_js = layout.path(output_dir, "js_urls.txt")
+    out_dyn = layout.path(output_dir, "dynamic_urls.txt")
+    out_prov = layout.path(output_dir, PROVENANCE_FILE)
+
+    # Carry forward what merge() recorded, then layer the extras' sources on
+    # top. Rebuilding from the producer files instead would lose the stage-5
+    # sources, since ffuf/waymore/... are not in *extra_files*.
+    prov: dict[str, set[str]] = {
+        u: set(s) for u, s in load_url_sources(output_dir).items()
+    }
+    _collect_provenance(extra_files, into=prov)
 
     existing = read_lines(out_all)
     extra: list[str] = []
@@ -414,10 +579,13 @@ def append_urls(
         in_scope = collapse_param_shapes(in_scope)
     collapsed = kept_before - len(in_scope)
 
-    n_all = write_lines(out_all, in_scope)
-    n_dyn = write_lines(out_dyn, [u for u in in_scope if is_dynamic_url(u)])
+    final = dedupe_urls(in_scope)
+    n_all = write_lines(out_all, final)
+    _write_provenance(output_dir, final, prov)
+    n_dyn = write_lines(out_dyn, [u for u in final if is_dynamic_url(u)])
 
-    extra_meta = {"js": n_js, "dynamic": n_dyn}
+    extra_meta = {"js": n_js, "dynamic": n_dyn,
+                  "sources": _source_counts(final, prov)}
     if filter_on:
         extra_meta["scope_dropped"] = dropped
         extra_meta["scope_kept"] = n_all
@@ -425,7 +593,7 @@ def append_urls(
         extra_meta["param_collapsed"] = collapsed
     return make_result(
         stage, "success", input_path=",".join(str(f) for f in extra_files),
-        outputs=[out_all, out_js, out_dyn],
+        outputs=[out_all, out_js, out_dyn, out_prov],
         count=n_all, extra=extra_meta,
     )
 
@@ -469,14 +637,13 @@ def derive_subdomains_from_urls(output_dir: Path, domain: str) -> dict:
     into the next scan's input, or resolve them ad hoc. The count is echoed
     so the operator knows the discovery surface grew.
     """
-    proc = output_dir / "processed"
-    hosts = extract_in_scope_hosts(read_lines(proc / "all_urls.txt"), domain)
-    known = set(read_lines(proc / "subdomains.txt"))
+    hosts = extract_in_scope_hosts(read_lines(layout.path(output_dir, "all_urls.txt")), domain)
+    known = set(read_lines(layout.path(output_dir, "subdomains.txt")))
     new = [h for h in hosts if h not in known]
-    out_path = proc / "url_derived_subdomains.txt"
+    out_path = layout.path(output_dir, "url_derived_subdomains.txt")
     write_lines(out_path, new)
     return make_result(
-        "url_subdomains", "success", input_path=str(proc / "all_urls.txt"),
+        "url_subdomains", "success", input_path=str(layout.path(output_dir, "all_urls.txt")),
         outputs=[out_path], count=len(new),
         extra={"in_scope_hosts": len(hosts), "new": len(new)},
     )
@@ -505,9 +672,8 @@ def seed_parameterized_urls(output_dir: Path) -> dict:
     ``--skip-arjun`` and no jsluice hits still surfaces the
     visible-param URLs.
     """
-    proc = output_dir / "processed"
-    dyn_file = proc / "dynamic_urls.txt"
-    target = proc / "parameterized_urls.txt"
+    dyn_file = layout.path(output_dir, "dynamic_urls.txt")
+    target = layout.path(output_dir, "parameterized_urls.txt")
 
     existing = read_lines(target)
     existing_set = set(existing)
@@ -539,7 +705,7 @@ def append_param_urls(output_dir: Path, source: Path) -> dict:
 
     Additive and safe: no-op (count 0) when *source* is missing or empty.
     """
-    target = output_dir / "processed" / "parameterized_urls.txt"
+    target = layout.path(output_dir, "parameterized_urls.txt")
     existing = read_lines(target)
     existing_set = set(existing)
     added = [u for u in read_lines(source) if u not in existing_set]

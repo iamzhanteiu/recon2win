@@ -6,19 +6,17 @@ chúng. nuclei thì khác — dedup ở đó là đánh đổi coverage nên m�
 import json
 from pathlib import Path
 
-from modules import content_discovery, nuclei
+from modules import content_discovery, layout, nuclei
 
 
 def _setup(tmp_path: Path, n: int = 20):
     out = tmp_path / "out"
-    proc = out / "processed"
-    proc.mkdir(parents=True)
     urls = [f"https://h{i}.example.com" for i in range(n)]
-    (proc / "alive.txt").write_text("\n".join(urls) + "\n")
-    (proc / "alive_detail.json").write_text(json.dumps([
+    (layout.path(out, "alive.txt")).write_text("\n".join(urls) + "\n")
+    (layout.path(out, "alive_detail.json")).write_text(json.dumps([
         {"url": u, "status_code": 200, "words": 27, "lines": 1,
          "title": "Home", "webserver": "nginx"} for u in urls]))
-    return proc / "alive.txt", out
+    return layout.path(out, "alive.txt"), out
 
 
 def test_katana_crawls_deduped_target_list(tmp_path: Path, monkeypatch):

@@ -7,7 +7,7 @@ host (the old bug silently dropped links from other subdomains).
 from __future__ import annotations
 
 
-from modules import xnlinkfinder as xf
+from modules import layout, xnlinkfinder as xf
 from modules.utils import create_output_structure, write_lines
 
 
@@ -27,7 +27,7 @@ def test_scope_is_target_root_domain_not_first_js_host(tmp_path, monkeypatch):
     monkeypatch.setattr("modules.runner.run", _fake_run(captured))
 
     base = create_output_structure("vulnweb.com", root=str(tmp_path))
-    js = base / "processed" / "js_urls.txt"
+    js = layout.path(base, "js_urls.txt")
     # JS served from TWO different subdomains
     write_lines(js, [
         "http://rest.vulnweb.com/a.js",
@@ -48,7 +48,7 @@ def test_scope_uses_output_dir_name(tmp_path, monkeypatch):
     monkeypatch.setattr("modules.runner.run", _fake_run(captured))
 
     base = create_output_structure("example.org", root=str(tmp_path))
-    js = base / "processed" / "js_urls.txt"
+    js = layout.path(base, "js_urls.txt")
     write_lines(js, ["https://cdn.example.org/app.js"])
     xf.scan(js, base, {}, skip=False)
     assert captured[captured.index("-sf") + 1] == "example.org"
@@ -67,7 +67,7 @@ def test_skips_when_no_js_urls(tmp_path, monkeypatch):
     monkeypatch.setattr("modules.runner.run", _run)
 
     base = create_output_structure("x.com", root=str(tmp_path))
-    js = base / "processed" / "js_urls.txt"
+    js = layout.path(base, "js_urls.txt")
     write_lines(js, [])
     res = xf.scan(js, base, {}, skip=False)
     assert res["status"] == "skipped"

@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from modules import url_merge
+from modules import layout, url_merge
 from modules.url_merge import (
     filter_in_scope,
     is_in_scope,
@@ -61,16 +61,14 @@ def test_filter_in_scope_preserves_order():
 # ----------------------------------------------------------------------
 # merge() — all_urls filtered, js_urls keeps out-of-scope .js
 # ----------------------------------------------------------------------
-def _seed_inputs(proc: Path, urls: list[str]) -> None:
-    proc.mkdir(parents=True, exist_ok=True)
-    write_lines(proc / "crawler_urls.txt", urls)
+def _seed_inputs(out: Path, urls: list[str]) -> None:
+    write_lines(layout.path(out, "crawler_urls.txt"), urls)
     for name in ("dirsearch_urls.txt", "ffuf_urls.txt", "waymore_urls.txt"):
-        write_lines(proc / name, [])
+        write_lines(layout.path(out, name), [])
 
 
 def test_merge_filters_all_urls_but_keeps_out_of_scope_js(tmp_path: Path):
-    proc = tmp_path / "processed"
-    _seed_inputs(proc, [
+    _seed_inputs(tmp_path, [
         "https://guildwars2.com/app",
         "https://cdn.staticwars.com/bundle.js",   # out-of-scope but .js → js_urls
         "https://www.youtube.com/embed",           # pure 3rd-party → dropped
@@ -80,8 +78,8 @@ def test_merge_filters_all_urls_but_keeps_out_of_scope_js(tmp_path: Path):
 
     res = url_merge.merge(tmp_path, "guildwars2.com", cfg)
 
-    all_urls = read_lines(proc / "all_urls.txt")
-    js_urls = read_lines(proc / "js_urls.txt")
+    all_urls = read_lines(layout.path(tmp_path, "all_urls.txt"))
+    js_urls = read_lines(layout.path(tmp_path, "js_urls.txt"))
 
     # all_urls: only the in-scope host survives (staticwars is not related here).
     assert all_urls == ["https://guildwars2.com/app"]
@@ -94,8 +92,7 @@ def test_merge_filters_all_urls_but_keeps_out_of_scope_js(tmp_path: Path):
 
 
 def test_merge_related_roots_kept_in_all_urls(tmp_path: Path):
-    proc = tmp_path / "processed"
-    _seed_inputs(proc, [
+    _seed_inputs(tmp_path, [
         "https://guildwars2.com/app",
         "https://services.staticwars.com/api?id=1",
         "https://youtube.com/x",
@@ -103,8 +100,8 @@ def test_merge_related_roots_kept_in_all_urls(tmp_path: Path):
     cfg = {"scope": {"filter_urls": True, "related_roots": ["staticwars.com"]}}
 
     url_merge.merge(tmp_path, "guildwars2.com", cfg)
-    all_urls = read_lines(proc / "all_urls.txt")
-    dyn = read_lines(proc / "dynamic_urls.txt")
+    all_urls = read_lines(layout.path(tmp_path, "all_urls.txt"))
+    dyn = read_lines(layout.path(tmp_path, "dynamic_urls.txt"))
 
     assert "https://services.staticwars.com/api?id=1" in all_urls
     assert "https://youtube.com/x" not in all_urls
@@ -113,26 +110,24 @@ def test_merge_related_roots_kept_in_all_urls(tmp_path: Path):
 
 
 def test_merge_filter_disabled_keeps_everything(tmp_path: Path):
-    proc = tmp_path / "processed"
-    _seed_inputs(proc, [
+    _seed_inputs(tmp_path, [
         "https://guildwars2.com/app",
         "https://youtube.com/x",
     ])
     cfg = {"scope": {"filter_urls": False}}
 
     url_merge.merge(tmp_path, "guildwars2.com", cfg)
-    all_urls = read_lines(proc / "all_urls.txt")
+    all_urls = read_lines(layout.path(tmp_path, "all_urls.txt"))
     assert "https://youtube.com/x" in all_urls
 
 
 def test_merge_no_domain_fails_open(tmp_path: Path):
     """Empty domain must NOT drop everything — filtering needs a root."""
-    proc = tmp_path / "processed"
-    _seed_inputs(proc, ["https://guildwars2.com/app", "https://youtube.com/x"])
+    _seed_inputs(tmp_path, ["https://guildwars2.com/app", "https://youtube.com/x"])
     cfg = {"scope": {"filter_urls": True}}
 
     url_merge.merge(tmp_path, "", cfg)
-    all_urls = read_lines(proc / "all_urls.txt")
+    all_urls = read_lines(layout.path(tmp_path, "all_urls.txt"))
     assert len(all_urls) == 2  # nothing dropped
 
 
@@ -140,15 +135,13 @@ def test_merge_no_domain_fails_open(tmp_path: Path):
 # append_urls() — re-filters merged set, preserves out-of-scope js_urls
 # ----------------------------------------------------------------------
 def test_append_urls_refilters_and_preserves_js(tmp_path: Path):
-    proc = tmp_path / "processed"
-    proc.mkdir(parents=True)
     # State after merge(): all_urls filtered, js_urls holds an out-of-scope bundle.
-    write_lines(proc / "all_urls.txt", ["https://guildwars2.com/app"])
-    write_lines(proc / "js_urls.txt", ["https://cdn.staticwars.com/bundle.js"])
-    write_lines(proc / "dynamic_urls.txt", ["https://guildwars2.com/app"])
+    write_lines(layout.path(tmp_path, "all_urls.txt"), ["https://guildwars2.com/app"])
+    write_lines(layout.path(tmp_path, "js_urls.txt"), ["https://cdn.staticwars.com/bundle.js"])
+    write_lines(layout.path(tmp_path, "dynamic_urls.txt"), ["https://guildwars2.com/app"])
 
     # xnLinkFinder surfaced one in-scope endpoint and one 3rd-party one.
-    extra = proc / "xnlinkfinder_urls.txt"
+    extra = layout.path(tmp_path, "xnlinkfinder_urls.txt")
     write_lines(extra, [
         "https://api.guildwars2.com/v2/account",
         "https://www.facebook.com/tr",
@@ -157,8 +150,8 @@ def test_append_urls_refilters_and_preserves_js(tmp_path: Path):
 
     url_merge.append_urls(tmp_path, [extra], "guildwars2.com", cfg)
 
-    all_urls = read_lines(proc / "all_urls.txt")
-    js_urls = read_lines(proc / "js_urls.txt")
+    all_urls = read_lines(layout.path(tmp_path, "all_urls.txt"))
+    js_urls = read_lines(layout.path(tmp_path, "js_urls.txt"))
 
     assert "https://api.guildwars2.com/v2/account" in all_urls
     assert "https://www.facebook.com/tr" not in all_urls   # re-filtered out
