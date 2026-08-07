@@ -29,7 +29,7 @@ param discovery → nuclei → report). Chi tiết đầy đủ: `architecture/o
 ```
 recon2win/
 ├── main.py              # CLI + orchestrator — điểm vào duy nhất để chạy scan
-├── setup.py              # Bootstrap môi trường (tool + wordlist)
+├── bootstrap.py           # Bootstrap môi trường (tool + wordlist) — KHÔNG phải packaging script
 ├── config.yml             # Cấu hình mặc định (nguồn sự thật cho mọi tham số runtime)
 ├── config.local.yml       # (git-ignored) override bí mật — Telegram token, HackerOne token
 ├── modules/                # Logic nghiệp vụ — mỗi file một stage hoặc một mối quan tâm xuyên suốt
@@ -37,7 +37,7 @@ recon2win/
 ├── web/                       # Flask dev UI tuỳ chọn (không auth, không phải production)
 ├── docs/                        # Bạn đang ở đây
 ├── .claude/skills/                # Skill cho Claude Code review output/finding
-├── wordlists/SecLists/              # (git-ignored, do setup.py --wordlists tải về)
+├── wordlists/SecLists/              # (git-ignored, do bootstrap.py --wordlists tải về)
 └── outputs/<domain>/                  # Artefact mỗi lần scan — xem README § Output directory layout
 ```
 

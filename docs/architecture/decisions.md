@@ -144,6 +144,46 @@ riêng `alive_urls_detail.json` (57k record) 47,3→35,5MB.
 không loại trừ thì một postback stub thắng một form login thật chỉ vì đếm
 field (đo trên acronis.com: 84 vs 74).
 
+### Đổi tên `setup.py` → `bootstrap.py`
+
+**Vấn đề:** thêm `[project]` + `[build-system]` vào `pyproject.toml` để đóng
+gói `modules/` làm package cài được — nhưng `setup.py` ở repo root vốn là
+script bootstrap môi trường (verify/install tool, clone SecLists), không
+phải packaging script. setuptools' PEP 517 backend (`setuptools.build_meta`)
+luôn tự gọi `setup.py` như subprocess (`egg_info`/`dist_info`) bất cứ khi
+nào file đó tồn tại ở repo root, bất kể `pyproject.toml` đã khai `[project]`
+đầy đủ hay chưa.
+
+**Đo được (trước khi đổi tên):**
+
+```
+$ pip install --no-build-isolation --dry-run .
+setup: error: unrecognized arguments: dist_info --output-dir ... --keep-egg-info
+error: metadata-generation-failed
+```
+
+`pip install .` fail cứng — không phải giả định, là hành vi thật.
+
+**Quyết định:** đổi tên `setup.py` → `bootstrap.py` (giữ nguyên toàn bộ
+hành vi/CLI, chỉ đổi tên file + `argparse(prog=...)` + docstring). Xác nhận
+lại sau khi đổi: `pip install --no-build-isolation --dry-run .` chạy sạch,
+`python3 -m build --wheel` ra đúng `modules/*.py`, không lẫn `outputs/`/
+`wordlists/`/`tests/`. `README.md`, `config.yml`, `setup_kali.sh`,
+`docs/index.md`, `tests/test_bootstrap.py` (đổi tên từ `test_setup.py`) đã
+cập nhật theo. Không rename bừa các file khác có tên tương tự — đây là
+trường hợp thật sự cần thiết vì xung đột trực tiếp với goal đóng gói.
+
+### Lock dependency — `requirements-lock.txt`
+
+**Quyết định:** không chuyển sang `pip-tools`/`uv`/`poetry` (thêm tool mới
+vào quy trình vốn chỉ cần `pip install -r requirements.txt`). Thay vào đó
+`requirements-lock.txt` ghi tay phiên bản chính xác đã verify cùng nhau
+(`pyyaml`/`requests`/`setuptools`/`rich` + extras `flask`/`openpyxl` VÀ cây
+transitive của chúng) — cố tình KHÔNG gồm các tool recon cài qua pip
+(`arjun`/`waymore`/`xnLinkFinder`...), vì đó là CLI ngoài, không phải thư
+viện `recon2win` import. `requirements.txt` (range mở) vẫn là nguồn tài liệu
+"những gì được biết là chạy được"; lock file là đường tái lập chính xác.
+
 ## Nợ kỹ thuật đã biết (chưa xử lý, ghi lại để không phải phát hiện lại)
 
 | Nợ | Mô tả | Mức ảnh hưởng |
@@ -153,6 +193,6 @@ field (đo trên acronis.com: 84 vs 74).
 | `main.py` là orchestrator đơn khối | Thêm 1 stage cần sửa ~5 chỗ (import, `ThreadPoolExecutor` wiring, `_STAGE_NOUN`, dry-run plan text, CLI flag) | Trung bình — tăng chi phí mở rộng pipeline |
 | Output qua `print()`, không dùng `logging` | Không có level, không log ra ngoài tiến trình — phù hợp chạy tương tác, yếu cho chạy nền/lịch định kỳ | Thấp cho hiện tại, tăng dần theo quy mô vận hành |
 | Không có khái niệm workspace ngoài `outputs/<domain>/` | Không có scope/notes/knowledge base theo từng target — chỉ có scan artefact | Cao nếu muốn mở rộng thành "workspace nghiên cứu bảo mật" lâu dài |
-| Chưa lock dependency | `requirements.txt` dùng range mở — repo đã từng bị `setuptools` phá vỡ dirsearch đúng vì lý do này (`setuptools<81` là hệ quả, không phải phòng ngừa chủ động) | Cao — rủi ro tái diễn với bất kỳ dependency nào khác |
+| ~~Chưa lock dependency~~ | Đã xử lý — `requirements-lock.txt` + `pyproject.toml [project]` (xem mục "Lock dependency" ở trên) | Đã xử lý |
 | Web UI không auth, in-memory | Tự nhận trong docstring là chỉ dùng dev/demo | Thấp — miễn không dùng làm workflow thật |
 | Lịch sử git từng đi sau code trên đĩa | Tính đến trước phiên dọn dẹp gần nhất, nhiều module nền tảng (`layout.py`, `baseline.py`, `behavior.py`, `existence.py`, `asm_report.py`, `dashboard.py`, 5 probe mới, `xlsx_report.py`) chưa từng được commit dù đã chạy trên production | Đã xử lý — xem lịch sử `git log` từ commit `docs: them CLAUDE.md...` trở đi |

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""setup.py — environment bootstrap for recon-agent.
+"""bootstrap.py — environment bootstrap for recon-agent.
 
 This script helps you get a fresh machine ready to run the framework. It:
 
@@ -19,13 +19,13 @@ This script helps you get a fresh machine ready to run the framework. It:
 
 Usage
 -----
-    python3 setup.py                       # verify only, no installs
-    python3 setup.py --wordlists           # clone SecLists
-    python3 setup.py --install             # install missing tools
-    python3 setup.py --all                 # install + download
-    python3 setup.py --all -y              # same, skip confirmation prompts
-    python3 setup.py --wordlists-dir PATH  # custom clone target
-    python3 setup.py --no-color            # disable ANSI colors
+    python3 bootstrap.py                       # verify only, no installs
+    python3 bootstrap.py --wordlists           # clone SecLists
+    python3 bootstrap.py --install             # install missing tools
+    python3 bootstrap.py --all                 # install + download
+    python3 bootstrap.py --all -y              # same, skip confirmation prompts
+    python3 bootstrap.py --wordlists-dir PATH  # custom clone target
+    python3 bootstrap.py --no-color            # disable ANSI colors
 
 By default nothing is installed or downloaded — the script is read-only.
 """
@@ -37,7 +37,7 @@ import sys
 from pathlib import Path as _Path
 
 # Ensure the project root is on sys.path so `from modules import runner`
-# works whether `python3 setup.py` is invoked from this directory or any
+# works whether `python3 bootstrap.py` is invoked from this directory or any
 # other working directory.
 _PROJECT_ROOT = _Path(__file__).resolve().parent
 if str(_PROJECT_ROOT) not in sys.path:
@@ -224,7 +224,7 @@ TOOLS: dict[str, dict] = {
 
 # Wordlists the framework expects out of the box.
 # Phải khớp với `dirsearch.wordlists` + `ffuf.wordlists` trong config.yml —
-# đây là danh sách `python3 setup.py` (không tham số = verify) kiểm tra.
+# đây là danh sách `python3 bootstrap.py` (không tham số = verify) kiểm tra.
 # Lệch nhau thì verify báo xanh trong
 # khi file config thật sự cần lại không được kiểm, đúng kiểu lỗi im lặng.
 SECLISTS_PATHS = [
@@ -599,7 +599,7 @@ def print_summary(summary: dict, *, color: bool = True) -> int:
 # ----------------------------------------------------------------------
 def main() -> int:
     p = argparse.ArgumentParser(
-        prog="setup",
+        prog="bootstrap",
         description="recon-agent environment bootstrap",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="By default this script is read-only (verify only). "

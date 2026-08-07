@@ -1,5 +1,51 @@
-# Tooling config for recon2win. Packaging still lives in setup.py; this file
-# only configures ruff (lint) so CI and local runs share one source of truth.
+# recon2win — packaging metadata (this [project] table) + tooling config
+# (ruff). The environment-bootstrap CLI (verify/install external recon
+# tools, clone SecLists) lives at `bootstrap.py`, deliberately NOT
+# `setup.py` — setuptools' PEP 517 backend unconditionally shells out to a
+# root-level `setup.py` (for `egg_info`/`dist_info`/etc.) if one exists,
+# which broke `pip install .` outright when the two shared a name (verified
+# with `pip install --no-build-isolation --dry-run .` before the rename —
+# see docs/architecture/decisions.md). `[tool.setuptools]` below explicitly
+# limits what gets packaged so a build never tries to sweep up `outputs/`,
+# `wordlists/`, or `tests/`.
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "recon2win"
+version = "0.1.0"
+description = "Automated recon framework for bug bounty / external attack surface management / red team recon"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { file = "LICENSE" }
+authors = [{ name = "Nhan Tieu" }]
+dependencies = [
+    "pyyaml>=6.0",
+    "requests>=2.31.0",
+    # setuptools ships pkg_resources, which dirsearch imports at module load.
+    # Upper bound matters: setuptools 81+ removed the bundled pkg_resources.
+    # See docs/architecture/decisions.md.
+    "setuptools>=68.0,<81",
+    "rich>=13.0",
+]
+
+[project.optional-dependencies]
+web = ["flask>=3.0"]      # web/app.py — optional browser UI
+xlsx = ["openpyxl>=3.1"]  # modules/xlsx_report.py — optional --xlsx-report
+all = ["recon2win[web,xlsx]"]
+
+[project.urls]
+Repository = "https://github.com/nhantieutuiday/recon2win"
+
+# Only `modules/` is an installable package. `main.py` / `setup.py` stay as
+# repo-root scripts run via `python3 main.py` / `python3 setup.py` — both
+# resolve `config.yml` / `wordlists/` relative to the current working
+# directory, so a console-script entry point would silently break that
+# resolution when invoked from outside the repo. Not attempted here; see
+# docs/architecture/decisions.md.
+[tool.setuptools]
+packages = ["modules"]
 
 [tool.ruff]
 target-version = "py311"
@@ -11,6 +57,7 @@ line-length = 100
 select = ["E4", "E7", "E9", "F"]
 
 [tool.ruff.lint.per-file-ignores]
-# setup.py inserts the project root on sys.path *before* importing project
-# modules, so its imports legitimately come after executable statements.
-"setup.py" = ["E402"]
+# bootstrap.py inserts the project root on sys.path *before* importing
+# project modules, so its imports legitimately come after executable
+# statements.
+"bootstrap.py" = ["E402"]

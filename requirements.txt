@@ -1,3 +1,9 @@
+# Open-range dependency list — the ranges document what's KNOWN to work
+# (see comments below); the exact versions actually verified together are
+# pinned in requirements-lock.txt. For a reproducible install:
+#   pip install -r requirements-lock.txt
+# For normal development (lets pip resolve within the documented ranges):
+#   pip install -r requirements.txt
 pyyaml>=6.0
 requests>=2.31.0
 # setuptools ships ``pkg_resources``. dirsearch imports it at module load —

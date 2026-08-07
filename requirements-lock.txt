@@ -1,0 +1,51 @@
+# requirements-lock.txt — exact, reproducible versions for recon2win's OWN
+# runtime dependencies (core + optional extras declared in pyproject.toml).
+#
+# Scope: ONLY the dependency tree of recon2win itself. Deliberately does
+# NOT include the external Python-based recon tools this project shells
+# out to (arjun, waymore, xnLinkFinder, ...) — those are separate CLI
+# tools installed per README § Required external tools / bootstrap.py, not
+# libraries recon2win imports, and pinning them here would suggest they are
+# part of this project's dependency contract when they are not.
+#
+# Regenerate after a deliberate upgrade (not blindly — this file exists
+# because an unpinned range already broke a stage once, see
+# docs/architecture/decisions.md § setuptools<81):
+#
+#   python3 -m venv .venv-lock && source .venv-lock/bin/activate
+#   pip install -r requirements.txt
+#   pip install flask openpyxl   # extras — see pyproject.toml [project.optional-dependencies]
+#   pip freeze | grep -iE '^(pyyaml|requests|setuptools|rich|flask|openpyxl|certifi|charset-normalizer|idna|urllib3|pygments|markdown-it-py|mdurl|blinker|click|itsdangerous|jinja2|markupsafe|werkzeug|et.xmlfile)=' > requirements-lock.txt
+#
+# Install from this file for a reproducible environment:
+#   pip install -r requirements-lock.txt
+
+# ---- core (see pyproject.toml [project.dependencies]) ----
+PyYAML==6.0.3
+requests==2.34.2
+setuptools==80.10.2
+rich==15.0.0
+
+# ---- requests' own resolved tree ----
+certifi==2026.6.17
+charset-normalizer==3.4.9
+idna==3.18
+urllib3==2.7.0
+
+# ---- rich's own resolved tree ----
+Pygments==2.20.0
+markdown-it-py==4.2.0
+mdurl==0.1.2
+
+# ---- extra: web (pyproject.toml [project.optional-dependencies].web) ----
+Flask==3.1.3
+blinker==1.9.0
+click==8.4.2
+itsdangerous==2.2.0
+Jinja2==3.1.6
+MarkupSafe==3.0.3
+Werkzeug==3.1.8
+
+# ---- extra: xlsx (pyproject.toml [project.optional-dependencies].xlsx) ----
+openpyxl==3.1.5
+et_xmlfile==2.0.0

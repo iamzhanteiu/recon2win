@@ -48,9 +48,11 @@ Automated recon framework that follows a strict 9-stage workflow
 ```bash
 cd recon-agent
 pip install -r requirements.txt
+# reproducible install (exact versions verified together) instead:
+#   pip install -r requirements-lock.txt
 
 # 0. (one-time) bootstrap the environment — verify tools, clone SecLists
-python3 setup.py --all -y
+python3 bootstrap.py --all -y
 
 # 1. dry-run to preview the workflow without touching anything
 python3 main.py -d example.com --config config.yml --dry-run
@@ -58,6 +60,13 @@ python3 main.py -d example.com --config config.yml --dry-run
 # 2. run for real
 python3 main.py -d example.com --config config.yml
 ```
+
+`main.py`/`bootstrap.py` stay repo-root scripts run from the repo root (both
+resolve `config.yml`/`wordlists/` relative to the current directory — this
+is unchanged). `modules/` is additionally an installable package
+(`pip install .`, extras: `.[web]`, `.[xlsx]`, `.[all]`) for tooling that
+wants to import it as a library or audit its dependency tree; see
+`pyproject.toml` and `docs/architecture/decisions.md`.
 
 ### Troubleshooting common startup failures
 
@@ -69,9 +78,9 @@ python3 main.py -d example.com --config config.yml
 | `arjun` → hours spent on a handful of URLs (`Processing chunks: n/103` crawling) | `arjun.stable: true` — `--stable` sleeps a random 3–9s before **every** request (~660s per URL) and overrides `rate_limit` | Leave `arjun.stable: false` (the default); only turn it on when arjun reports the target is rate-limiting, and drop `max_urls` to ~20 when you do |
 | `xnlinkfinder` → `failed (count=0, 1200s)` | xnLinkFinder hangs on a single slow JS URL | Lower `xnlinkfinder.timeout` *or* pre-filter `js_urls.txt` |
 
-### `setup.py` — environment bootstrap
+### `bootstrap.py` — environment bootstrap
 
-`setup.py` is a self-contained script that:
+`bootstrap.py` is a self-contained script that:
 
 1. **Verifies** every external tool (subfinder, amass, chaos, dnsx, httpx,
    katana, urlfinder, dirsearch, ffuf, waymore, xnLinkFinder, arjun, nuclei) and
@@ -80,7 +89,7 @@ python3 main.py -d example.com --config config.yml
    (`brew` on macOS, `apt` on Linux, `go install` for Go tools, `pip3` for
    Python tools).
 3. **Clones SecLists** into `./wordlists/SecLists/` (i.e. inside the
-   repo, next to `setup.py`) so every path the framework expects is
+   repo, next to `bootstrap.py`) so every path the framework expects is
    present out of the box. Override with `--wordlists-dir PATH`.
 4. **Verifies** the expected wordlists are present.
 5. Creates `outputs/`.
@@ -90,12 +99,12 @@ By default the script is **read-only** (verify only). Use `--install`
 and/or `--wordlists` to actually do something.
 
 ```bash
-python3 setup.py                       # verify only, no installs
-python3 setup.py --wordlists           # clone SecLists
-python3 setup.py --install             # install missing tools
-python3 setup.py --all -y              # install + download, no prompts
-python3 setup.py --wordlists-dir PATH  # custom clone target
-python3 setup.py --no-color            # disable ANSI colors
+python3 bootstrap.py                       # verify only, no installs
+python3 bootstrap.py --wordlists           # clone SecLists
+python3 bootstrap.py --install             # install missing tools
+python3 bootstrap.py --all -y              # install + download, no prompts
+python3 bootstrap.py --wordlists-dir PATH  # custom clone target
+python3 bootstrap.py --no-color            # disable ANSI colors
 ```
 
 ### CLI flags
@@ -165,7 +174,7 @@ $ NO_COLOR=1    python3 main.py -d example.com             # force plain text
 ```
 recon-agent/
 ├── main.py                # CLI entry point & orchestrator
-├── setup.py               # One-shot environment bootstrap (tools + wordlists)
+├── bootstrap.py           # One-shot environment bootstrap (tools + wordlists)
 ├── config.yml             # Default configuration
 ├── requirements.txt
 ├── README.md
@@ -533,18 +542,18 @@ dirsearch:
 
 ### Installing SecLists
 
-`python3 setup.py --wordlists` clones SecLists into
+`python3 bootstrap.py --wordlists` clones SecLists into
 `./wordlists/SecLists/` (i.e. inside the repo) so the default paths
 above resolve out of the box. The `wordlists/` folder is git-ignored —
 it's a build artifact, not source.
 
-Manual clone (if you skipped `setup.py`):
+Manual clone (if you skipped `bootstrap.py`):
 
 ```bash
 git clone --depth 1 https://github.com/danielmiessler/SecLists.git wordlists/SecLists
 ```
 
-To use a different location, pass `--wordlists-dir PATH` to `setup.py`
+To use a different location, pass `--wordlists-dir PATH` to `bootstrap.py`
 and edit the paths in `config.yml` to match.
 
 The `Service-Specific` directory contains ~50 small wordlists

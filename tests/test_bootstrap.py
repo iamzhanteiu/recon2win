@@ -1,4 +1,4 @@
-"""Tests for setup.py bootstrap helpers.
+"""Tests for bootstrap.py environment-bootstrap helpers.
 
 The destructive helpers (install_missing_tools, download_wordlists) are
 not exercised here — they hit the network and the user's package
@@ -11,7 +11,7 @@ from pathlib import Path
 
 import pytest
 
-from setup import (
+from bootstrap import (
     SECLISTS_PATHS,
     TOOLS,
     build_summary,
@@ -120,7 +120,7 @@ def test_seclists_paths_match_config_yml():
         for w in (cfg[stage].get("wordlists") or [])
     }
     assert used == set(SECLISTS_PATHS), (
-        f"config.yml dùng {sorted(used)} nhưng setup.py kiểm "
+        f"config.yml dùng {sorted(used)} nhưng bootstrap.py kiểm "
         f"{sorted(SECLISTS_PATHS)}"
     )
 
@@ -265,11 +265,11 @@ def test_setup_output_dir_idempotent(tmp_path: Path, monkeypatch):
 # CLI surface — main() should expose the documented flags.
 # ----------------------------------------------------------------------
 def test_main_help_lists_known_flags():
-    """Run `python3 setup.py --help` and check the advertised flags appear."""
+    """Run `python3 bootstrap.py --help` and check the advertised flags appear."""
     project_root = Path(__file__).resolve().parent.parent
-    setup_py = project_root / "setup.py"
+    bootstrap_py = project_root / "bootstrap.py"
     result = subprocess.run(
-        [sys.executable, str(setup_py), "--help"],
+        [sys.executable, str(bootstrap_py), "--help"],
         capture_output=True, text=True,
         cwd=str(project_root),
     )
@@ -286,7 +286,7 @@ def test_main_help_only_lists_known_flags():
     """No surprise flags have crept in."""
     project_root = Path(__file__).resolve().parent.parent
     result = subprocess.run(
-        [sys.executable, str(project_root / "setup.py"), "--help"],
+        [sys.executable, str(project_root / "bootstrap.py"), "--help"],
         capture_output=True, text=True,
         cwd=str(project_root),
     )

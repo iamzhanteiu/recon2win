@@ -363,11 +363,11 @@ dirsearch:
   #
   # Paths are resolved relative to the repo root (i.e. the directory you
   # ran `python3 main.py` from — typically the folder that contains
-  # main.py / config.yml). ``setup.py --all -y`` clones SecLists into
+  # main.py / config.yml). ``bootstrap.py --all -y`` clones SecLists into
   # ``<repo>/wordlists/SecLists`` by default, which matches the paths
   # below out of the box.
   #
-  # Manual clone (if you skipped setup.py):
+  # Manual clone (if you skipped bootstrap.py):
   #   git clone --depth 1 https://github.com/danielmiessler/SecLists.git wordlists/SecLists
   # ------------------------------------------------------------------
   # Vai trò FILE → wordlist thiên về tên file, không phải tên thư mục.
