@@ -17,6 +17,7 @@ from pathlib import Path
 
 import pytest
 
+from modules import baseline, layout
 from modules.report import (
     ReportBuilder,
     ReportInputs,
@@ -24,8 +25,11 @@ from modules.report import (
     classify_stages,
     classify_url,
     count_lines,
+    endpoint_existence,
+    existence_counts,
     extract_interesting_api_paths,
     form_score,
+    fuzz_coverage,
     is_high_value,
     load_json_safe,
     missing_tools_from_skips,
@@ -68,12 +72,101 @@ def test_summarize_url_surface_empty():
 
 
 # ----------------------------------------------------------------------
+# fuzz_coverage — surfaces fuzz_targets.select_targets()'s stats, which
+# previously landed in extra.selection and were never read back out.
+# ----------------------------------------------------------------------
+def test_fuzz_coverage_reads_selection_stats():
+    stage_results = [
+        {"stage": "dirsearch", "status": "success", "extra": {
+            "selection": {"input": 312, "deduped": 250, "waf_skipped": 0,
+                         "blanket_skipped": 11, "selected": 50, "capped": 1}}},
+    ]
+    sel = fuzz_coverage(stage_results, "dirsearch")
+    assert sel["input"] == 312
+    assert sel["capped"] == 1
+
+
+def test_fuzz_coverage_missing_stage_returns_empty():
+    assert fuzz_coverage([], "dirsearch") == {}
+    assert fuzz_coverage([{"stage": "ffuf", "extra": {}}], "dirsearch") == {}
+
+
+def test_fuzz_coverage_missing_selection_key_returns_empty():
+    assert fuzz_coverage(
+        [{"stage": "dirsearch", "extra": {"mode": "wordlist"}}], "dirsearch",
+    ) == {}
+
+
+# ----------------------------------------------------------------------
+# endpoint_existence / existence_counts — classify ffuf/dirsearch hits by
+# response BEHAVIOUR (modules/existence.py) instead of status code alone.
+# ----------------------------------------------------------------------
+def test_endpoint_existence_joins_detail_body_and_baseline():
+    detail_index = {
+        "https://x.example.com/api/users/1": {
+            "status_code": 400, "content_type": "application/json",
+            "words": 12, "lines": 3},
+        "https://x.example.com/xyz123": {
+            "status_code": 403, "content_type": "text/html",
+            "words": 13, "lines": 11},
+    }
+    body_snippets = {
+        "https://x.example.com/api/users/1": "Missing required parameter: id",
+    }
+    # x.example.com consistently answers 403/html/13w/11l to guaranteed-fake
+    # paths — the exact shape of the second hit below.
+    fake_shape = (403, "html", "", 13, 11)
+    baselines = {"x.example.com": baseline.Baseline("x.example.com", shape=fake_shape)}
+    hit_urls = {
+        "https://x.example.com/api/users/1": {"ffuf"},
+        "https://x.example.com/xyz123": {"ffuf", "dirsearch"},
+    }
+    results = endpoint_existence(hit_urls, detail_index, body_snippets, baselines)
+    by_url = {r["url"]: r for r in results}
+
+    # one signal category + an ambiguous status (400 isn't in the "strong"
+    # status set) reaches LIKELY, not CONFIRMED — see modules/existence.py's
+    # own test suite for the full verdict matrix this module just wires up.
+    likely = by_url["https://x.example.com/api/users/1"]
+    assert likely["verdict"] == "likely"
+    assert likely["sources"] == ["ffuf"]
+    assert likely["status"] == 400
+
+    not_found = by_url["https://x.example.com/xyz123"]
+    assert not_found["verdict"] == "not_found"
+    assert not_found["sources"] == ["dirsearch", "ffuf"]
+
+
+def test_endpoint_existence_no_detail_row_or_baseline_falls_back_to_unknown():
+    results = endpoint_existence(
+        {"https://x.example.com/weird": {"ffuf"}}, {}, {}, {},
+    )
+    assert results == [{
+        "url": "https://x.example.com/weird", "sources": ["ffuf"],
+        "status": None, "verdict": "unknown", "reasons": [],
+    }]
+
+
+def test_existence_counts_tallies_and_fills_zero_keys():
+    counts = existence_counts([
+        {"verdict": "confirmed"}, {"verdict": "confirmed"}, {"verdict": "not_found"},
+    ])
+    assert counts == {"confirmed": 2, "likely": 0, "unknown": 0, "not_found": 1}
+
+
+def test_existence_counts_empty_list():
+    assert existence_counts([]) == {
+        "confirmed": 0, "likely": 0, "unknown": 0, "not_found": 0}
+
+
+# ----------------------------------------------------------------------
 # Fixtures
 # ----------------------------------------------------------------------
 @pytest.fixture
 def fake_outputs(tmp_path: Path) -> Path:
     """Populate ``tmp_path`` with a realistic but minimal output tree
     using the v2 layout (raw grouped per stage, findings per kind)."""
+    proc = tmp_path / "processed"
     base = tmp_path
     raw_sub = base / "raw" / "subdomain"
     raw_cd = base / "raw" / "content_discovery"
@@ -81,7 +174,6 @@ def fake_outputs(tmp_path: Path) -> Path:
     raw_ff = base / "raw" / "ffuf"
     raw_wm = base / "raw" / "waymore"
     raw_ar = base / "raw" / "arjun"
-    proc = base / "processed"
     fnd_def = base / "findings" / "default"
     logs = base / "logs"
     for d in (raw_sub, raw_cd, raw_ds, raw_ff, raw_wm, raw_ar,
@@ -115,18 +207,18 @@ def fake_outputs(tmp_path: Path) -> Path:
     (raw_ar / "input_subset.txt").write_text("https://example.com/login\n")
 
     # processed
-    (proc / "subdomains.txt").write_text("a.example.com\nb.example.com\nc.example.com\n")
-    (proc / "resolved.txt").write_text("a.example.com\nb.example.com\n")
-    (proc / "resolved_detail.json").write_text(json.dumps([
+    (layout.path(base, "subdomains.txt")).write_text("a.example.com\nb.example.com\nc.example.com\n")
+    (layout.path(base, "resolved.txt")).write_text("a.example.com\nb.example.com\n")
+    (layout.path(base, "resolved_detail.json")).write_text(json.dumps([
         {"subdomain": "a.example.com", "ip": "1.2.3.4",
          "asn": {"asn": "AS13335", "name": "Cloudflare"}, "cname": None},
         {"subdomain": "b.example.com", "ip": "5.6.7.8",
          "asn": {"asn": "AS16509", "name": "Amazon"}, "cname": "edge.example.com"},
     ]))
-    (proc / "alive.txt").write_text(
+    (layout.path(base, "alive.txt")).write_text(
         "https://a.example.com\nhttps://b.example.com\n"
     )
-    (proc / "alive_detail.json").write_text(json.dumps([
+    (layout.path(base, "alive_detail.json")).write_text(json.dumps([
         {"url": "https://a.example.com", "input": "a.example.com",
          "status_code": 200, "title": "Login", "content_type": "text/html",
          "content_length": 1234, "webserver": "nginx", "tech": "PHP"},
@@ -134,54 +226,54 @@ def fake_outputs(tmp_path: Path) -> Path:
          "status_code": 200, "title": "API", "content_type": "application/json",
          "content_length": 567, "webserver": "nginx", "tech": "Node.js"},
     ]))
-    (proc / "alive_table.txt").write_text(
+    (layout.path(base, "alive_table.txt")).write_text(
         "200  1234  text/html  https://a.example.com\n"
     )
-    (proc / "crawler_urls.txt").write_text(
+    (layout.path(base, "crawler_urls.txt")).write_text(
         "https://example.com/login\nhttps://example.com/admin\n"
         "https://example.com/api/users\n"
     )
-    (proc / "dirsearch_urls.txt").write_text(
+    (layout.path(base, "dirsearch_urls.txt")).write_text(
         "https://example.com/.env\nhttps://example.com/.git/HEAD\n"
     )
-    (proc / "ffuf_urls.txt").write_text(
+    (layout.path(base, "ffuf_urls.txt")).write_text(
         "https://example.com/admin\nhttps://example.com/api/\n"
     )
-    (proc / "waymore_urls.txt").write_text("https://example.com/old/login\n")
-    (proc / "all_urls.txt").write_text(
+    (layout.path(base, "waymore_urls.txt")).write_text("https://example.com/old/login\n")
+    (layout.path(base, "all_urls.txt")).write_text(
         "https://example.com/login\nhttps://example.com/admin\n"
         "https://example.com/.env\nhttps://example.com/api/users\n"
         "https://example.com/app.js\n"
     )
-    (proc / "js_urls.txt").write_text("https://example.com/app.js\n")
-    (proc / "dynamic_urls.txt").write_text(
+    (layout.path(base, "js_urls.txt")).write_text("https://example.com/app.js\n")
+    (layout.path(base, "dynamic_urls.txt")).write_text(
         "https://example.com/login\nhttps://example.com/admin\n"
         "https://example.com/api/users\n"
         "https://example.com/.env\nhttps://example.com/.git/HEAD\n"
     )
-    (proc / "xnlinkfinder_endpoints.txt").write_text(
+    (layout.path(base, "xnlinkfinder_endpoints.txt")).write_text(
         "/api/v1/users\n/api/v1/login\n/graphql/query\n"
     )
-    (proc / "xnlinkfinder_urls.txt").write_text(
+    (layout.path(base, "xnlinkfinder_urls.txt")).write_text(
         "https://example.com/api/v1/users\n"
         "https://example.com/graphql/query\n"
     )
-    (proc / "alive_urls.txt").write_text(
+    (layout.path(base, "alive_urls.txt")).write_text(
         "https://example.com/login\nhttps://example.com/admin\n"
         "https://example.com/.env\nhttps://example.com/.git/HEAD\n"
     )
-    (proc / "alive_urls_detail.json").write_text(json.dumps([
+    (layout.path(base, "alive_urls_detail.json")).write_text(json.dumps([
         {"url": "https://example.com/login", "status_code": 200,
          "content_length": 900, "content_type": "text/html"},
     ]))
-    (proc / "alive_urls_table.txt").write_text(
+    (layout.path(base, "alive_urls_table.txt")).write_text(
         "200  900  text/html  https://example.com/login\n"
     )
-    (proc / "arjun_params.txt").write_text(
+    (layout.path(base, "arjun_params.txt")).write_text(
         "[200] https://example.com/login?id=&q=\n"
         "[200] https://example.com/admin?debug=\n"
     )
-    (proc / "parameterized_urls.txt").write_text(
+    (layout.path(base, "parameterized_urls.txt")).write_text(
         "https://example.com/login?id=&q=\n"
         "https://example.com/admin?debug=\n"
     )
@@ -217,25 +309,48 @@ def fake_outputs(tmp_path: Path) -> Path:
     }))
 
     # processed/jsluice_* — the AST half of the JS analysis
-    (proc / "jsluice_endpoints.txt").write_text(
+    (layout.path(base, "jsluice_endpoints.txt")).write_text(
         "/api/v2/session\n/api/v2/upload\n"
     )
-    (proc / "jsluice_urls.txt").write_text(
+    (layout.path(base, "jsluice_urls.txt")).write_text(
         "https://example.com/api/v2/session\n"
     )
-    (proc / "jsluice_params.json").write_text(json.dumps([
+    (layout.path(base, "jsluice_params.json")).write_text(json.dumps([
         {"url": "https://example.com/api/v2/session", "method": "POST",
          "queryParams": ["lang"], "bodyParams": ["email", "password"]},
         {"url": "https://example.com/search", "method": "",
          "queryParams": ["q"], "bodyParams": []},
     ]))
+    (layout.path(base, "jsluice_js_detail.json")).write_text(json.dumps([
+        {"url": "https://example.com/app.js", "status_code": 200,
+         "content_type": "application/javascript", "content_length": 4096},
+        {"url": "https://example.com/static/chunks/missing-chunk.js",
+         "status_code": 404, "content_type": "text/html", "content_length": 0},
+    ]))
+    (layout.path(base, "jsluice_js_table.txt")).write_text(
+        " ST     LENGTH  CONTENT-TYPE              URL\n"
+        "200       4096  application/javascript    https://example.com/app.js\n"
+        "404          0  text/html                 "
+        "https://example.com/static/chunks/missing-chunk.js\n"
+    )
+    (layout.path(base, "jsluice_method_check.json")).write_text(json.dumps([
+        {"url": "https://example.com/api/v2/session", "method": "POST",
+         "status": 200, "content_length": 512, "content_type": "application/json",
+         "body_preview": "{\"token\":\"...\"}", "get_status": 404,
+         "get_content_length": 0},
+    ]))
+    (layout.path(base, "jsluice_method_check_table.txt")).write_text(
+        "METHOD   ST     LENGTH  CONTENT-TYPE               GET-ST  URL\n"
+        "POST    200        512  application/json               404  "
+        "https://example.com/api/v2/session\n"
+    )
 
     # processed/apidocs_* + findings/api_docs.json — API documentation
-    (proc / "apidocs_urls.txt").write_text(
+    (layout.path(base, "apidocs_urls.txt")).write_text(
         "https://api.example.com/v2/users\n"
         "https://api.example.com/v2/users/{id}\n"
     )
-    (proc / "apidocs_params.txt").write_text(
+    (layout.path(base, "apidocs_params.txt")).write_text(
         "https://api.example.com/v2/users?page=&limit=\n"
     )
     (base / "findings" / "api_docs.json").write_text(json.dumps({
@@ -255,8 +370,72 @@ def fake_outputs(tmp_path: Path) -> Path:
         "probe": {"hosts": 2, "paths": 60, "requests": 120, "responses": 3},
     }))
 
+    # findings/misconfig_probe.json — server/microservice misconfig probe
+    (layout.path(base, "misconfig_urls.txt")).write_text(
+        "https://app3.example.com/actuator/env\n"
+    )
+    (base / "findings" / "misconfig_probe.json").write_text(json.dumps({
+        "findings": [{
+            "url": "https://app3.example.com/actuator/env",
+            "service": "Spring Boot actuator/env", "confidence": "high",
+            "status": 200,
+        }],
+        "hosts_probed": 3,
+        "probe": {"hosts": 3, "paths": 30, "requests": 90, "responses": 5},
+    }))
+
+    # findings/graphql_schema.json — GraphQL introspection probe
+    (base / "findings" / "graphql_schema.json").write_text(json.dumps({
+        "targets": [{
+            "url": "https://api.example.com/graphql", "status_code": 200,
+            "query_fields": ["users", "me"],
+            "mutation_fields": ["deleteUser", "createInvoice"],
+            "subscription_fields": [],
+            "type_count": 12,
+            "types": ["User", "Invoice"],
+        }],
+        "probed": 5,
+    }))
+
+    # findings/cors.json — CORS misconfiguration probe
+    (base / "findings" / "cors.json").write_text(json.dumps({
+        "findings": [{
+            "url": "https://api.example.com", "acao": "https://evil.invalid",
+            "acac": True, "severity": "critical",
+            "note": "reflects arbitrary Origin AND allows credentials",
+        }],
+        "probed": 2, "test_origin": "https://recon2win-cors-test.invalid",
+    }))
+
+    # findings/buckets.json — cloud storage bucket enumeration
+    (base / "findings" / "buckets.json").write_text(json.dumps({
+        "findings": [{
+            "bucket": "example-uploads", "provider": "s3",
+            "url": "https://example-uploads.s3.amazonaws.com/",
+            "state": "public-listing", "severity": "critical",
+        }],
+        "azure_references": ["exampleacct"],
+        "extracted": {"s3": ["example-uploads"], "gcs": []},
+        "guessed_count": 20, "probed": 40,
+    }))
+
+    # findings/git_dump.json — .git exposure dump summary
+    (base / "findings" / "git_dump.json").write_text(json.dumps({
+        "hosts": [{
+            "host": "https://staging.example.com", "ref": "ref: refs/heads/main",
+            "files_in_index": 42, "files_recovered": 30, "files_skipped": 12,
+            "output_dir": "raw/gitdump/repos/staging.example.com",
+        }],
+    }))
+
+    # processed/screenshots_index.json — httpx -screenshot capture
+    (layout.path(base, "screenshots_index.json")).write_text(json.dumps([
+        {"url": "https://example.com", "status_code": 200, "title": "Example",
+         "screenshot_path": "raw/httpx_screenshot/screenshots/example.png"},
+    ]))
+
     # processed/forms.json — forms/inputs mined from the crawl
-    (proc / "forms.json").write_text(json.dumps({
+    (layout.path(base, "forms.json")).write_text(json.dumps({
         "forms": [
             {"url": "https://example.com/login", "action": "https://example.com/login",
              "method": "POST", "enctype": "application/x-www-form-urlencoded",
@@ -753,10 +932,10 @@ def test_collect_survives_partial_outputs(tmp_path: Path):
     (tmp_path / "raw").mkdir(parents=True)
     (tmp_path / "logs").mkdir(parents=True)
     (tmp_path / "logs" / "commands.log").write_text("x")
-    (tmp_path / "processed" / "all_urls.txt").write_text("https://x.example.com\n")
-    (tmp_path / "processed" / "alive.txt").write_text("https://x.example.com\n")
+    (layout.path(tmp_path, "all_urls.txt")).write_text("https://x.example.com\n")
+    (layout.path(tmp_path, "alive.txt")).write_text("https://x.example.com\n")
     # write an interesting URL into one of the candidate files
-    (tmp_path / "processed" / "alive_urls.txt").write_text("https://x.example.com/admin\n")
+    (layout.path(tmp_path, "alive_urls.txt")).write_text("https://x.example.com/admin\n")
 
     builder = ReportBuilder(_make_inputs(tmp_path))
     data = builder.collect()
@@ -774,6 +953,70 @@ def test_high_value_targets_in_fixture(fake_outputs: Path):
     assert "https://example.com/admin" in urls
     assert "https://example.com/.env" in urls
     assert "https://example.com/.git/HEAD" in urls
+
+
+def test_high_value_targets_drop_404_and_429(tmp_path: Path):
+    """A path that 404s doesn't exist; a 429 means the probe got
+    rate-limited. Neither is a lead, so section 9 must not list them."""
+    (tmp_path / "processed").mkdir(parents=True)
+    (tmp_path / "raw").mkdir(parents=True)
+    (tmp_path / "logs").mkdir(parents=True)
+    (tmp_path / "logs" / "commands.log").write_text("x")
+    (layout.path(tmp_path, "alive_urls.txt")).write_text(
+        "https://x.example.com/admin\n"
+        "https://x.example.com/.env\n"
+        "https://x.example.com/.git/HEAD\n"
+    )
+    (layout.path(tmp_path, "alive_urls_detail.json")).write_text(json.dumps([
+        {"url": "https://x.example.com/admin", "status_code": 403,
+         "content_length": 10, "content_type": "text/html"},
+        {"url": "https://x.example.com/.env", "status_code": 404,
+         "content_length": 0, "content_type": "text/html"},
+        {"url": "https://x.example.com/.git/HEAD", "status_code": 429,
+         "content_length": 0, "content_type": "text/html"},
+    ]))
+
+    builder = ReportBuilder(_make_inputs(tmp_path))
+    data = builder.collect()
+    statuses = {h["url"]: h["status"] for h in data["high_value_targets"]}
+    assert statuses == {"https://x.example.com/admin": 403}
+
+
+def test_directory_listing_detected_from_title(tmp_path: Path):
+    """An autoindex page has no URL keyword ("/uploads/" matches nothing in
+    HIGH_VALUE_PATTERNS) — it only gives itself away via the response
+    title, so it must still land in high_value_targets."""
+    (tmp_path / "processed").mkdir(parents=True)
+    (tmp_path / "raw").mkdir(parents=True)
+    (tmp_path / "logs").mkdir(parents=True)
+    (tmp_path / "logs" / "commands.log").write_text("x")
+    (layout.path(tmp_path, "alive_urls.txt")).write_text(
+        "https://x.example.com/uploads/\n"
+        "https://x.example.com/about/\n"
+    )
+    (layout.path(tmp_path, "alive_urls_detail.json")).write_text(json.dumps([
+        {"url": "https://x.example.com/uploads/", "status_code": 200,
+         "content_length": 512, "content_type": "text/html",
+         "title": "Index of /uploads"},
+        {"url": "https://x.example.com/about/", "status_code": 200,
+         "content_length": 512, "content_type": "text/html",
+         "title": "About us"},
+    ]))
+
+    builder = ReportBuilder(_make_inputs(tmp_path))
+    data = builder.collect()
+    by_url = {h["url"]: h["categories"] for h in data["high_value_targets"]}
+    assert "directory listing" in by_url["https://x.example.com/uploads/"]
+    assert "https://x.example.com/about/" not in by_url
+
+
+def test_is_directory_listing_helper():
+    from modules.report import is_directory_listing
+    assert is_directory_listing({"title": "Index of /backup"})
+    assert is_directory_listing({"title": "index of /"})
+    assert not is_directory_listing({"title": "Welcome to nginx"})
+    assert not is_directory_listing(None)
+    assert is_directory_listing(None, "<html><title>Index of /x</title></html>")
 
 
 def test_interesting_api_paths_extracted(fake_outputs: Path):
@@ -804,13 +1047,17 @@ def test_render_html_includes_all_required_sections(fake_outputs: Path):
     for section in [
         "1. Executive Summary",
         "2. Recon Coverage Summary",
-        "3. Asset Inventory",
-        "4. DNS Inventory",
-        "5. Content Discovery",
-        "6. JavaScript Analysis",
-        "6.1 JavaScript Secrets",
-        "7. Parameter Discovery",
-        "8. Nuclei Findings",
+        "3. JavaScript Analysis",
+        "3.1 JavaScript Secrets",
+        "4. Nuclei Findings",
+        "4.1 GraphQL Introspection",
+        "4.2 CORS Misconfiguration",
+        "4.3 Cloud Storage Buckets",
+        "4.4 Git Exposure Dump",
+        "5. Asset Inventory",
+        "6. DNS Inventory",
+        "7. Content Discovery",
+        "8. Parameter Discovery",
         "9. High-Value Targets",
         "10. Errors / Skipped / Missing Tools",
         "11. Manual Testing Recommendations",
@@ -822,7 +1069,7 @@ def test_render_html_includes_all_required_sections(fake_outputs: Path):
 def test_html_secrets_section_lists_findings(fake_outputs: Path):
     builder = ReportBuilder(_make_inputs(fake_outputs))
     html = builder.render_html(builder.collect())
-    assert "6.1 JavaScript Secrets" in html
+    assert "3.1 JavaScript Secrets" in html
     assert "AWSAccessKey" in html
     assert "AKIAEXAMPLE123" in html
     assert "https://example.com/app.js" in html
@@ -842,14 +1089,14 @@ def test_html_secrets_section_empty_when_none(tmp_path: Path):
         (tmp_path / sub).mkdir(parents=True, exist_ok=True)
     builder = ReportBuilder(_make_inputs(tmp_path))
     html = builder.render_html(builder.collect())
-    assert "6.1 JavaScript Secrets" in html
+    assert "3.1 JavaScript Secrets" in html
     assert "No secrets found" in html
 
 
 def test_markdown_secrets_section(fake_outputs: Path):
     builder = ReportBuilder(_make_inputs(fake_outputs))
     md = builder.render_markdown(builder.collect())
-    assert "## 6.1 JavaScript Secrets" in md
+    assert "## 3.1 JavaScript Secrets" in md
     assert "AWSAccessKey" in md
 
 
@@ -862,33 +1109,33 @@ def test_render_html_uses_clickable_links(fake_outputs: Path):
         "../raw/subdomain/subfinder.txt",
         "../raw/subdomain/amass.txt",
         "../raw/subdomain/chaos.txt",
-        "../processed/subdomains.txt",
-        "../processed/resolved.txt",
-        "../processed/resolved_detail.json",
-        "../processed/alive.txt",
-        "../processed/alive_detail.json",
+        "../processed/hosts/subdomains.txt",
+        "../processed/hosts/resolved.txt",
+        "../processed/hosts/resolved_detail.json",
+        "../processed/hosts/alive.txt",
+        "../processed/hosts/alive_detail.json",
         "../raw/content_discovery/katana_urls.txt",
         "../raw/content_discovery/urlfinder_urls.txt",
-        "../processed/crawler_urls.txt",
+        "../processed/sources/crawler_urls.txt",
         "../raw/dirsearch/dirsearch_raw.txt",
         "../raw/dirsearch/merged_wordlists.txt",
         "../raw/dirsearch/targets.txt",
-        "../processed/dirsearch_urls.txt",
+        "../processed/sources/dirsearch_urls.txt",
         "../raw/ffuf/ffuf_raw.txt",
         "../raw/ffuf/merged_wordlists.txt",
-        "../processed/ffuf_urls.txt",
+        "../processed/sources/ffuf_urls.txt",
         "../raw/waymore/waymore_raw.txt",
-        "../processed/waymore_urls.txt",
-        "../processed/all_urls.txt",
-        "../processed/js_urls.txt",
-        "../processed/dynamic_urls.txt",
-        "../processed/xnlinkfinder_endpoints.txt",
-        "../processed/xnlinkfinder_urls.txt",
-        "../processed/alive_urls.txt",
-        "../processed/alive_urls_detail.json",
-        "../processed/arjun_params.txt",
+        "../processed/sources/waymore_urls.txt",
+        "../processed/corpus/all_urls.txt",
+        "../processed/corpus/js_urls.txt",
+        "../processed/corpus/dynamic_urls.txt",
+        "../processed/js/xnlinkfinder_endpoints.txt",
+        "../processed/js/xnlinkfinder_urls.txt",
+        "../processed/hosts/alive_urls.txt",
+        "../processed/hosts/alive_urls_detail.json",
+        "../processed/targets/arjun_params.txt",
         "../raw/arjun/input_subset.txt",
-        "../processed/parameterized_urls.txt",
+        "../processed/targets/parameterized_urls.txt",
         "../findings/default/nuclei.txt",
         "../findings/default/nuclei.json",
         "../logs/commands.log",
@@ -946,12 +1193,16 @@ def test_render_markdown_includes_all_sections(fake_outputs: Path):
     for section in [
         "## 1. Executive Summary",
         "## 2. Recon Coverage Summary",
-        "## 3. Asset Inventory",
-        "## 4. DNS Inventory",
-        "## 5. Content Discovery",
-        "## 6. JavaScript Analysis",
-        "## 7. Parameter Discovery",
-        "## 8. Nuclei Findings",
+        "## 3. JavaScript Analysis",
+        "## 4. Nuclei Findings",
+        "## 4.1 GraphQL Introspection",
+        "## 4.2 CORS Misconfiguration",
+        "## 4.3 Cloud Storage Buckets",
+        "## 4.4 Git Exposure Dump",
+        "## 5. Asset Inventory",
+        "## 6. DNS Inventory",
+        "## 7. Content Discovery",
+        "## 8. Parameter Discovery",
         "## 9. High-Value Targets",
         "## 10. Errors / Skipped / Missing Tools",
         "## 11. Manual Testing Recommendations",
@@ -1128,11 +1379,146 @@ def test_collect_counts_forms_and_jsluice(fake_outputs: Path):
     assert "multipart" in data["forms"][0]["enctype"]
 
 
+def test_collect_counts_jsluice_recursion_from_stage_extra(fake_outputs: Path):
+    """js_recursed_* live in the jsluice stage's own result dict (not a
+    file), so collect() must pull them from stage_results, not re-derive
+    them from processed/jsluice_*."""
+    inputs = _make_inputs(fake_outputs)
+    inputs.stage_results = inputs.stage_results + [
+        {"stage": "jsluice", "status": "success", "count": 5, "error": None,
+         "extra": {"js_fetched": 7, "js_recursed_rounds": 2,
+                   "js_recursed_fetched": 4}},
+    ]
+    data = ReportBuilder(inputs).collect()
+    c = data["counts"]
+    assert c["jsluice_js_fetched"] == 7
+    assert c["jsluice_js_recursed_rounds"] == 2
+    assert c["jsluice_js_recursed_fetched"] == 4
+
+
+def test_collect_jsluice_recursion_defaults_to_zero_without_stage(fake_outputs: Path):
+    """No jsluice entry in stage_results (e.g. stage skipped) → counts
+    default to 0 instead of KeyError."""
+    data = ReportBuilder(_make_inputs(fake_outputs)).collect()
+    c = data["counts"]
+    assert c["jsluice_js_recursed_rounds"] == 0
+    assert c["jsluice_js_recursed_fetched"] == 0
+
+
+def test_md_and_html_show_jsluice_recursion_note(fake_outputs: Path):
+    inputs = _make_inputs(fake_outputs)
+    inputs.stage_results = inputs.stage_results + [
+        {"stage": "jsluice", "status": "success", "count": 5, "error": None,
+         "extra": {"js_fetched": 7, "js_recursed_rounds": 2,
+                   "js_recursed_fetched": 4}},
+    ]
+    b = ReportBuilder(inputs)
+    data = b.collect()
+    md = b.render_markdown(data)
+    html = b.render_html(data)
+    assert "recursed into JS-referenced-JS" in md
+    assert "2` round(s)" in md
+    assert "recursed into JS-referenced-JS" in html
+    assert "2</code> round(s)" in html
+
+
+def test_md_and_html_hide_jsluice_recursion_note_when_no_recursion(fake_outputs: Path):
+    """No rounds run (depth=0 or nothing to recurse into) → note omitted
+    rather than printed as '0 round(s)' noise."""
+    b = ReportBuilder(_make_inputs(fake_outputs))
+    data = b.collect()
+    md = b.render_markdown(data)
+    html = b.render_html(data)
+    assert "recursed into JS-referenced-JS" not in md
+    assert "recursed into JS-referenced-JS" not in html
+
+
+# ----------------------------------------------------------------------
+# jsluice JS fetch detail — status/length/content-type of every JS file
+# jsluice attempted (2xx and 4xx/5xx alike, incl. recursive rounds)
+# ----------------------------------------------------------------------
+def test_collect_summarizes_jsluice_js_detail(fake_outputs: Path):
+    data = ReportBuilder(_make_inputs(fake_outputs)).collect()
+    c = data["counts"]
+    assert c["jsluice_js_fetched_total"] == 2
+    surf = data["jsluice_js_surface"]
+    assert surf["by_status"] == {200: 1, 404: 1}
+    assert surf["by_type"]["application/javascript"] == 1
+    # the raw rows ride along too, not just the summary
+    assert len(data["jsluice_js_detail"]) == 2
+
+
+def test_md_and_html_show_jsluice_js_fetch_surface(fake_outputs: Path):
+    b = ReportBuilder(_make_inputs(fake_outputs))
+    data = b.collect()
+    md = b.render_markdown(data)
+    html = b.render_html(data)
+    assert "jsluice JS fetch surface" in md
+    assert "jsluice_js_table.txt" in md
+    assert "jsluice JS fetch surface" in html
+    assert "jsluice_js_table.txt" in html
+    # the 404'd chunk is visible in the status breakdown, not swallowed
+    assert "`404`" in md
+    assert "404" in html
+
+
+def test_md_and_html_hide_jsluice_js_fetch_surface_when_empty(tmp_path: Path):
+    """No jsluice_js_detail.json (stage skipped/pre-upgrade run) → section
+    omitted rather than rendered empty."""
+    from modules.utils import create_output_structure
+    base = create_output_structure("bare.com", root=str(tmp_path))
+    b = ReportBuilder(_make_inputs(base))
+    data = b.collect()
+    md = b.render_markdown(data)
+    html = b.render_html(data)
+    assert "jsluice JS fetch surface" not in md
+    assert "jsluice JS fetch surface" not in html
+
+
+
+# ----------------------------------------------------------------------
+# jsluice method check — endpoints re-probed with their recorded verb,
+# so a POST-only route a GET-only probe reads as 404 shows up alive
+# ----------------------------------------------------------------------
+def test_collect_reads_jsluice_method_check(fake_outputs: Path):
+    data = ReportBuilder(_make_inputs(fake_outputs)).collect()
+    assert data["counts"]["jsluice_method_check"] == 1
+    assert data["counts"]["jsluice_method_bypass"] == 1
+    row = data["jsluice_method_check"][0]
+    assert row["method"] == "POST" and row["status"] == 200
+    assert row["get_status"] == 404
+
+
+def test_md_and_html_show_method_check_bypass(fake_outputs: Path):
+    b = ReportBuilder(_make_inputs(fake_outputs))
+    data = b.collect()
+    md = b.render_markdown(data)
+    html = b.render_html(data)
+    assert "HTTP Method Check (verb tampering)" in md
+    assert "HTTP Method Check (verb tampering)" in html
+    # the bypass row: real method (POST) got a 200 where GET got a 404
+    assert "POST" in md and "token" in md
+    assert "POST" in html and "token" in html
+
+
+def test_md_and_html_hide_method_check_when_empty(tmp_path: Path):
+    from modules.utils import create_output_structure
+    base = create_output_structure("bare.com", root=str(tmp_path))
+    b = ReportBuilder(_make_inputs(base))
+    data = b.collect()
+    md = b.render_markdown(data)
+    html = b.render_html(data)
+    assert "No method-tagged endpoints to re-test" in md
+    assert "No method-tagged endpoints to re-test" in html
+
+
 def test_collect_samples_parameterized_urls(fake_outputs: Path):
+    """No truncation: the report embeds the full parameterized_urls.txt,
+    not a capped sample."""
     data = ReportBuilder(_make_inputs(fake_outputs)).collect()
     assert data["parameterized_sample"]
     assert all(isinstance(u, str) for u in data["parameterized_sample"])
-    assert len(data["parameterized_sample"]) <= ReportBuilder.PARAM_SAMPLE
+    assert len(data["parameterized_sample"]) == data["counts"]["parameterized_urls"]
 
 
 def test_html_shows_forms_section(fake_outputs: Path):
@@ -1168,7 +1554,7 @@ def test_html_links_response_previews(fake_outputs: Path):
 def test_md_shows_forms_and_jsluice(fake_outputs: Path):
     b = ReportBuilder(_make_inputs(fake_outputs))
     md = b.render_markdown(b.collect())
-    assert "## 7.1 Forms & Input Surface" in md
+    assert "## 8.1 Forms & Input Surface" in md
     assert "jsluice param records (AST)" in md
     assert "email, password" in md
     assert "Injection candidates" in md
@@ -1206,7 +1592,7 @@ def test_collect_counts_api_docs(fake_outputs: Path):
 def test_html_shows_api_docs_section(fake_outputs: Path):
     b = ReportBuilder(_make_inputs(fake_outputs))
     html = b.render_html(b.collect())
-    assert "7.2 API Documentation" in html
+    assert "8.2 API Documentation" in html
     assert "Billing API" in html
     assert "bearerAuth" in html
     assert "swagger-ui.html" in html
@@ -1216,7 +1602,7 @@ def test_html_shows_api_docs_section(fake_outputs: Path):
 def test_md_shows_api_docs_section(fake_outputs: Path):
     b = ReportBuilder(_make_inputs(fake_outputs))
     md = b.render_markdown(b.collect())
-    assert "## 7.2 API Documentation" in md
+    assert "## 8.2 API Documentation" in md
     assert "Billing API" in md
     assert "OSINT `postman`" in md
 
@@ -1229,3 +1615,428 @@ def test_api_docs_section_graceful_when_nothing_found(tmp_path: Path):
     assert data["counts"]["api_specs"] == 0
     assert "No OpenAPI/Swagger specs" in b.render_html(data)
     assert "_No OpenAPI/Swagger specs" in b.render_markdown(data)
+
+
+def test_html_shows_graphql_cors_buckets_gitdump_sections(fake_outputs: Path):
+    b = ReportBuilder(_make_inputs(fake_outputs))
+    html = b.render_html(b.collect())
+    assert "deleteUser" in html
+    assert "createInvoice" in html
+    assert "https://evil.invalid" in html
+    assert "example-uploads" in html
+    assert "public-listing" in html
+    assert "exampleacct" in html
+    assert "staging.example.com" in html
+    assert "30" in html and "42" in html          # recovered / in-index counts
+
+
+def test_md_shows_graphql_cors_buckets_gitdump_sections(fake_outputs: Path):
+    b = ReportBuilder(_make_inputs(fake_outputs))
+    md = b.render_markdown(b.collect())
+    assert "deleteUser" in md
+    assert "https://evil.invalid" in md
+    assert "example-uploads" in md
+    assert "staging.example.com" in md
+
+
+def test_graphql_cors_buckets_gitdump_graceful_when_nothing_found(tmp_path: Path):
+    from modules.utils import create_output_structure
+    base = create_output_structure("bare.com", root=str(tmp_path))
+    b = ReportBuilder(_make_inputs(base))
+    data = b.collect()
+    assert data["counts"]["graphql_introspectable"] == 0
+    assert data["counts"]["cors_findings"] == 0
+    assert data["counts"]["buckets_findings"] == 0
+    assert data["counts"]["gitdump_hosts"] == 0
+    html = b.render_html(data)
+    assert "No endpoint answered a live introspection" in html
+    assert "No host reflected the test Origin" in html
+    assert "No S3/GCS bucket confirmed" in html
+    assert "No confirmed .git exposure" in html
+    md = b.render_markdown(data)
+    assert "_No endpoint answered a live introspection" in md
+    assert "_No host reflected the test Origin" in md
+    assert "_No S3/GCS bucket confirmed" in md
+    assert "_No confirmed .git exposure" in md
+
+
+def test_content_discovery_shows_fuzz_coverage_when_hosts_capped(fake_outputs: Path):
+    inputs = _make_inputs(fake_outputs)
+    inputs.stage_results = [
+        r for r in inputs.stage_results if r["stage"] != "dirsearch"
+    ] + [
+        {"stage": "dirsearch", "status": "success", "extra": {"selection": {
+            "input": 312, "deduped": 250, "waf_skipped": 0,
+            "blanket_skipped": 11, "selected": 50, "capped": 1}}},
+        {"stage": "ffuf", "status": "success", "extra": {"selection": {
+            "input": 312, "deduped": 260, "waf_skipped": 2,
+            "blanket_skipped": 0, "selected": 50, "capped": 0}}},
+    ]
+    b = ReportBuilder(inputs)
+    data = b.collect()
+    assert data["fuzz_coverage"]["dirsearch"]["capped"] == 1
+    assert data["fuzz_coverage"]["ffuf"]["capped"] == 0
+
+    html = b.render_html(data)
+    assert "Host fuzzing coverage" in html
+    assert "never fuzzed" in html          # dirsearch's capped=1 callout
+    assert "no cap hit" in html            # ffuf's capped=0 callout
+
+    md = b.render_markdown(data)
+    assert "**Host fuzzing coverage**" in md
+    assert "| dirsearch | 312 | 250 | 0 | 11 | 50 | 1 |" in md
+    assert "| ffuf | 312 | 260 | 2 | 0 | 50 | 0 |" in md
+
+
+def test_content_discovery_omits_fuzz_coverage_when_no_stage_data(fake_outputs: Path):
+    """dirsearch/ffuf ran under an older report.py, or were skipped without
+    ever reaching selection — the section must not render an empty table."""
+    b = ReportBuilder(_make_inputs(fake_outputs))
+    data = b.collect()
+    assert data["fuzz_coverage"] == {"dirsearch": {}, "ffuf": {}}
+    assert "Host fuzzing coverage" not in b.render_html(data)
+
+
+def test_content_discovery_shows_fuzz_screen_when_hosts_blanket(fake_outputs: Path):
+    inputs = _make_inputs(fake_outputs)
+    inputs.stage_results = [
+        r for r in inputs.stage_results if r["stage"] != "dirsearch"
+    ] + [
+        {"stage": "dirsearch", "status": "success", "extra": {"screen": {
+            "enabled": True, "raw_hits": 4171, "kept": 89, "dropped": 4082,
+            "blanket_hosts": ["mapi.discover.com"]}}},
+        {"stage": "ffuf", "status": "success", "extra": {"screen": {
+            "enabled": True, "raw_hits": 200, "kept": 200, "dropped": 0,
+            "blanket_hosts": []}}},
+    ]
+    b = ReportBuilder(inputs)
+    data = b.collect()
+    assert data["fuzz_screen"]["dirsearch"]["dropped"] == 4082
+    assert data["fuzz_screen"]["ffuf"]["dropped"] == 0
+
+    html = b.render_html(data)
+    assert "Behavioural hit screening" in html
+    assert "mapi.discover.com" in html
+    assert "one response wearing many paths" in html
+
+    md = b.render_markdown(data)
+    assert "**Behavioural hit screening**" in md
+    assert "| dirsearch | 4171 | 89 | 4082 | `mapi.discover.com` |" in md
+    assert "| ffuf | 200 | 200 | 0 | — |" in md
+
+
+def test_content_discovery_omits_fuzz_screen_when_disabled_or_missing(fake_outputs: Path):
+    """``screen.enabled: false`` (config opt-out) and a stage that never ran
+    both collapse to the same empty result — no half-populated table."""
+    inputs = _make_inputs(fake_outputs)
+    inputs.stage_results = [
+        r for r in inputs.stage_results if r["stage"] != "dirsearch"
+    ] + [
+        {"stage": "dirsearch", "status": "success", "extra": {"screen": {
+            "enabled": False, "raw_hits": 10, "kept": 10, "dropped": 0,
+            "blanket_hosts": []}}},
+    ]
+    b = ReportBuilder(inputs)
+    data = b.collect()
+    assert data["fuzz_screen"] == {"dirsearch": {}, "ffuf": {}}
+    assert "Behavioural hit screening" not in b.render_html(data)
+
+
+def test_content_discovery_shows_endpoint_existence_when_present(fake_outputs: Path):
+    b = ReportBuilder(_make_inputs(fake_outputs))
+    data = b.collect()
+    data["endpoint_existence"] = {
+        "results": [
+            {"url": "https://x.example.com/api/users/1", "sources": ["ffuf"],
+             "status": 400, "verdict": "confirmed",
+             "reasons": ["validation: missing required parameter"]},
+            {"url": "https://x.example.com/api/tenants/1", "sources": ["dirsearch"],
+             "status": 404, "verdict": "likely",
+             "reasons": ["business_logic: tenant not found"]},
+            {"url": "https://x.example.com/xyz123", "sources": ["ffuf"],
+             "status": 403, "verdict": "not_found",
+             "reasons": ["identical shape to this host's not-found baseline"]},
+        ],
+        "counts": {"confirmed": 1, "likely": 1, "unknown": 0, "not_found": 1},
+    }
+
+    html = b.render_html(data)
+    assert "Endpoint existence" in html
+    assert "Confirmed Exists" in html
+    assert "missing required parameter" in html
+    assert "https://x.example.com/api/users/1" in html
+    # not_found entries are counted but not listed in the actionable table
+    assert "https://x.example.com/xyz123" not in html
+
+    md = b.render_markdown(data)
+    assert "**Endpoint existence**" in md
+    assert "tenant not found" in md
+    assert "| Confirmed Exists | 1 |" in md
+    assert "| Not Found (matches baseline noise) | 1 |" in md
+
+
+def test_content_discovery_omits_endpoint_existence_when_no_hits(tmp_path: Path):
+    """No ffuf_urls.txt/dirsearch_urls.txt at all (stages skipped, or an
+    output tree from before this feature existed) — no half-populated
+    section."""
+    b = ReportBuilder(_make_inputs(tmp_path))
+    data = b.collect()
+    assert data["endpoint_existence"]["results"] == []
+    assert "Endpoint existence" not in b.render_html(data)
+    assert "**Endpoint existence**" not in b.render_markdown(data)
+
+
+def test_params_section_shows_arjun_coverage_when_capped(fake_outputs: Path):
+    inputs = _make_inputs(fake_outputs)
+    inputs.stage_results = inputs.stage_results + [
+        {"stage": "arjun", "status": "success",
+         "extra": {"input_urls": 5000, "scanned_urls": 200}},
+    ]
+    b = ReportBuilder(inputs)
+    data = b.collect()
+    assert data["counts"]["arjun_input_urls"] == 5000
+    assert data["counts"]["arjun_scanned_urls"] == 200
+
+    html = b.render_html(data)
+    assert "Arjun actually scanned" in html
+    assert "200 / 5,000" in html
+    assert "never checked for hidden params" in html
+
+    md = b.render_markdown(data)
+    assert "Arjun actually scanned: `200 / 5000`" in md
+    assert "never checked for hidden params" in md
+
+
+def test_params_section_arjun_no_cap_note_when_everything_scanned(fake_outputs: Path):
+    inputs = _make_inputs(fake_outputs)
+    inputs.stage_results = inputs.stage_results + [
+        {"stage": "arjun", "status": "success",
+         "extra": {"input_urls": 12, "scanned_urls": 12}},
+    ]
+    b = ReportBuilder(inputs)
+    data = b.collect()
+    html = b.render_html(data)
+    assert "every candidate URL was scanned" in html
+    assert "never checked for hidden params" not in html
+
+
+def test_params_section_omits_arjun_row_when_no_stage_data(fake_outputs: Path):
+    b = ReportBuilder(_make_inputs(fake_outputs))
+    data = b.collect()
+    assert data["counts"]["arjun_input_urls"] is None
+    assert "Arjun actually scanned" not in b.render_html(data)
+
+
+def test_high_value_section_shows_blanket_hosts_callout(fake_outputs: Path):
+    b = ReportBuilder(_make_inputs(fake_outputs))
+    data = b.collect()
+    data["counts"]["high_value_blanket_hosts"] = ["archertprm.discover.com"]
+
+    html = b.render_html(data)
+    assert "archertprm.discover.com" in html
+    assert "one WAF/soft-catch-all page repeated" in html
+
+    md = b.render_markdown(data)
+    assert "archertprm.discover.com" in md
+    assert "one WAF/soft-catch-all page repeated" in md
+
+
+def test_high_value_section_no_blanket_callout_when_none(fake_outputs: Path):
+    b = ReportBuilder(_make_inputs(fake_outputs))
+    data = b.collect()
+    assert data["counts"].get("high_value_blanket_hosts") in ([], None)
+    assert "soft-catch-all page repeated" not in b.render_html(data)
+    assert "soft-catch-all page repeated" not in b.render_markdown(data)
+
+
+def test_parse_nuclei_summary_counts_unknown_severity(tmp_path: Path):
+    """nuclei labels a template that declares no severity ``unknown``, and
+    the default scan now runs those. The count must be carried, not dropped
+    into a severity bucket the report never iterates."""
+    import json as _json
+    p = tmp_path / "nuclei.json"
+    p.write_text(_json.dumps({"template-id": "no-sev",
+                              "info": {"severity": "unknown"},
+                              "matched-at": "https://a"}) + "\n")
+    findings, sev = parse_nuclei_summary(p)
+    assert len(findings) == 1
+    assert sev.get("unknown") == 1
+    assert ReportBuilder.SEV_ORDER.count("unknown") == 1
+
+
+# ----------------------------------------------------------------------
+# Section 9 — High-Value Targets carries the response facts
+# ----------------------------------------------------------------------
+def _hv_rows():
+    return [
+        {"url": "https://x.com/api/v1/users", "status_code": 200,
+         "content_length": 45678, "content_type": "application/json"},
+        {"url": "https://x.com/admin", "status_code": 403,
+         "content_length": 1200, "content_type": "text/html; charset=utf-8",
+         "title": "Forbidden"},
+        {"url": "https://x.com/login", "status_code": 302, "content_length": 0,
+         "content_type": "text/html", "location": "https://sso.x.com/"},
+        {"url": "https://x.com/backup.sql", "status_code": 404,
+         "content_length": 300, "content_type": "text/html"},
+    ]
+
+
+def test_enrich_target_attaches_the_response_facts():
+    from modules.report import enrich_target
+
+    t = enrich_target("https://x.com/admin", ["admin"], _hv_rows()[1])
+    assert t["status"] == 403
+    assert t["content_length"] == 1200
+    assert t["content_type"] == "text/html"      # charset stripped
+    assert t["probed"] is True
+
+
+def test_an_unprobed_target_reports_missing_not_zero():
+    from modules.report import enrich_target
+
+    t = enrich_target("https://x.com/.git/config", ["config"], None)
+    assert t["status"] is None and t["content_length"] is None
+    assert t["probed"] is False
+
+
+def test_targets_sort_by_what_the_server_returned():
+    from modules.report import enrich_target, index_detail_by_url, target_sort_key
+
+    rows = _hv_rows()
+    idx = index_detail_by_url(rows)
+    urls = [r["url"] for r in rows] + ["https://x.com/.git/config"]
+    hv = sorted((enrich_target(u, ["t"], idx.get(u)) for u in urls),
+                key=target_sort_key)
+
+    # reachable → auth-gated → other → 404 → never probed
+    assert [h["status"] for h in hv] == [200, 403, 302, 404, None]
+
+
+def test_index_prefers_the_first_source_for_a_duplicate_url():
+    from modules.report import index_detail_by_url
+
+    idx = index_detail_by_url(
+        [{"url": "https://x.com/a", "status_code": 200}],
+        [{"url": "https://x.com/a", "status_code": 500}],
+    )
+    assert idx["https://x.com/a"]["status_code"] == 200
+
+
+def test_index_falls_back_to_the_input_field():
+    from modules.report import index_detail_by_url
+
+    idx = index_detail_by_url([{"input": "https://x.com/b", "status_code": 204}])
+    assert "https://x.com/b" in idx
+
+
+def test_status_class_calls_out_auth_gated_separately():
+    from modules.report import _status_class
+
+    # 401/403 is the strongest lead the report has — it must not be styled
+    # as an error alongside 500s.
+    assert _status_class(403) == "st-gated"
+    assert _status_class(401) == "st-gated"
+    assert _status_class(200) == "st-ok"
+    assert _status_class(302) == "st-redir"
+    assert _status_class(500) == "st-dead"
+    assert _status_class(None) == "st-none"
+
+
+def test_length_formatter_distinguishes_zero_from_unknown():
+    from modules.report import _fmt_len, _fmt_status
+
+    assert _fmt_len(0) == "0B"
+    assert _fmt_len(None) == "—"
+    assert _fmt_status(0) == "0"
+    assert _fmt_status(None) == "—"
+
+
+def test_every_url_listing_section_carries_the_response_facts(fake_outputs: Path):
+    """The point of the whole join: no section quotes a URL without evidence.
+
+    Sections 3 (jsluice params, API paths), 8 (injection candidates), 8.1
+    (forms), 8.2 (docs UIs) and 9 (high-value) all list URLs/endpoints. Each
+    used to print the bare string, so a reader could not tell an endpoint
+    that answers 200 JSON from one the server has never heard of.
+    """
+    b = ReportBuilder(_make_inputs(fake_outputs))
+    html = b.render_html(b.collect())
+
+    # Every facts table shares the same header triple.
+    assert html.count("<th>ST</th><th>Length</th><th>Type</th>") >= 4, (
+        "expected the ST/Length/Type header in several sections")
+
+
+def test_markdown_url_sections_carry_the_facts_header(fake_outputs: Path):
+    b = ReportBuilder(_make_inputs(fake_outputs))
+    md = b.render_markdown(b.collect())
+    assert md.count("ST | Length | Type") >= 3
+
+
+def test_facts_cells_report_unprobed_urls_as_unknown():
+    from modules.report import html_facts_cells, md_facts_cells
+
+    assert "—" in md_facts_cells({}, "https://x.com/never-probed")
+    assert "st-none" in html_facts_cells({}, "https://x.com/never-probed")
+
+
+def test_body_snippet_rides_along_as_a_tooltip():
+    from modules.report import html_facts_cells
+
+    idx = {"https://x.com/a": {"url": "https://x.com/a", "status_code": 200}}
+    cells = html_facts_cells(idx, "https://x.com/a",
+                             {"https://x.com/a": "{\"error\":\"nope\"}"})
+    assert 'title="' in cells and "nope" in cells
+
+
+def test_static_assets_never_outrank_real_endpoints():
+    """Host-derived categories land on every asset that host serves.
+
+    ``securedocupload.*`` tags all its files "upload endpoint", so without
+    the static demotion a 755 KB webpack chunk outranked the actual upload
+    form — measured on the real tree.
+    """
+    from modules.report import target_sort_key
+
+    chunk = {"url": "https://up.x.com/static/js/main.abc.js", "status": 200,
+             "content_length": 755391, "categories": ["upload endpoint"]}
+    real = {"url": "https://up.x.com/tasks/upload-urls", "status": 200,
+            "content_length": 40500, "categories": ["upload endpoint"]}
+    assert sorted([chunk, real], key=target_sort_key)[0] is real
+
+
+def test_a_repeated_response_shape_sinks_but_is_not_hidden():
+    """A soft-200 catch-all leaves a residue under the screen's min_cluster.
+
+    archertprm.discover.com left 21 entries all answering "200, 92 bytes"
+    and they outranked every genuine finding. They must sink — and still be
+    listed, with the repeat count as the tell.
+    """
+    from modules.report import target_sort_key
+
+    dup = {"url": "https://a.x.com/ADMIN", "status": 200, "content_length": 92,
+           "categories": ["admin panel"], "shape_count": 21}
+    uniq = {"url": "https://b.x.com/sign-in", "status": 200,
+            "content_length": 43574, "categories": ["login portal"],
+            "shape_count": 1}
+    assert sorted([dup, uniq], key=target_sort_key)[0] is uniq
+
+
+def test_category_weight_ranks_path_findings_over_host_tags():
+    from modules.report import category_weight
+
+    # "backup file" is a finding on its own; "qa environment" only says
+    # where the URL lives.
+    assert category_weight(["backup file"]) > category_weight(["qa environment"])
+    assert category_weight(["admin panel"]) > category_weight(["test environment"])
+    assert category_weight([]) == 0
+
+
+def test_source_maps_are_not_treated_as_static_assets():
+    from modules.report import is_static_asset
+
+    assert is_static_asset("https://x.com/a/main.js") is True
+    assert is_static_asset("https://x.com/a/main.css?v=2") is True
+    # A .map is one of the better things this section can surface.
+    assert is_static_asset("https://x.com/a/main.js.map") is False
+    assert is_static_asset("https://x.com/api/v1/users") is False
