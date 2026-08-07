@@ -10,7 +10,7 @@ that `subdomain.collect()` honours the resume flag.
 from pathlib import Path
 
 
-from modules import dnsx, httpx, nuclei, url_merge
+from modules import dnsx, httpx, layout, nuclei, url_merge
 from modules.utils import read_lines, write_lines
 
 
@@ -127,7 +127,7 @@ def test_resume_does_not_overwrite_existing_outputs(tmp_path: Path):
     write_lines(tmp_path / "raw" / "subdomain" / "subfinder.txt", ["a.example.com"])
     write_lines(tmp_path / "raw" / "subdomain" / "amass.txt", ["b.example.com"])
     write_lines(tmp_path / "raw" / "subdomain" / "chaos.txt", ["c.example.com"])
-    sentinel = tmp_path / "processed" / "subdomains.txt"
+    sentinel = layout.path(tmp_path, "subdomains.txt")
     sentinel.write_text("sentinel.example.com\n")
 
     from modules.subdomain import collect

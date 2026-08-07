@@ -12,7 +12,7 @@ from pathlib import Path
 
 import pytest
 
-from modules import runner
+from modules import layout, runner
 from modules.utils import (
     create_output_structure,
     findings_dir,
@@ -231,7 +231,7 @@ def test_subdomain_writes_under_raw_subdomain(tmp_path: Path, monkeypatch):
     # …NOT directly under raw/
     assert not (base / "raw" / "subfinder.txt").exists()
     # …and the merged list lives in processed/ as before
-    assert (base / "processed" / "subdomains.txt").exists()
+    assert (layout.path(base, "subdomains.txt")).exists()
 
 
 def test_dirsearch_merged_wordlist_lives_under_raw_dirsearch(tmp_path: Path, monkeypatch):
@@ -255,10 +255,10 @@ def test_dirsearch_merged_wordlist_lives_under_raw_dirsearch(tmp_path: Path, mon
 
     base = create_output_structure("example.com", root=str(tmp_path))
     (base / "processed").mkdir(parents=True, exist_ok=True)
-    (base / "processed" / "alive.txt").write_text("https://x.com\n")
+    (layout.path(base, "alive.txt")).write_text("https://x.com\n")
 
     from modules.dirsearch import scan
-    scan(base / "processed" / "alive.txt", base,
+    scan(layout.path(base, "alive.txt"), base,
          {"dirsearch": {"wordlists": [str(a), str(b)]}},
          resume=False, dry_run=False, skip=False)
 

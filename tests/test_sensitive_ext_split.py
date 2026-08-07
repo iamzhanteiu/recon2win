@@ -6,7 +6,7 @@ chạm tới.
 """
 from pathlib import Path
 
-from modules import dirsearch, ffuf
+from modules import dirsearch, ffuf, layout
 from modules.sensitive_ext import (
     SENSITIVE_EXT,
     to_dirsearch_flag,
@@ -56,9 +56,7 @@ def test_compound_extensions_stay_in_ext_list():
 
 def test_dirsearch_fallback_uses_both_channels(tmp_path: Path, monkeypatch):
     out = tmp_path / "out"
-    proc = out / "processed"
-    proc.mkdir(parents=True)
-    (proc / "alive.txt").write_text("https://a.example.com\n")
+    (layout.path(out, "alive.txt")).write_text("https://a.example.com\n")
 
     captured: list = []
     monkeypatch.setattr(dirsearch.runner, "tool_available", lambda _b: True)
@@ -67,7 +65,7 @@ def test_dirsearch_fallback_uses_both_channels(tmp_path: Path, monkeypatch):
         lambda cmd, **kw: captured.append(cmd) or {
             "success": True, "stderr": "", "stdout": "", "missing_binary": False},
     )
-    dirsearch.scan(proc / "alive.txt", out, {"dirsearch": {}})
+    dirsearch.scan(layout.path(out, "alive.txt"), out, {"dirsearch": {}})
     cmd = captured[0]
     # -w trỏ vào danh sách file nhạy cảm, -e vẫn có extension
     assert "-w" in cmd and "-e" in cmd
@@ -79,9 +77,7 @@ def test_dirsearch_fallback_uses_both_channels(tmp_path: Path, monkeypatch):
 
 def test_ffuf_fallback_fuzzes_paths_not_extensions(tmp_path: Path, monkeypatch):
     out = tmp_path / "out"
-    proc = out / "processed"
-    proc.mkdir(parents=True)
-    (proc / "alive.txt").write_text("https://a.example.com\n")
+    (layout.path(out, "alive.txt")).write_text("https://a.example.com\n")
 
     captured: list = []
 
@@ -92,7 +88,7 @@ def test_ffuf_fallback_fuzzes_paths_not_extensions(tmp_path: Path, monkeypatch):
 
     monkeypatch.setattr(ffuf.runner, "tool_available", lambda _b: True)
     monkeypatch.setattr(ffuf.runner, "run", fake_run)
-    ffuf.scan(proc / "alive.txt", out, {"ffuf": {}})
+    ffuf.scan(layout.path(out, "alive.txt"), out, {"ffuf": {}})
     cmd = captured[0]
     wl = Path(cmd[cmd.index("-w") + 1])
     assert ".env" in wl.read_text().split()

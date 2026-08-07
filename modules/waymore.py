@@ -10,7 +10,7 @@ import os
 from pathlib import Path
 from urllib.parse import urlparse
 
-from . import runner
+from . import layout, runner
 from .sensitive_ext import SENSITIVE_EXT, SENSITIVE_FILES
 from .utils import make_result, raw_dir, read_lines, write_lines
 
@@ -41,7 +41,7 @@ def _should_keep(url: str) -> bool:
 
 
 def _outputs_exist(out_dir: Path) -> bool:
-    p = out_dir / "processed" / "waymore_urls.txt"
+    p = layout.path(out_dir, "waymore_urls.txt")
     return p.exists() and p.stat().st_size > 0
 
 
@@ -56,10 +56,9 @@ def collect(
 ) -> dict:
     stage = "waymore"
     raw_wm = raw_dir(output_dir, "waymore")
-    proc = output_dir / "processed"
-    proc.mkdir(parents=True, exist_ok=True)
+    layout.ensure_tree(output_dir)
     raw_out = raw_wm / "waymore_raw.txt"
-    proc_out = proc / "waymore_urls.txt"
+    proc_out = layout.path(output_dir, "waymore_urls.txt")
 
     if skip:
         raw_out.write_text("")

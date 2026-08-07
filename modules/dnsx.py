@@ -15,7 +15,7 @@ import json
 from pathlib import Path
 from typing import Any
 
-from . import console, runner
+from . import console, layout, runner
 from .utils import (
     load_json,
     make_result,
@@ -26,8 +26,8 @@ from .utils import (
 
 
 def _outputs_exist(out_dir: Path) -> bool:
-    r = out_dir / "processed" / "resolved.txt"
-    j = out_dir / "processed" / "resolved_detail.json"
+    r = layout.path(out_dir, "resolved.txt")
+    j = layout.path(out_dir, "resolved_detail.json")
     return r.exists() and r.stat().st_size > 0 and j.exists()
 
 
@@ -40,10 +40,9 @@ def resolve(
     dry_run: bool = False,
 ) -> dict:
     stage = "dnsx"
-    proc = output_dir / "processed"
-    proc.mkdir(parents=True, exist_ok=True)
-    resolved_txt = proc / "resolved.txt"
-    detail_json = proc / "resolved_detail.json"
+    layout.ensure_tree(output_dir)
+    resolved_txt = layout.path(output_dir, "resolved.txt")
+    detail_json = layout.path(output_dir, "resolved_detail.json")
 
     if resume and _outputs_exist(output_dir):
         existing = load_json(detail_json) or []
@@ -130,7 +129,7 @@ def resolve(
     full_hosts = [d["subdomain"] for d in detail]
     keep_hosts = prioritize_subdomains(full_hosts, max_count=max_resolved)
 
-    write_json(detail_json, detail)
+    write_json(detail_json, detail, compact=True)
     write_lines(resolved_txt, keep_hosts)
 
     # Cắt cụt ở đây là quyết định LẶNG LẼ nhất trong cả pipeline: mọi stage

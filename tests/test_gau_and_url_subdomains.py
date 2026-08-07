@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from modules import content_discovery as cd
+from modules import content_discovery as cd, layout
 from modules.url_merge import derive_subdomains_from_urls, extract_in_scope_hosts
 from modules.utils import create_output_structure, read_lines, write_lines
 
@@ -33,12 +33,12 @@ def test_gau_invoked_with_subs_and_root_domain(tmp_path, monkeypatch):
     monkeypatch.setattr("modules.runner.run", _fake_cd_run(captured))
 
     base = create_output_structure("vulnweb.com", root=str(tmp_path))
-    write_lines(base / "processed" / "alive.txt", ["https://vulnweb.com"])
+    write_lines(layout.path(base, "alive.txt"), ["https://vulnweb.com"])
     # only enable gau to keep the assertion focused
     cfg = {"content_discovery": {"katana": {"enabled": False},
                                  "urlfinder": {"enabled": False},
                                  "gau": {"enabled": True}}}
-    cd.crawl(base / "processed" / "alive.txt", base, cfg,
+    cd.crawl(layout.path(base, "alive.txt"), base, cfg,
              resume=False, dry_run=False)
 
     gau_cmds = [c for c in captured if c and c[0] == "gau"]
@@ -55,11 +55,11 @@ def test_gau_disabled_writes_empty_and_no_call(tmp_path, monkeypatch):
     monkeypatch.setattr("modules.runner.run", _fake_cd_run(captured))
 
     base = create_output_structure("x.com", root=str(tmp_path))
-    write_lines(base / "processed" / "alive.txt", ["https://x.com"])
+    write_lines(layout.path(base, "alive.txt"), ["https://x.com"])
     cfg = {"content_discovery": {"katana": {"enabled": False},
                                  "urlfinder": {"enabled": False},
                                  "gau": {"enabled": False}}}
-    cd.crawl(base / "processed" / "alive.txt", base, cfg,
+    cd.crawl(layout.path(base, "alive.txt"), base, cfg,
              resume=False, dry_run=False)
     assert not [c for c in captured if c and c[0] == "gau"]
     assert (base / "raw" / "content_discovery" / "gau_urls.txt").exists()
@@ -92,24 +92,24 @@ def test_extract_in_scope_hosts_handles_bare_and_empty():
 # ----------------------------------------------------------------------
 def test_derive_writes_only_new_subdomains(tmp_path):
     base = create_output_structure("x.com", root=str(tmp_path))
-    write_lines(base / "processed" / "all_urls.txt", [
+    write_lines(layout.path(base, "all_urls.txt"), [
         "https://known.x.com/a",
         "https://new1.x.com/b",
         "https://new2.x.com/c",
         "https://cdn.other.com/z",       # out of scope → ignored
     ])
-    write_lines(base / "processed" / "subdomains.txt", ["known.x.com", "x.com"])
+    write_lines(layout.path(base, "subdomains.txt"), ["known.x.com", "x.com"])
 
     res = derive_subdomains_from_urls(base, "x.com")
     assert res["count"] == 2
-    out = read_lines(base / "processed" / "url_derived_subdomains.txt")
+    out = read_lines(layout.path(base, "url_derived_subdomains.txt"))
     assert out == ["new1.x.com", "new2.x.com"]
     assert "known.x.com" not in out       # already known → excluded
 
 
 def test_derive_noop_when_all_known(tmp_path):
     base = create_output_structure("x.com", root=str(tmp_path))
-    write_lines(base / "processed" / "all_urls.txt", ["https://a.x.com/1"])
-    write_lines(base / "processed" / "subdomains.txt", ["a.x.com"])
+    write_lines(layout.path(base, "all_urls.txt"), ["https://a.x.com/1"])
+    write_lines(layout.path(base, "subdomains.txt"), ["a.x.com"])
     res = derive_subdomains_from_urls(base, "x.com")
     assert res["count"] == 0

@@ -13,7 +13,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from modules import content_discovery as cd_mod
+from modules import content_discovery as cd_mod, layout
 from modules import dnsx as dnsx_mod
 from modules import nuclei as nuclei_mod
 from modules.utils import create_output_structure, write_lines
@@ -40,7 +40,7 @@ def _fake_dnsx_run(hosts: list[str]):
 def test_dnsx_truncation_warns_and_records(tmp_path, monkeypatch, capsys):
     out = tmp_path / "example.com"
     create_output_structure(out)
-    subs = out / "processed" / "subdomains.txt"
+    subs = layout.path(out, "subdomains.txt")
     hosts = [f"h{i}.example.com" for i in range(50)]
     write_lines(subs, hosts)
 
@@ -58,7 +58,7 @@ def test_dnsx_truncation_warns_and_records(tmp_path, monkeypatch, capsys):
 def test_dnsx_no_truncation_stays_quiet(tmp_path, monkeypatch, capsys):
     out = tmp_path / "example.com"
     create_output_structure(out)
-    subs = out / "processed" / "subdomains.txt"
+    subs = layout.path(out, "subdomains.txt")
     hosts = [f"h{i}.example.com" for i in range(5)]
     write_lines(subs, hosts)
 
@@ -99,7 +99,7 @@ def _cd_cfg() -> dict:
 def test_katana_timeout_is_recorded_as_truncated(tmp_path, monkeypatch, capsys):
     out = tmp_path / "example.com"
     create_output_structure(out)
-    alive = out / "processed" / "alive.txt"
+    alive = layout.path(out, "alive.txt")
     write_lines(alive, [f"https://h{i}.example.com" for i in range(7)])
 
     monkeypatch.setattr(cd_mod.runner, "run", _fake_katana_run(timed_out=True))
@@ -116,7 +116,7 @@ def test_katana_timeout_is_recorded_as_truncated(tmp_path, monkeypatch, capsys):
 def test_katana_completes_without_truncation_note(tmp_path, monkeypatch, capsys):
     out = tmp_path / "example.com"
     create_output_structure(out)
-    alive = out / "processed" / "alive.txt"
+    alive = layout.path(out, "alive.txt")
     write_lines(alive, ["https://a.example.com"])
 
     monkeypatch.setattr(cd_mod.runner, "run", _fake_katana_run(timed_out=False))
@@ -145,7 +145,7 @@ def test_oversized_batch_is_shrunk_before_scanning(tmp_path, monkeypatch, capsys
     6/6 batch chết ở 1800s. Nay nó phải bị chặn trước khi bắn request."""
     out = tmp_path / "example.com"
     create_output_structure(out)
-    urls = out / "processed" / "alive.txt"
+    urls = layout.path(out, "alive.txt")
     write_lines(urls, [f"https://a.example.com/{i}" for i in range(600)])
 
     monkeypatch.setattr(nuclei_mod, "_template_count", lambda *a, **k: 1078)
@@ -182,7 +182,7 @@ def test_oversized_batch_is_shrunk_before_scanning(tmp_path, monkeypatch, capsys
 def test_batch_within_budget_is_left_alone(tmp_path, monkeypatch, capsys):
     out = tmp_path / "example.com"
     create_output_structure(out)
-    urls = out / "processed" / "alive.txt"
+    urls = layout.path(out, "alive.txt")
     write_lines(urls, [f"https://a.example.com/{i}" for i in range(300)])
 
     monkeypatch.setattr(nuclei_mod, "_template_count", lambda *a, **k: 1078)
@@ -219,7 +219,7 @@ def test_dast_scan_skips_autotune(tmp_path, monkeypatch):
     dùng số đó cho một scan bật dast sẽ hạ batch_size xuống sàn vô cớ."""
     out = tmp_path / "example.com"
     create_output_structure(out)
-    urls = out / "processed" / "parameterized_urls.txt"
+    urls = layout.path(out, "parameterized_urls.txt")
     write_lines(urls, [f"https://a.example.com/?id={i}" for i in range(600)])
 
     called: list[int] = []

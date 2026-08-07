@@ -27,6 +27,7 @@ from __future__ import annotations
 from html import escape
 from pathlib import Path
 
+from . import layout
 from .utils import load_json, make_result, read_lines
 
 
@@ -47,9 +48,11 @@ _SEV_FILL = {
     "medium":   "#b26a00",
     "low":      "#1976d2",
     "info":     "#1976d2",
+    "unknown":  "#757575",
 }
-_SEV_SHORT = {"critical": "C", "high": "H", "medium": "M", "low": "L", "info": "I"}
-_SEV_ORDER = ["critical", "high", "medium", "low", "info"]
+_SEV_SHORT = {"critical": "C", "high": "H", "medium": "M", "low": "L",
+              "info": "I", "unknown": "U"}
+_SEV_ORDER = ["critical", "high", "medium", "low", "info", "unknown"]
 
 # Longest-path layering places nodes by their deepest solid-edge ancestor.
 # ``waymore`` pulls from the domain (not from ``alive``), so it lands on row 1
@@ -109,7 +112,6 @@ def _fmt(n: int | None) -> str:
 # "seed" = additive forward feed (dashed); "append"/"feedback" = loop-back
 # (dashed, excluded from layering).
 def build_model(output_dir: Path, domain: str) -> tuple[list[dict], list[tuple[str, str, str]]]:
-    proc = output_dir / "processed"
     find = output_dir / "findings"
 
     nodes: list[dict] = []
@@ -120,7 +122,7 @@ def build_model(output_dir: Path, domain: str) -> tuple[list[dict], list[tuple[s
                       "count": count, "sub": sub, "sev": sev})
 
     def L(name: str) -> int:
-        return _lines(proc / name)
+        return _lines(layout.path(output_dir, name))
 
     add("domain", domain, "src", None)
     add("subdomains", "subdomains", "proc", L("subdomains.txt"))
@@ -140,7 +142,7 @@ def build_model(output_dir: Path, domain: str) -> tuple[list[dict], list[tuple[s
     add("jsluice", "jsluice urls", "proc",
         L("jsluice_endpoints.txt") + L("jsluice_urls.txt"))
     add("jsluice_params", "jsluice_params", "json",
-        _json_len(proc / "jsluice_params.json"))
+        _json_len(layout.path(output_dir, "jsluice_params.json")))
     add("arjun", "arjun params", "proc", L("arjun_params.txt"))
     add("parameterized", "parameterized_urls", "proc", L("parameterized_urls.txt"))
 

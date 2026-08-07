@@ -8,7 +8,7 @@ import os
 from pathlib import Path
 from typing import List
 
-from . import runner
+from . import layout, runner
 from .utils import (
     make_result,
     raw_dir,
@@ -18,7 +18,7 @@ from .utils import (
 
 
 def _all_outputs_exist(out_dir: Path, tools: List[str]) -> bool:
-    base = out_dir / "processed" / "subdomains.txt"
+    base = layout.path(out_dir, "subdomains.txt")
     if not base.exists() or base.stat().st_size == 0:
         return False
     for tool in tools:
@@ -41,23 +41,22 @@ def collect(
     """
     stage = "subdomain"
     raw_sub = raw_dir(output_dir, "subdomain")
-    proc = output_dir / "processed"
-    proc.mkdir(parents=True, exist_ok=True)
+    layout.ensure_tree(output_dir)
 
     tools = cfg.get("subdomain", {}).get("tools", ["subfinder", "amass", "chaos"])
     timeout = int(cfg.get("subdomain", {}).get("timeout", 900))
 
     if resume and _all_outputs_exist(output_dir, tools):
-        existing = read_lines(proc / "subdomains.txt")
+        existing = read_lines(layout.path(output_dir, "subdomains.txt"))
         return make_result(
             stage, "success", input_path=domain,
-            outputs=[proc / "subdomains.txt"], count=len(existing),
+            outputs=[layout.path(output_dir, "subdomains.txt")], count=len(existing),
         )
 
     if dry_run:
         return make_result(
             stage, "skipped", input_path=domain,
-            outputs=[raw_sub / f"{t}.txt" for t in tools] + [proc / "subdomains.txt"],
+            outputs=[raw_sub / f"{t}.txt" for t in tools] + [layout.path(output_dir, "subdomains.txt")],
             count=0, error="dry-run",
         )
 
@@ -128,7 +127,7 @@ def collect(
     merged: list[str] = []
     for tool in tools:
         merged.extend(read_lines(raw_sub / f"{tool}.txt"))
-    count = write_lines(proc / "subdomains.txt", merged)
+    count = write_lines(layout.path(output_dir, "subdomains.txt"), merged)
 
     # --------------------------------------------------------------
     # puredns — validate + filter the merged list.
@@ -140,7 +139,7 @@ def collect(
     from . import puredns as puredns_mod
     if bool(cfg.get("puredns", {}).get("enabled", True)):
         puredns_result = puredns_mod.collect(
-            domain, proc / "subdomains.txt", output_dir, cfg,
+            domain, layout.path(output_dir, "subdomains.txt"), output_dir, cfg,
             resume=resume, dry_run=dry_run,
         )
         if puredns_result.get("status") == "success":
@@ -149,13 +148,13 @@ def collect(
         # puredns skipped/failed → keep the raw merged list.
         return make_result(
             stage, "success", input_path=domain,
-            outputs=[raw_sub / f"{t}.txt" for t in tools] + [proc / "subdomains.txt"],
+            outputs=[raw_sub / f"{t}.txt" for t in tools] + [layout.path(output_dir, "subdomains.txt")],
             count=count,
             extra={"puredns": puredns_result.get("status")},
         )
 
     return make_result(
         stage, "success", input_path=domain,
-        outputs=[raw_sub / f"{t}.txt" for t in tools] + [proc / "subdomains.txt"],
+        outputs=[raw_sub / f"{t}.txt" for t in tools] + [layout.path(output_dir, "subdomains.txt")],
         count=count,
     )

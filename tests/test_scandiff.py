@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from modules import layout
 from modules.scandiff import (
     STATE_FILE,
     build_scan_diff,
@@ -88,9 +89,9 @@ def test_render_caps_url_list():
 # ----------------------------------------------------------------------
 def test_build_first_run_then_detects_change(tmp_path: Path):
     base = create_output_structure("x.com", root=str(tmp_path))
-    write_lines(base / "processed" / "subdomains.txt", ["a.x.com"])
-    write_lines(base / "processed" / "alive.txt", ["https://a.x.com"])
-    write_lines(base / "processed" / "all_urls.txt", ["https://a.x.com/1"])
+    write_lines(layout.path(base, "subdomains.txt"), ["a.x.com"])
+    write_lines(layout.path(base, "alive.txt"), ["https://a.x.com"])
+    write_lines(layout.path(base, "all_urls.txt"), ["https://a.x.com/1"])
 
     # Run 1 — baseline.
     r1 = build_scan_diff(base, "x.com")
@@ -98,7 +99,7 @@ def test_build_first_run_then_detects_change(tmp_path: Path):
     assert (base / STATE_FILE).exists()
 
     # Run 2 — a new subdomain + a new finding appear.
-    write_lines(base / "processed" / "subdomains.txt", ["a.x.com", "b.x.com"])
+    write_lines(layout.path(base, "subdomains.txt"), ["a.x.com", "b.x.com"])
     write_json(base / "findings" / "default" / "nuclei.json",
                {"findings": [{"template-id": "cve-2024-1",
                               "matched-at": "https://b.x.com"}]})
@@ -126,7 +127,7 @@ def test_snapshot_builds_finding_keys(tmp_path: Path):
 
 def test_state_persists_current_snapshot(tmp_path: Path):
     base = create_output_structure("x.com", root=str(tmp_path))
-    write_lines(base / "processed" / "subdomains.txt", ["a.x.com", "b.x.com"])
+    write_lines(layout.path(base, "subdomains.txt"), ["a.x.com", "b.x.com"])
     build_scan_diff(base, "x.com")
     state = load_json(base / STATE_FILE)
     assert sorted(state["subdomains"]) == ["a.x.com", "b.x.com"]

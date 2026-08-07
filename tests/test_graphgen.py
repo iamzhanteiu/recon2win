@@ -5,24 +5,22 @@ import json
 from pathlib import Path
 
 
-from modules import graphgen
+from modules import graphgen, layout
 
 
 def _seed_outputs(root: Path) -> None:
     """Create a realistic subset of pipeline outputs with known counts."""
-    proc = root / "processed"
-    proc.mkdir(parents=True, exist_ok=True)
-    (proc / "subdomains.txt").write_text("a.x.com\nb.x.com\nc.x.com\n")
-    (proc / "resolved.txt").write_text("a.x.com\nb.x.com\n")
-    (proc / "alive.txt").write_text("https://a.x.com\n")
-    (proc / "crawler_urls.txt").write_text("\n".join(f"https://a.x.com/{i}" for i in range(5)) + "\n")
-    (proc / "dirsearch_urls.txt").write_text("https://a.x.com/admin\n")
-    (proc / "waymore_urls.txt").write_text("https://a.x.com/old\nhttps://a.x.com/old2\n")
-    (proc / "all_urls.txt").write_text("\n".join(f"https://a.x.com/{i}" for i in range(8)) + "\n")
-    (proc / "js_urls.txt").write_text("https://a.x.com/app.js\n")
-    (proc / "dynamic_urls.txt").write_text("https://a.x.com/s?q=1\nhttps://a.x.com/u?id=2\n")
-    (proc / "parameterized_urls.txt").write_text("https://a.x.com/s?q=1\n")
-    (proc / "jsluice_params.json").write_text(json.dumps([
+    (layout.path(root, "subdomains.txt")).write_text("a.x.com\nb.x.com\nc.x.com\n")
+    (layout.path(root, "resolved.txt")).write_text("a.x.com\nb.x.com\n")
+    (layout.path(root, "alive.txt")).write_text("https://a.x.com\n")
+    (layout.path(root, "crawler_urls.txt")).write_text("\n".join(f"https://a.x.com/{i}" for i in range(5)) + "\n")
+    (layout.path(root, "dirsearch_urls.txt")).write_text("https://a.x.com/admin\n")
+    (layout.path(root, "waymore_urls.txt")).write_text("https://a.x.com/old\nhttps://a.x.com/old2\n")
+    (layout.path(root, "all_urls.txt")).write_text("\n".join(f"https://a.x.com/{i}" for i in range(8)) + "\n")
+    (layout.path(root, "js_urls.txt")).write_text("https://a.x.com/app.js\n")
+    (layout.path(root, "dynamic_urls.txt")).write_text("https://a.x.com/s?q=1\nhttps://a.x.com/u?id=2\n")
+    (layout.path(root, "parameterized_urls.txt")).write_text("https://a.x.com/s?q=1\n")
+    (layout.path(root, "jsluice_params.json")).write_text(json.dumps([
         {"url": "https://a.x.com/api", "method": "POST", "queryParams": [], "bodyParams": ["x"]},
     ]))
 

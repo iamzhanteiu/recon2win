@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
 
-from . import console, fuzz_targets, runner
+from . import console, fuzz_targets, layout, runner
 from .telegram import notify_stage_result
 from .utils import (
     make_result,
@@ -73,7 +73,7 @@ def _hosts_from_urls(url_lines: list[str]) -> list[str]:
 
 
 def _outputs_exist(out_dir: Path) -> bool:
-    p = out_dir / "processed" / "crawler_urls.txt"
+    p = layout.path(out_dir, "crawler_urls.txt")
     return p.exists() and p.stat().st_size > 0
 
 
@@ -146,21 +146,20 @@ def crawl(
 ) -> dict:
     stage = "content_discovery"
     raw_cd = raw_dir(output_dir, "content_discovery")
-    proc = output_dir / "processed"
-    proc.mkdir(parents=True, exist_ok=True)
+    layout.ensure_tree(output_dir)
 
     if resume and _outputs_exist(output_dir):
         return make_result(
             stage, "success", input_path=alive_file,
-            outputs=[proc / "crawler_urls.txt", proc / "js_urls.txt"],
-            count=len(read_lines(proc / "crawler_urls.txt")),
+            outputs=[layout.path(output_dir, "crawler_urls.txt"), layout.path(output_dir, "js_urls.txt")],
+            count=len(read_lines(layout.path(output_dir, "crawler_urls.txt"))),
         )
 
     if dry_run:
         return make_result(
             stage, "skipped", input_path=alive_file,
             outputs=[raw_cd / "katana_urls.txt", raw_cd / "urlfinder_urls.txt",
-                     proc / "crawler_urls.txt", proc / "js_urls.txt"],
+                     layout.path(output_dir, "crawler_urls.txt"), layout.path(output_dir, "js_urls.txt")],
             count=0, error="dry-run",
         )
 
@@ -179,6 +178,11 @@ def crawl(
             max_hosts=int(cd_cfg.get("max_hosts", 0)),   # 0 = không cap
             dedup=True,
             skip_waf=bool(cd_cfg.get("skip_waf", False)),
+            cfg=cfg,
+            # No match_status: a crawler follows links it was given rather
+            # than guessing paths, so a blanket-answering host still has a
+            # real site to crawl. Dedup by baseline shape, drop nothing.
+            stage=stage,
         )
         if targets and sel_stats.get("deduped"):
             alive_file = fuzz_targets.write_target_file(
@@ -191,7 +195,7 @@ def crawl(
     # 4.1.a — katana
     if cd_cfg.get("katana", {}).get("enabled", True):
         out = raw_cd / "katana_urls.txt"
-        forms_out = proc / "forms.json"
+        forms_out = layout.path(output_dir, "forms.json")
         if runner.tool_available("katana"):
             depth = int(cd_cfg.get("katana", {}).get("depth", 3))
             to = int(cd_cfg.get("katana", {}).get("timeout", 1800))
@@ -257,7 +261,7 @@ def crawl(
         all_urls.extend(read_lines(out))
     else:
         (raw_cd / "katana_urls.txt").write_text("")
-        (proc / "forms.json").write_text('{"forms": [], "count": 0}')
+        (layout.path(output_dir, "forms.json")).write_text('{"forms": [], "count": 0}')
         outputs.append(raw_cd / "katana_urls.txt")
 
     # 4.1.b — urlfinder (projectdiscovery/urlfinder). ``-list`` takes a file of
@@ -328,8 +332,8 @@ def crawl(
         (raw_cd / "gau_urls.txt").write_text("")
         outputs.append(raw_cd / "gau_urls.txt")
 
-    crawler_txt = proc / "crawler_urls.txt"
-    js_txt = proc / "js_urls.txt"
+    crawler_txt = layout.path(output_dir, "crawler_urls.txt")
+    js_txt = layout.path(output_dir, "js_urls.txt")
     n_crawl = write_lines(crawler_txt, all_urls)
     # ``js_urls.txt`` is the only JS-URL file now — ``js_urls_from_crawler.txt``
     # was dropped because it's just a subset of the union produced by

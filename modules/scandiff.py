@@ -22,6 +22,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from . import layout
 from .utils import load_json, make_result, read_lines, write_json
 
 
@@ -54,11 +55,10 @@ def _finding_keys(output_dir: Path) -> list[str]:
 
 def snapshot(output_dir: Path) -> dict:
     """Collect the current run's key result sets (deduped, sorted)."""
-    proc = output_dir / "processed"
     return {
-        "subdomains": sorted(set(read_lines(proc / "subdomains.txt"))),
-        "alive": sorted(set(read_lines(proc / "alive.txt"))),
-        "urls": sorted(set(read_lines(proc / "all_urls.txt"))),
+        "subdomains": sorted(set(read_lines(layout.path(output_dir, "subdomains.txt")))),
+        "alive": sorted(set(read_lines(layout.path(output_dir, "alive.txt")))),
+        "urls": sorted(set(read_lines(layout.path(output_dir, "all_urls.txt")))),
         "findings": sorted(set(_finding_keys(output_dir))),
     }
 

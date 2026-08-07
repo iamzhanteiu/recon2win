@@ -25,7 +25,8 @@ import hashlib
 import sys
 from pathlib import Path
 
-from .utils import make_result
+from . import layout
+from .utils import load_json, make_result, now_iso, write_json
 
 
 # ----------------------------------------------------------------------
@@ -47,6 +48,7 @@ _REVIEW = [
     ("processed/parameterized_urls.txt", "injection candidates (has params)"),
     ("processed/forms.json",             "forms/inputs from crawl (POST/upload/login surface)"),
     ("processed/jsluice_endpoints.txt",  "endpoints mined from JS"),
+    ("processed/jsluice_js_table.txt",   "JS files jsluice fetched, as status|length|content-type table"),
     ("responses/index.md",               "ffuf/dirsearch response previews (status/size/short body snippet)"),
 ]
 
@@ -73,6 +75,20 @@ _URL_FILES = [
     "processed/ffuf_urls.txt",
     "processed/jsluice_urls.txt",
 ]
+
+
+def _resolve(output_dir: Path, rel: str) -> tuple[Path, str]:
+    """``(absolute path, path to display)`` for a catalogue entry.
+
+    Catalogue entries name ``processed/`` files flat because that reads
+    better than spelling out the group; ``modules.layout`` owns where they
+    actually sit, and resolves to the pre-split flat path on an older
+    output tree. Everything outside ``processed/`` is used as written.
+    """
+    if rel.startswith("processed/"):
+        p = layout.path(output_dir, Path(rel).name)
+        return p, str(p.relative_to(output_dir))
+    return output_dir / rel, rel
 
 
 def _count_and_size(path: Path) -> tuple[int, int]:
@@ -104,6 +120,129 @@ def _find_empty(output_dir: Path) -> list[str]:
     return empties
 
 
+# ----------------------------------------------------------------------
+# MANIFEST.json — why an artefact is empty
+# ----------------------------------------------------------------------
+# A 0-line file is the single most misread thing in an output tree. It has
+# two opposite meanings that look identical on disk:
+#
+#   "the tool ran and the target genuinely has none of this"   → a result
+#   "the tool was skipped / crashed / timed out"                → no data
+#
+# On a real discover.com run, ``apidocs_urls.txt`` and ``apidocs_params.txt``
+# were both 0 bytes. The stage had run fine; every probe came back 403. That
+# distinction lived only in ``findings/api_docs.json``, so anyone reading
+# processed/ concluded "no API docs" when the truth was "we were blocked".
+#
+# The manifest writes the distinction down, next to the files, at the one
+# moment it is knowable: end of run, with every stage result in hand.
+MANIFEST_FILE = "MANIFEST.json"
+
+# state -> what it means for a reader
+_STATE_NOTE = {
+    "ok":         "has data",
+    "ran_empty":  "stage ran, found nothing — this IS a result",
+    "blocked":    "stage ran but the target refused it — NOT a result",
+    "truncated":  "stage hit its budget — partial or no data, NOT a result",
+    "skipped":    "stage never ran — no data, says nothing about the target",
+    "failed":     "stage failed — no data, says nothing about the target",
+    "absent":     "never written",
+}
+
+
+def _stage_by_artifact(results: list[dict]) -> dict[str, dict]:
+    """``{filename: stage result}`` from the stages' own ``outputs`` lists.
+
+    Derived rather than hardcoded: a stage already declares what it wrote,
+    so a new artefact is attributed correctly without touching this file.
+    """
+    owner: dict[str, dict] = {}
+    for res in results or []:
+        for out in res.get("outputs") or []:
+            owner.setdefault(Path(str(out)).name, res)
+    return owner
+
+
+def _artifact_state(path: Path, lines: int, res: dict | None) -> tuple[str, str]:
+    """``(state, reason)`` for one artefact — see ``_STATE_NOTE``."""
+    if not path.exists():
+        if res is None:
+            return "absent", "no stage claimed this file"
+        return "absent", str(res.get("error") or "stage wrote nothing")
+    if lines > 0:
+        return "ok", ""
+    if res is None:
+        return "ran_empty", "no stage claimed this file"
+
+    extra = res.get("extra") or {}
+    err = str(res.get("error") or "").strip()
+    status = res.get("status")
+    if extra.get("timed_out") or extra.get("deadline_hit"):
+        return "truncated", err or "stage hit its time budget"
+    # A stage that ran cleanly but was refused by the target (WAF/edge 401,
+    # 403) learned nothing — the opposite of "found nothing". Stages declare
+    # this with extra["blocked"]; we do not sniff it out of the error text.
+    if extra.get("blocked"):
+        return "blocked", err or "every request was refused (401/403)"
+    if status == "skipped":
+        return "skipped", err or "skipped"
+    if status == "failed":
+        return "failed", err or "failed"
+    # status == success and 0 lines: a real "found nothing", unless the
+    # stage left an error note explaining otherwise.
+    return "ran_empty", err
+
+
+def build_manifest(output_dir: Path, results: list[dict]) -> dict:
+    """Write ``processed/MANIFEST.json``: per artefact, why it looks the way
+    it does. Returns a standard stage-result dict."""
+    output_dir = Path(output_dir)
+    owner = _stage_by_artifact(results)
+
+    artifacts: dict[str, dict] = {}
+    counts: dict[str, int] = {}
+    for group, names in layout.GROUPS.items():
+        for name in names:
+            p = layout.path(output_dir, name)
+            n, b = _count_and_size(p)
+            n = max(n, 0)
+            res = owner.get(name)
+            state, reason = _artifact_state(p, n, res)
+            counts[state] = counts.get(state, 0) + 1
+            entry = {
+                "group": group,
+                "path": str(p.relative_to(output_dir)) if p.exists() else None,
+                "lines": n,
+                "bytes": max(b, 0),
+                "state": state,
+                "means": _STATE_NOTE[state],
+                "stage": (res or {}).get("stage"),
+                "stage_status": (res or {}).get("status"),
+            }
+            if reason:
+                entry["reason"] = reason
+            artifacts[name] = entry
+
+    out = layout.path(output_dir, MANIFEST_FILE)
+    write_json(out, {
+        "generated": now_iso(),
+        "legend": _STATE_NOTE,
+        "counts": counts,
+        "artifacts": artifacts,
+    })
+    return make_result(
+        "audit_manifest", "success", input_path=str(output_dir),
+        outputs=[out], count=len(artifacts), extra={"states": counts},
+    )
+
+
+def load_manifest(output_dir: Path) -> dict[str, dict]:
+    """``{filename: entry}`` from ``processed/MANIFEST.json`` (``{}`` if none)."""
+    data = load_json(layout.path(Path(output_dir), MANIFEST_FILE)) or {}
+    arts = data.get("artifacts")
+    return arts if isinstance(arts, dict) else {}
+
+
 def _sz(nbytes: int) -> str:
     """Simple, readable byte formatter."""
     if nbytes < 0:
@@ -129,7 +268,8 @@ def build_index(output_dir: Path, domain: str) -> dict:
     empty = _find_empty(output_dir)
 
     def row(rel: str, note: str, subset_of: str | None = None) -> str:
-        n, b = _count_and_size(output_dir / rel)
+        path, rel = _resolve(output_dir, rel)
+        n, b = _count_and_size(path)
         if n < 0:
             cnt = "missing"
         elif n == 0:
@@ -182,12 +322,26 @@ def build_index(output_dir: Path, domain: str) -> dict:
         lines.append("")
 
     if empty:
-        lines.append("## ⚪ Empty (tool skipped or no result)")
-        lines.append("These are 0-line — the producing tool was skipped, "
-                     "missing, or found nothing. Not an error on their own:")
+        # A 0-line file means either "we looked and there is none" or "we
+        # never looked" — opposite conclusions, identical on disk. Pull the
+        # answer out of MANIFEST.json rather than lumping them together.
+        manifest = load_manifest(output_dir)
+        lines.append("## ⚪ Empty (0 lines) — read the reason, not the file")
         lines.append("")
+        lines.append("`ran_empty` is a **result** (we looked, there is none). "
+                     "`skipped` / `failed` / `truncated` are **not** — they "
+                     "say nothing about the target. Full detail in "
+                     "`processed/MANIFEST.json`.")
+        lines.append("")
+        lines.append("| file | state | means | reason |")
+        lines.append("|------|-------|-------|--------|")
         for rel in empty:
-            lines.append(f"- `{rel}`")
+            e = manifest.get(Path(rel).name, {})
+            state = e.get("state", "?")
+            reason = str(e.get("reason") or "—").replace("|", "\\|")[:80]
+            lines.append(
+                f"| `{rel}` | `{state}` | {e.get('means', '—')} | {reason} |"
+            )
         lines.append("")
 
     out.write_text("\n".join(lines) + "\n", encoding="utf-8")
@@ -221,10 +375,10 @@ def audit_overlap(output_dir: Path) -> dict:
     ))
     hashes: dict[str, list[str]] = {}
     for rel in catalogued:
-        p = output_dir / rel
+        p, shown = _resolve(output_dir, rel)
         if p.exists() and p.stat().st_size > 0:
             h = hashlib.md5(p.read_bytes()).hexdigest()
-            hashes.setdefault(h, []).append(rel)
+            hashes.setdefault(h, []).append(shown)
     dupes = [group for group in hashes.values() if len(group) > 1]
     print("\n## byte-identical duplicates")
     if dupes:
@@ -235,7 +389,7 @@ def audit_overlap(output_dir: Path) -> dict:
 
     # 3. real overlap between URL files
     print("\n## URL-file containment (how much of A already lives in B)")
-    sets = {rel: _load_set(output_dir / rel) for rel in _URL_FILES}
+    sets = {rel: _load_set(_resolve(output_dir, rel)[0]) for rel in _URL_FILES}
     master = "processed/all_urls.txt"
     m = sets.get(master, set())
     for rel, s in sets.items():

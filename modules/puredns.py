@@ -31,7 +31,7 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
-from . import runner
+from . import layout, runner
 from .utils import (
     make_result,
     read_lines,
@@ -98,12 +98,11 @@ def collect(
     """
     stage = "puredns"
     raw = output_dir / "raw"
-    proc = output_dir / "processed"
     raw.mkdir(parents=True, exist_ok=True)
-    proc.mkdir(parents=True, exist_ok=True)
+    layout.ensure_tree(output_dir)
 
     raw_out = raw / "puredns" / "valid.txt"
-    proc_out = proc / "subdomains.txt"
+    proc_out = layout.path(output_dir, "subdomains.txt")
     resolvers_path = raw / "puredns" / "resolvers.txt"
 
     if dry_run:

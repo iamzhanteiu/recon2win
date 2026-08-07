@@ -9,15 +9,15 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from modules import responses
+from modules import layout, responses
 from modules.utils import create_output_structure, read_lines, write_lines
 
 
 def _seed_hits(base: Path, ffuf=None, dirsearch=None):
     if ffuf is not None:
-        write_lines(base / "processed" / "ffuf_urls.txt", ffuf)
+        write_lines(layout.path(base, "ffuf_urls.txt"), ffuf)
     if dirsearch is not None:
-        write_lines(base / "processed" / "dirsearch_urls.txt", dirsearch)
+        write_lines(layout.path(base, "dirsearch_urls.txt"), dirsearch)
 
 
 def _fake_httpx(rows: list[dict]):

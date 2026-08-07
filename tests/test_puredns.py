@@ -17,7 +17,7 @@ from unittest.mock import patch
 
 import pytest
 
-from modules import puredns as puredns_mod
+from modules import layout, puredns as puredns_mod
 
 
 # ----------------------------------------------------------------------
@@ -285,7 +285,7 @@ def test_collect_writes_valid_to_processed_subdomains(tmp_path, monkeypatch):
 
     # The canonical file must reflect puredns's output (1 host), NOT
     # the raw input (3 hosts). Downstream stages read this file.
-    proc_sub = out_dir / "processed" / "subdomains.txt"
+    proc_sub = layout.path(out_dir, "subdomains.txt")
     assert proc_sub.read_text().strip() == "raw1.example.com"
     assert r["count"] == 1
     assert r["status"] == "success"
@@ -309,7 +309,7 @@ def test_collect_resume_uses_cached_valid_output(tmp_path, monkeypatch):
     r = puredns_mod.collect("example.com", inp, out_dir, {}, resume=True)
     assert r["status"] == "success"
     assert r["count"] == 1   # from the cached file
-    proc_sub = out_dir / "processed" / "subdomains.txt"
+    proc_sub = layout.path(out_dir, "subdomains.txt")
     assert proc_sub.read_text().strip() == "cached.example.com"
 
 

@@ -20,7 +20,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from . import runner
+from . import layout, runner
 from .utils import make_result, raw_dir, read_lines, write_json, write_lines
 
 
@@ -59,7 +59,6 @@ def collect(output_dir: Path, cfg: dict, *, resume: bool = False,
             dry_run: bool = False, skip: bool = False) -> dict:
     stage = "responses"
     output_dir = Path(output_dir)
-    proc = output_dir / "processed"
     rdir = raw_dir(output_dir, "responses")
     resp_dir = output_dir / "responses"
     resp_dir.mkdir(parents=True, exist_ok=True)
@@ -82,9 +81,9 @@ def collect(output_dir: Path, cfg: dict, *, resume: bool = False,
 
     # Gather hits from both tools, remembering which tool(s) found each URL.
     sources: dict[str, set[str]] = {}
-    for url in read_lines(proc / "ffuf_urls.txt"):
+    for url in read_lines(layout.path(output_dir, "ffuf_urls.txt")):
         sources.setdefault(url, set()).add("ffuf")
-    for url in read_lines(proc / "dirsearch_urls.txt"):
+    for url in read_lines(layout.path(output_dir, "dirsearch_urls.txt")):
         sources.setdefault(url, set()).add("dirsearch")
 
     if not sources:
@@ -143,11 +142,21 @@ def collect(output_dir: Path, cfg: dict, *, resume: bool = False,
                            error=(r["stderr"] or "")[:300])
 
     # Parse the httpx JSONL into compact previews (drop the heavy body).
+    # httpx is asked for ``-o detail_json``, but it has been observed to
+    # finish cleanly while never creating that file, emitting the JSONL on
+    # stdout instead. The old code only read the file, so the stage reported
+    # ``fetched: 0`` on a run where httpx had in fact answered for all 500
+    # URLs — the triage net that would have exposed 44k false ffuf hits went
+    # dark, and said nothing about it. Read whichever channel we actually got.
+    detail_text = detail_json.read_text(errors="ignore") if detail_json.exists() else ""
+    if not detail_text.strip():
+        detail_text = r.get("stdout") or ""
+
     previews: list[dict] = []
-    if detail_json.exists():
-        for ln in detail_json.read_text(errors="ignore").splitlines():
+    if detail_text.strip():
+        for ln in detail_text.splitlines():
             ln = ln.strip()
-            if not ln:
+            if not ln or not ln.startswith("{"):
                 continue
             try:
                 obj = json.loads(ln)
@@ -175,12 +184,20 @@ def collect(output_dir: Path, cfg: dict, *, resume: bool = False,
     })
     _write_index(index_md, output_dir.name, previews, capped)
 
-    extra = {"fetched": len(previews), "capped": capped}
+    extra = {"fetched": len(previews), "capped": capped, "hits": len(sources)}
     status = "success"
     error = None
     if timed_out:
         error = (f"timeout after {timeout}s — saved {len(previews)} "
                  f"responses before cutoff")
+    elif not previews:
+        # This stage exists to triage the other two, so it going quiet is
+        # exactly when someone must be told. Silence used to look identical
+        # to "nothing worth previewing".
+        error = (f"probed {len(urls)} of {len(sources)} hit(s) but parsed 0 "
+                 f"responses — httpx wrote neither {detail_json.name} nor "
+                 f"usable stdout")
+        extra["blocked"] = True
     return make_result(stage, status, input_path=str(output_dir),
                        outputs=outputs, count=len(previews),
                        error=error, extra=extra)

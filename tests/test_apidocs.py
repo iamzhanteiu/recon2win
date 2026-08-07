@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import json
 
-from modules import apidocs
+from modules import apidocs, layout
 from modules.apidocs import (
     build_candidates,
     domain_tokens,
@@ -209,6 +209,19 @@ def test_postman_relevance_matches_words_not_substrings():
         assert apidocs._postman_relevant(real, toks), real
 
 
+def test_postman_relevance_rejects_clickbait_length_names():
+    """Measured on dialogue.co: the only distinctive token is "dialogue", a
+    common English word, so word-boundary matching alone let through
+    "Divine Dialogue Reviews - David Riflin Manifestation Program Legit?
+    What Are Users Saying? PDF Download!" — a spam collection name, not a
+    hit about the target. Real workspace/collection names stay short."""
+    toks = domain_tokens("dialogue.co")
+    spam = ("Divine Dialogue Reviews - David Riflin Manifestation Program "
+            "Legit? What Are Users Saying? PDF Download!")
+    assert not apidocs._postman_relevant(spam, toks)
+    assert apidocs._postman_relevant("Dialogue", toks)
+
+
 def test_search_postman_drops_bare_request_hits(monkeypatch):
     """A single request named "discover users" inside somebody else's
     collection is not a finding about the target; Postman scores those at
@@ -265,7 +278,7 @@ def test_classify_hit_returns_none_for_ordinary_page():
 # ----------------------------------------------------------------------
 def _base(tmp_path, hosts=("https://a.example.com",)):
     base = create_output_structure("example.com", root=str(tmp_path))
-    alive = base / "processed" / "alive.txt"
+    alive = layout.path(base, "alive.txt")
     alive.write_text("\n".join(hosts) + "\n")
     return base, alive
 
@@ -275,7 +288,7 @@ def test_discover_skip_flag_writes_empty_outputs(tmp_path):
     res = apidocs.discover(alive, base, {}, skip=True)
     assert res["status"] == "skipped"
     assert (base / "findings" / "api_docs.json").exists()
-    assert read_lines(base / "processed" / "apidocs_urls.txt") == []
+    assert read_lines(layout.path(base, "apidocs_urls.txt")) == []
 
 
 def test_discover_disabled_in_config(tmp_path):
@@ -323,9 +336,9 @@ def test_discover_parses_spec_and_writes_endpoints(tmp_path, monkeypatch):
     assert res["status"] == "success"
     assert res["extra"]["specs"] == 1
     assert res["extra"]["documented_paths"] == 2
-    urls = read_lines(base / "processed" / "apidocs_urls.txt")
+    urls = read_lines(layout.path(base, "apidocs_urls.txt"))
     assert "https://api.example.com/v2/users" in urls
-    params = read_lines(base / "processed" / "apidocs_params.txt")
+    params = read_lines(layout.path(base, "apidocs_params.txt"))
     assert params == ["https://api.example.com/v2/users?page=&limit="]
     saved = json.loads((base / "findings" / "api_docs.json").read_text())
     assert saved["specs"][0]["title"] == "Billing API"
@@ -353,7 +366,7 @@ def test_discover_does_not_count_catch_all_200_as_spec(tmp_path, monkeypatch):
     monkeypatch.setattr(apidocs.runner, "run", fake_run)
     res = apidocs.discover(alive, base, {}, domain="example.com")
     assert res["extra"]["specs"] == 0
-    assert read_lines(base / "processed" / "apidocs_urls.txt") == []
+    assert read_lines(layout.path(base, "apidocs_urls.txt")) == []
 
 
 def test_discover_caps_hosts(tmp_path, monkeypatch):

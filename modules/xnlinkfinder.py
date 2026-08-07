@@ -4,7 +4,7 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-from . import runner
+from . import layout, runner
 from .utils import make_result, read_lines, write_lines
 
 
@@ -24,7 +24,7 @@ def _classify(line: str) -> str | None:
 
 
 def _outputs_exist(out_dir: Path) -> bool:
-    p = out_dir / "processed" / "xnlinkfinder_urls.txt"
+    p = layout.path(out_dir, "xnlinkfinder_urls.txt")
     return p.exists() and p.stat().st_size > 0
 
 
@@ -38,10 +38,9 @@ def scan(
     skip: bool = False,
 ) -> dict:
     stage = "xnlinkfinder"
-    proc = output_dir / "processed"
-    proc.mkdir(parents=True, exist_ok=True)
-    ep_out = proc / "xnlinkfinder_endpoints.txt"
-    url_out = proc / "xnlinkfinder_urls.txt"
+    layout.ensure_tree(output_dir)
+    ep_out = layout.path(output_dir, "xnlinkfinder_endpoints.txt")
+    url_out = layout.path(output_dir, "xnlinkfinder_urls.txt")
 
     if skip:
         ep_out.write_text("")

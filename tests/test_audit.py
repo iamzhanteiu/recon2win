@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from modules import audit
+from modules import audit, layout
 from modules.utils import create_output_structure, write_lines
 
 
@@ -17,13 +17,13 @@ def _seed(tmp_path) -> Path:
     """A minimal but representative output tree."""
     base = create_output_structure("x.com", root=str(tmp_path))
     # master + a true subset of it
-    write_lines(base / "processed" / "all_urls.txt",
+    write_lines(layout.path(base, "all_urls.txt"),
                 [f"https://x.com/{i}" for i in range(10)])
-    write_lines(base / "processed" / "dynamic_urls.txt",
+    write_lines(layout.path(base, "dynamic_urls.txt"),
                 [f"https://x.com/{i}" for i in range(5)])   # ⊆ all_urls
-    write_lines(base / "processed" / "subdomains.txt", ["a.x.com", "b.x.com"])
+    write_lines(layout.path(base, "subdomains.txt"), ["a.x.com", "b.x.com"])
     # empty (skipped tool) — created but 0 bytes
-    (base / "processed" / "arjun_params.txt").write_text("")
+    (layout.path(base, "arjun_params.txt")).write_text("")
     (base / "raw" / "waymore").mkdir(parents=True, exist_ok=True)
     (base / "raw" / "waymore" / "waymore_raw.txt").write_text("")
     return base
@@ -54,24 +54,24 @@ def test_build_index_lists_empty_files(tmp_path):
     assert res["extra"]["empty_files"] == 2   # arjun_params + waymore_raw
     text = (base / "INDEX.md").read_text()
     assert "⚪ Empty" in text
-    assert "processed/arjun_params.txt" in text
+    assert "processed/targets/arjun_params.txt" in text
     assert "raw/waymore/waymore_raw.txt" in text
 
 
 def test_find_empty_scans_processed_and_raw(tmp_path):
     base = _seed(tmp_path)
     empties = audit._find_empty(base)
-    assert "processed/arjun_params.txt" in empties
+    assert "processed/targets/arjun_params.txt" in empties
     assert "raw/waymore/waymore_raw.txt" in empties
     # a non-empty file is never listed
-    assert "processed/all_urls.txt" not in empties
+    assert "processed/corpus/all_urls.txt" not in empties
 
 
 def test_audit_overlap_flags_identical_and_subset(tmp_path, capsys):
     base = _seed(tmp_path)
     # make two byte-identical files to trigger the duplicate detector
-    dup_a = base / "processed" / "js_urls.txt"
-    dup_b = base / "processed" / "ffuf_urls.txt"
+    dup_a = layout.path(base, "js_urls.txt")
+    dup_b = layout.path(base, "ffuf_urls.txt")
     write_lines(dup_a, ["https://x.com/same"])
     dup_b.write_text(dup_a.read_text())
 
@@ -84,9 +84,9 @@ def test_audit_overlap_flags_identical_and_subset(tmp_path, capsys):
     # identical files detected
     assert summary["duplicates"], "expected at least one duplicate group"
     flat = {f for group in summary["duplicates"] for f in group}
-    assert "processed/js_urls.txt" in flat and "processed/ffuf_urls.txt" in flat
+    assert "processed/corpus/js_urls.txt" in flat and "processed/sources/ffuf_urls.txt" in flat
     # empties surfaced
-    assert "processed/arjun_params.txt" in summary["empty"]
+    assert "processed/targets/arjun_params.txt" in summary["empty"]
 
 
 def test_audit_overlap_no_false_self_duplicate(tmp_path):

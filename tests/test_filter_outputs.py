@@ -8,6 +8,7 @@ from __future__ import annotations
 from pathlib import Path
 
 
+from modules import layout
 from modules.utils import filter_existing_outputs, make_result
 
 
@@ -162,7 +163,7 @@ class TestMakeResultWithFiltering:
         raw_dir.mkdir()
 
         # These files were created
-        subdomains = proc_dir / "subdomains.txt"
+        subdomains = layout.path(tmp_path, "subdomains.txt")
         subdomains.write_text("api.example.com\nwww.example.com\n")
         subfinder = raw_dir / "subfinder.txt"
         subfinder.write_text("api.example.com\nwww.example.com\n")

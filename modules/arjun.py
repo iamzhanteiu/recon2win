@@ -7,7 +7,7 @@ import time
 from pathlib import Path
 from typing import Optional
 
-from . import runner
+from . import layout, runner, url_merge
 from .utils import make_result, raw_dir, read_lines, safe_append, write_lines
 
 
@@ -23,6 +23,22 @@ _HIGH_VALUE_HINTS = (
     "/reset", "/forgot", "/signup", "/register",
     "?", "id=", "q=", "page=", "token=",
 )
+
+
+def _source_mix(
+    urls: list[str], sources: dict[str, list[str]],
+) -> dict[str, int]:
+    """``{source: count}`` for the URLs that actually survived the cap.
+
+    Recorded in the stage result so "arjun found 3 params" can be read
+    against what it was pointed at. Three params off 200 jsluice endpoints
+    means something; three off 200 ffuf wildcard hits means nothing.
+    """
+    mix: dict[str, int] = {}
+    for u in urls:
+        for s in sources.get(u) or ("unknown",):
+            mix[s] = mix.get(s, 0) + 1
+    return dict(sorted(mix.items(), key=lambda kv: -kv[1]))
 
 
 def _score(url: str) -> int:
@@ -183,7 +199,7 @@ def _patch_upstream_crash(output_dir: Path) -> str:
 
 
 def _outputs_exist(out_dir: Path) -> bool:
-    p = out_dir / "processed" / "arjun_params.txt"
+    p = layout.path(out_dir, "arjun_params.txt")
     return p.exists() and p.stat().st_size > 0
 
 
@@ -209,10 +225,9 @@ def discover(
     skip: bool = False,
 ) -> dict:
     stage = "arjun"
-    proc = output_dir / "processed"
-    proc.mkdir(parents=True, exist_ok=True)
-    params_out = proc / "arjun_params.txt"
-    urls_out = proc / "parameterized_urls.txt"
+    layout.ensure_tree(output_dir)
+    params_out = layout.path(output_dir, "arjun_params.txt")
+    urls_out = layout.path(output_dir, "parameterized_urls.txt")
 
     if skip:
         params_out.write_text("")
@@ -283,9 +298,25 @@ def discover(
     # Cap and prioritise. Without this cap, an aggressive crawler + waymore
     # can produce 5k+ dynamic URLs and arjun will sit fuzzing them for
     # hours before timing out at the 3600s mark.
+    #
+    # WHICH urls survive the cap matters more than the cap itself. Provenance
+    # is the strongest available signal and it outranks the keyword
+    # heuristics: on discover.com the corpus was 76% ffuf wildcard-403 noise,
+    # so an unsorted top-200 was ~200 URLs that could never yield a param no
+    # matter how promising their paths looked. Sorting by source first put
+    # jsluice/apidocs endpoints (23.6% alive) at the head of the list.
     original_count = len(urls)
+    sources = url_merge.load_url_sources(output_dir)
     if len(urls) > max_urls:
-        ranked = sorted(urls, key=lambda u: (-_score(u), len(u), u))
+        ranked = sorted(
+            urls,
+            key=lambda u: (
+                -url_merge.source_score(sources.get(u, ())),
+                -_score(u),
+                len(u),
+                u,
+            ),
+        )
         urls = ranked[:max_urls]
     input_file = dynamic_urls_file if len(urls) == original_count \
         else _write_input_subset(output_dir, urls)
@@ -438,7 +469,8 @@ def discover(
             parameterized.append(url)
     n = write_lines(urls_out, parameterized)
     extra: dict = {"input_urls": original_count, "scanned_urls": len(urls),
-                   "upstream_patch": patch_status}
+                   "upstream_patch": patch_status,
+                   "scanned_sources": _source_mix(urls, sources)}
     error = None
     if not single:
         extra["chunks"] = {

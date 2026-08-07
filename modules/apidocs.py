@@ -32,7 +32,7 @@ from pathlib import Path
 from typing import Any, Optional
 from urllib.parse import urljoin, urlparse
 
-from . import console, runner
+from . import console, layout, runner
 from .utils import make_result, raw_dir, read_lines, write_json, write_lines
 
 # ----------------------------------------------------------------------
@@ -296,6 +296,15 @@ def domain_tokens(domain: str) -> list[str]:
 _POSTMAN_KINDS = ("workspace", "collection")
 
 
+# A real workspace/collection name is a short product or org name. Longest
+# genuine one seen so far is 38 chars; measured on dialogue.co, a domain
+# token that happens to be a common word ("dialogue") let through "Divine
+# Dialogue Reviews - David Riflin Manifestation Program Legit? What Are
+# Users Saying? PDF Download!" (106 chars) — clickbait, not a real hit, and
+# word-boundary matching alone cannot tell the two apart.
+_MAX_NAME_LEN = 80
+
+
 def _postman_relevant(name: str, tokens: list[str]) -> bool:
     """Keep a Postman result only when it names one of the domain tokens.
 
@@ -309,6 +318,8 @@ def _postman_relevant(name: str, tokens: list[str]) -> bool:
     - Discovery": 25 results, none of them the target. Word boundaries drop
     all three because ``discovery`` is not ``discover``.
     """
+    if len(name or "") > _MAX_NAME_LEN:
+        return False
     words = set(re.split(r"[^a-z0-9]+", (name or "").lower()))
     return any(t in words for t in tokens)
 
@@ -445,12 +456,11 @@ def discover(
     skip: bool = False,
 ) -> dict:
     stage = "apidocs"
-    proc = output_dir / "processed"
-    proc.mkdir(parents=True, exist_ok=True)
+    layout.ensure_tree(output_dir)
     findings = output_dir / "findings"
     findings.mkdir(parents=True, exist_ok=True)
-    urls_out = proc / "apidocs_urls.txt"
-    params_out = proc / "apidocs_params.txt"
+    urls_out = layout.path(output_dir, "apidocs_urls.txt")
+    params_out = layout.path(output_dir, "apidocs_params.txt")
     json_out = findings / "api_docs.json"
     outputs = [urls_out, params_out, json_out]
 
@@ -557,10 +567,37 @@ def discover(
             f"[{stage}] {len(osint)} external OSINT hit(s) "
             "(public Postman / GitHub)"))
 
+    # Say WHY the outputs are empty, so a 0-line apidocs_urls.txt cannot be
+    # misread as "this target publishes no API docs". On a discover.com run
+    # every single probe came back 403 (Akamai answering for the origin) —
+    # the stage succeeded and learned nothing, which is the opposite of a
+    # clean result. Without this note the distinction only existed inside
+    # findings/api_docs.json. Consumed by audit.build_manifest.
+    empty_reason = None
+    was_blocked = False
+    if not specs:
+        hits = ui_hits + discovery_hits
+        refused = sum(1 for h in hits if h.get("status") in (401, 403))
+        probed = probe_stats.get("responses")
+        if probe_stats.get("error"):
+            empty_reason = f"no specs parsed — {probe_stats['error']}"
+        elif hits and refused == len(hits):
+            was_blocked = True
+            empty_reason = (
+                f"no specs parsed — all {refused} candidate hit(s) returned "
+                "401/403; the probe was refused, not answered"
+            )
+        elif not probed:
+            empty_reason = "no specs parsed — no host answered the probe"
+        else:
+            empty_reason = f"no specs parsed from {probed} response(s)"
+
     return make_result(
         stage, "success", input_path=alive_file, outputs=outputs,
         count=len(specs) + len(ui_hits) + len(discovery_hits) + len(osint),
+        error=empty_reason,
         extra={
+            "blocked": was_blocked,
             "specs": len(specs), "ui": len(ui_hits),
             "discovery": len(discovery_hits), "osint": len(osint),
             "documented_paths": total_paths,

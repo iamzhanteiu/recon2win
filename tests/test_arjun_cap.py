@@ -13,7 +13,7 @@ from pathlib import Path
 
 import pytest
 
-from modules import arjun
+from modules import arjun, layout
 from modules.arjun import _score
 from modules.utils import read_lines, write_lines
 
@@ -220,7 +220,7 @@ def test_discover_parses_text_output_into_parameterized_urls(tmp_path: Path, mon
     )
     assert res["status"] == "success"
     assert res["count"] == 1
-    out = read_lines(tmp_path / "processed" / "parameterized_urls.txt")
+    out = read_lines(layout.path(tmp_path, "parameterized_urls.txt"))
     assert out == ["https://x.com/api/users?id=&name="]
 
 
@@ -245,7 +245,7 @@ def test_discover_rejoins_post_style_tab_rows(tmp_path: Path, monkeypatch):
         cfg={"arjun": {"max_urls": 200, "threads": 1, "timeout": 60}},
         resume=False, dry_run=False, skip=False,
     )
-    out = read_lines(tmp_path / "processed" / "parameterized_urls.txt")
+    out = read_lines(layout.path(tmp_path, "parameterized_urls.txt"))
     assert out == [
         "https://x.com/a?id=&q=",
         "https://x.com/b?token=&role=",
@@ -497,7 +497,7 @@ def test_discover_passes_stable_when_configured(tmp_path: Path, monkeypatch):
 def _fake_arjun_package(tmp_path: Path, monkeypatch, source: str) -> Path:
     """Build a throwaway ``arjun/__main__.py`` and point the locator at it."""
     main_py = tmp_path / "site-packages" / "arjun" / "__main__.py"
-    main_py.parent.mkdir(parents=True)
+    main_py.parent.mkdir(parents=True, exist_ok=True)
     main_py.write_text(source)
     monkeypatch.setattr(arjun, "_arjun_main_py", lambda: main_py)
     return main_py
