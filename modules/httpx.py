@@ -18,7 +18,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from . import console, runner
+from . import console, layout, runner
 from .sensitive_ext import is_static_asset
 from .utils import (
     load_json,
@@ -100,7 +100,7 @@ def _write_alive_from_detail(detail_json: Path, alive_txt: Path) -> int:
             continue
         seen.add(u)
         dedup.append(row)
-    write_json(detail_json, dedup)
+    write_json(detail_json, dedup, compact=True)
     write_lines(alive_txt, [r["url"] for r in dedup if r.get("url")])
     _write_alive_table(dedup, _table_path(alive_txt))
     return len(dedup)
@@ -176,10 +176,9 @@ def alive_check(
     dry_run: bool = False,
 ) -> dict:
     stage = "httpx_alive"
-    proc = output_dir / "processed"
-    proc.mkdir(parents=True, exist_ok=True)
-    alive_txt = proc / "alive.txt"
-    detail_json = proc / "alive_detail.json"
+    layout.ensure_tree(output_dir)
+    alive_txt = layout.path(output_dir, "alive.txt")
+    detail_json = layout.path(output_dir, "alive_detail.json")
 
     if resume and alive_txt.exists() and alive_txt.stat().st_size > 0:
         existing = load_json(detail_json) or []
@@ -208,6 +207,10 @@ def alive_check(
     cmd = [
         "httpx", "-l", str(hosts_file),
         "-json", "-silent",
+        # -td: passive tech-detection (Wappalyzer-style fingerprint of the
+        # SAME response, no extra request) — feeds fuzz_depth's tech-based
+        # tiering. Same cost profile as -cdn, already on by default.
+        "-td",
         "-threads", str(threads),
         "-timeout", "10",
         "-retries", "2",
@@ -232,7 +235,7 @@ def alive_check(
             continue
         seen.add(u)
         dedup.append(row)
-    write_json(detail_json, dedup)
+    write_json(detail_json, dedup, compact=True)
     write_lines(alive_txt, [r["url"] for r in dedup if r.get("url")])
     table_txt = _table_path(alive_txt)
     _write_alive_table(dedup, table_txt)
@@ -255,9 +258,8 @@ def check_urls(
     dry_run: bool = False,
 ) -> dict:
     stage = "httpx_urls"
-    proc = output_dir / "processed"
-    alive_txt = proc / "alive_urls.txt"
-    detail_json = proc / "alive_urls_detail.json"
+    alive_txt = layout.path(output_dir, "alive_urls.txt")
+    detail_json = layout.path(output_dir, "alive_urls_detail.json")
 
     if resume and alive_txt.exists() and alive_txt.stat().st_size > 0:
         existing = load_json(detail_json) or []
@@ -332,4 +334,131 @@ def check_urls(
         stage, "success", input_path=urls_file,
         outputs=[alive_txt, detail_json, table_txt], count=count,
         extra=extra,
+    )
+
+
+# ----------------------------------------------------------------------
+# stage 3.post — screenshots (optional, off by default: needs a headless
+# browser). asm_report.py's own "Coverage Gaps" section names this as a
+# known-missing capability with the exact fix — httpx already ships it.
+#
+# Visual triage beats reading a status-code table: a 200 on /admin could be
+# a real login form or a landing page that catch-alls every path, and the
+# only way to tell without opening a browser tab per host is a screenshot.
+# ----------------------------------------------------------------------
+def _outputs_exist(index_json: Path) -> bool:
+    return index_json.exists() and index_json.stat().st_size > 0
+
+
+def capture_screenshots(
+    hosts_file: Path,
+    output_dir: Path,
+    cfg: dict,
+    *,
+    resume: bool = False,
+    dry_run: bool = False,
+) -> dict:
+    """Screenshot every alive host with ``httpx -screenshot``.
+
+    Off by default (``httpx.screenshot.enabled: false``) — it needs Chrome
+    installed, is far slower per-host than a plain probe, and most CI/VPS
+    boxes don't have a browser sitting around. When enabled, caps to
+    ``max_hosts`` (screenshotting a 5,000-host run would dwarf every other
+    stage) and never treats a missing browser as a hard failure — this is
+    coverage on top of the run, not something downstream depends on.
+
+    The index only ever records a ``screenshot_path`` when httpx itself
+    reported one in its JSON (recent versions add ``screenshot_path`` per
+    row when ``-screenshot`` + ``-srd`` are combined). Older httpx builds
+    don't emit that field — rather than guess a filename convention that
+    may not match, those runs still get ``screenshots_written`` (a real
+    file count from the store directory) and the directory itself, with
+    ``screenshot_path: null`` per row so nothing is fabricated.
+    """
+    stage = "httpx_screenshot"
+    layout.ensure_tree(output_dir)
+    index_json = layout.path(output_dir, "screenshots_index.json")
+    shot_dir = raw_dir(output_dir, "httpx_screenshot") / "screenshots"
+    outputs = [index_json]
+
+    s_cfg = ((cfg.get("httpx") or {}).get("screenshot") or {})
+
+    if not s_cfg.get("enabled", False):
+        return make_result(stage, "skipped", input_path=hosts_file,
+                           outputs=outputs, count=0,
+                           error="disabled in config (httpx.screenshot.enabled)")
+    if resume and _outputs_exist(index_json):
+        existing = load_json(index_json) or []
+        return make_result(stage, "success", input_path=hosts_file,
+                           outputs=outputs, count=len(existing))
+    if dry_run:
+        return make_result(stage, "skipped", input_path=hosts_file,
+                           outputs=outputs, count=0, error="dry-run")
+    if not runner.tool_available("httpx"):
+        return make_result(stage, "skipped", input_path=hosts_file,
+                           outputs=outputs, count=0,
+                           error="httpx binary not found")
+
+    hosts = read_lines(hosts_file)
+    max_hosts = int(s_cfg.get("max_hosts", 200) or 0)
+    capped = 0
+    if max_hosts and len(hosts) > max_hosts:
+        capped = len(hosts) - max_hosts
+        hosts = hosts[:max_hosts]
+    if not hosts:
+        return make_result(stage, "success", input_path=hosts_file,
+                           outputs=outputs, count=0,
+                           error="no alive hosts to screenshot")
+
+    scan_file = raw_dir(output_dir, "httpx_screenshot") / "hosts_subset.txt"
+    write_lines(scan_file, hosts)
+    detail_jsonl = raw_dir(output_dir, "httpx_screenshot") / "detail.jsonl"
+    shot_dir.mkdir(parents=True, exist_ok=True)
+
+    timeout = int(s_cfg.get("timeout", 1800))
+    per_host_timeout = int(s_cfg.get("screenshot_timeout", 10))
+    cmd = [
+        "httpx", "-l", str(scan_file),
+        "-json", "-silent",
+        "-screenshot", "-srd", str(shot_dir),
+        "-screenshot-timeout", str(per_host_timeout),
+        "-threads", str(int(s_cfg.get("threads", 10))),
+        "-timeout", "10", "-retries", "1",
+        "-o", str(detail_jsonl),
+    ]
+    if s_cfg.get("system_chrome", True):
+        cmd.append("-system-chrome")
+    r = runner.run(cmd, stage=stage, output_dir=output_dir, timeout=timeout)
+
+    rows = _parse_httpx_jsonl(detail_jsonl)
+    written = sum(1 for _ in shot_dir.rglob("*.png")) if shot_dir.exists() else 0
+
+    if not rows and not written:
+        # A hard failure (no chrome, no network) is coverage lost, not a
+        # pipeline blocker — every other stage's output stands on its own.
+        err = (r.get("stderr") or "")[:300] or "no screenshots captured"
+        return make_result(stage, "skipped", input_path=hosts_file,
+                           outputs=outputs, count=0, error=err,
+                           extra={"hosts_capped": capped})
+
+    index: list[dict] = []
+    for row in rows:
+        shot = row.get("screenshot_path")
+        index.append({
+            "url": row.get("url") or "",
+            "status_code": row.get("status_code"),
+            "title": row.get("title") or "",
+            "screenshot_path": (str(shot_dir / shot) if shot else None),
+        })
+    write_json(index_json, index)
+
+    print(console.phase_info_line(
+        f"[{stage}] {written} screenshot(s) written → "
+        f"{shot_dir.relative_to(output_dir)}/"))
+
+    return make_result(
+        stage, "success", input_path=hosts_file,
+        outputs=[index_json], count=len(index),
+        extra={"hosts_capped": capped, "screenshots_written": written,
+               "screenshot_dir": str(shot_dir)},
     )

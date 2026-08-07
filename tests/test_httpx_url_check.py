@@ -12,7 +12,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from modules import httpx as httpx_mod
+from modules import httpx as httpx_mod, layout
 from modules.httpx import _cap_urls, _score_url, _table_path, _write_alive_table
 from modules.utils import read_lines, write_lines
 
@@ -120,13 +120,13 @@ def test_check_urls_salvages_partial_on_timeout(tmp_path: Path, monkeypatch):
     monkeypatch.setattr("modules.runner.tool_available", lambda b: True)
     monkeypatch.setattr("modules.runner.which", lambda b: f"/usr/bin/{b}")
 
-    urls = tmp_path / "processed" / "all_urls.txt"
-    urls.parent.mkdir(parents=True)
+    urls = layout.path(tmp_path, "all_urls.txt")
+    urls.parent.mkdir(parents=True, exist_ok=True)
     write_lines(urls, ["https://x.com/a", "https://x.com/b"])
 
     res = httpx_mod.check_urls(urls, tmp_path, cfg={}, resume=False, dry_run=False)
 
-    alive = tmp_path / "processed" / "alive_urls.txt"
+    alive = layout.path(tmp_path, "alive_urls.txt")
     # The critical property: alive_urls.txt is NOT empty after a timeout,
     # so the stages downstream have real input.
     assert read_lines(alive) == ["https://x.com/a", "https://x.com/b"]
@@ -141,11 +141,108 @@ def test_check_urls_success_path_unchanged(tmp_path: Path, monkeypatch):
     monkeypatch.setattr("modules.runner.tool_available", lambda b: True)
     monkeypatch.setattr("modules.runner.which", lambda b: f"/usr/bin/{b}")
 
-    urls = tmp_path / "processed" / "all_urls.txt"
-    urls.parent.mkdir(parents=True)
+    urls = layout.path(tmp_path, "all_urls.txt")
+    urls.parent.mkdir(parents=True, exist_ok=True)
     write_lines(urls, ["https://x.com/a"])
 
     res = httpx_mod.check_urls(urls, tmp_path, cfg={}, resume=False, dry_run=False)
     assert res["status"] == "success"
     assert res["count"] == 1
-    assert read_lines(tmp_path / "processed" / "alive_urls.txt") == ["https://x.com/a"]
+    assert read_lines(layout.path(tmp_path, "alive_urls.txt")) == ["https://x.com/a"]
+
+
+# ----------------------------------------------------------------------
+# capture_screenshots — off by default, best-effort, never fabricates a
+# URL -> file mapping the JSON output didn't actually give it.
+# ----------------------------------------------------------------------
+def test_screenshot_disabled_by_default(tmp_path: Path):
+    hosts = layout.path(tmp_path, "alive.txt")
+    hosts.parent.mkdir(parents=True, exist_ok=True)
+    write_lines(hosts, ["https://x.com"])
+
+    res = httpx_mod.capture_screenshots(hosts, tmp_path, cfg={}, resume=False, dry_run=False)
+    assert res["status"] == "skipped"
+    assert "disabled" in (res["error"] or "")
+
+
+def test_screenshot_records_path_when_httpx_reports_one(tmp_path: Path, monkeypatch):
+    def fake_run(cmd, **kw):
+        out = Path(cmd[cmd.index("-o") + 1])
+        out.parent.mkdir(parents=True, exist_ok=True)
+        srd = Path(cmd[cmd.index("-srd") + 1])
+        srd.mkdir(parents=True, exist_ok=True)
+        (srd / "x_com.png").write_bytes(b"\x89PNG")
+        out.write_text(json.dumps({
+            "url": "https://x.com", "status_code": 200, "title": "X",
+            "screenshot_path": "x_com.png",
+        }))
+        return {
+            "returncode": 0, "stdout": "", "stderr": "",
+            "missing_binary": False, "timed_out": False, "success": True,
+            "stdout_path": "", "stderr_path": "", "log_path": "",
+            "duration": 0.1,
+        }
+    monkeypatch.setattr("modules.runner.run", fake_run)
+    monkeypatch.setattr("modules.runner.tool_available", lambda b: True)
+    monkeypatch.setattr("modules.runner.which", lambda b: f"/usr/bin/{b}")
+
+    hosts = layout.path(tmp_path, "alive.txt")
+    hosts.parent.mkdir(parents=True, exist_ok=True)
+    write_lines(hosts, ["https://x.com"])
+
+    cfg = {"httpx": {"screenshot": {"enabled": True}}}
+    res = httpx_mod.capture_screenshots(hosts, tmp_path, cfg=cfg,
+                                        resume=False, dry_run=False)
+    assert res["status"] == "success"
+    assert res["count"] == 1
+    assert res["extra"]["screenshots_written"] == 1
+
+    index = json.loads(layout.path(tmp_path, "screenshots_index.json").read_text())
+    assert index[0]["url"] == "https://x.com"
+    assert index[0]["screenshot_path"].endswith("x_com.png")
+
+
+def test_screenshot_no_fabricated_path_on_older_httpx(tmp_path: Path, monkeypatch):
+    """Older httpx builds don't emit ``screenshot_path`` in JSON — the
+    index must record ``None``, never guess a filename."""
+    def fake_run(cmd, **kw):
+        out = Path(cmd[cmd.index("-o") + 1])
+        out.parent.mkdir(parents=True, exist_ok=True)
+        srd = Path(cmd[cmd.index("-srd") + 1])
+        srd.mkdir(parents=True, exist_ok=True)
+        (srd / "whatever_httpx_named_it.png").write_bytes(b"\x89PNG")
+        out.write_text(json.dumps({"url": "https://x.com", "status_code": 200}))
+        return {
+            "returncode": 0, "stdout": "", "stderr": "",
+            "missing_binary": False, "timed_out": False, "success": True,
+            "stdout_path": "", "stderr_path": "", "log_path": "",
+            "duration": 0.1,
+        }
+    monkeypatch.setattr("modules.runner.run", fake_run)
+    monkeypatch.setattr("modules.runner.tool_available", lambda b: True)
+    monkeypatch.setattr("modules.runner.which", lambda b: f"/usr/bin/{b}")
+
+    hosts = layout.path(tmp_path, "alive.txt")
+    hosts.parent.mkdir(parents=True, exist_ok=True)
+    write_lines(hosts, ["https://x.com"])
+
+    cfg = {"httpx": {"screenshot": {"enabled": True}}}
+    res = httpx_mod.capture_screenshots(hosts, tmp_path, cfg=cfg,
+                                        resume=False, dry_run=False)
+    assert res["status"] == "success"
+    assert res["extra"]["screenshots_written"] == 1
+    index = json.loads(layout.path(tmp_path, "screenshots_index.json").read_text())
+    assert index[0]["screenshot_path"] is None
+
+
+def test_screenshot_missing_binary_is_soft_skip(tmp_path: Path, monkeypatch):
+    monkeypatch.setattr("modules.runner.tool_available", lambda b: False)
+    hosts = layout.path(tmp_path, "alive.txt")
+    hosts.parent.mkdir(parents=True, exist_ok=True)
+    write_lines(hosts, ["https://x.com"])
+
+    cfg = {"httpx": {"screenshot": {"enabled": True}}}
+    res = httpx_mod.capture_screenshots(hosts, tmp_path, cfg=cfg,
+                                        resume=False, dry_run=False)
+    assert res["status"] == "skipped"
+    assert "not found" in (res["error"] or "")
