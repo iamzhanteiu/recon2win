@@ -184,12 +184,32 @@ transitive của chúng) — cố tình KHÔNG gồm các tool recon cài qua pi
 viện `recon2win` import. `requirements.txt` (range mở) vẫn là nguồn tài liệu
 "những gì được biết là chạy được"; lock file là đường tái lập chính xác.
 
+### Typed stage-result contract — additive, không sửa từng module
+
+**Quyết định:** thêm `StageResult` (`TypedDict`) + `StageStatus`
+(`Literal["success","failed","skipped"]` — grep xác nhận đây là 3 giá trị
+DUY NHẤT từng được truyền cho `make_result()` trong toàn bộ `modules/*.py`)
+vào `modules/utils.py`, annotate `make_result() -> StageResult`. `TypedDict`
+không ràng buộc gì lúc runtime (`type(make_result(...))` vẫn là `dict`
+thường) — mọi module gọi/đọc dict kết quả tiếp tục hoạt động y hệt, không
+cần sửa. Chỉ 50+ stage function trong `modules/*` GIỜ có type checker hiểu
+đúng hình dạng, không cần sửa từng file.
+
+Kiểm bằng `mypy modules/utils.py` (cài tạm để verify, không thêm vào
+dependency — dự án chưa áp dụng mypy toàn repo) phát hiện luôn 1 lỗi type
+thật trong chính `make_result()`: biến `output_list` được gán lại theo 2
+nhánh `if/else` không cùng type suy luận (`outputs or []` ở nhánh gán đầu
+tiên làm mypy suy ra `list[Path|str]`, trong khi cả 2 nhánh sau đó đều thực
+sự trả `list[str]`) — đã sửa bằng cách bỏ dòng gán trung gian, gán thẳng
+`List[str]` ở cả 2 nhánh. Hành vi runtime không đổi (verify bằng pytest đầy
+đủ).
+
 ## Nợ kỹ thuật đã biết (chưa xử lý, ghi lại để không phải phát hiện lại)
 
 | Nợ | Mô tả | Mức ảnh hưởng |
 |---|---|---|
 | Không có schema validation cho `config.yml` | Gõ sai tên key bị `main.py::_deep_merge` nuốt im lặng — không có cảnh báo | Trung bình — dễ cấu hình sai mà không biết |
-| Contract giữa stage chỉ là dict quy ước | `make_result()` không có kiểu tĩnh ràng buộc; đúng hình dạng chỉ nhờ convention + test | Trung bình — sai hình dạng dict chỉ lộ ra lúc runtime |
+| ~~Contract giữa stage chỉ là dict quy ước~~ | Một phần đã xử lý — `StageResult`/`StageStatus` (`modules/utils.py`) cho type checker, xem mục "Typed stage-result contract" ở trên. CHƯA làm: chưa có mypy/pyright trong CI để việc gõ sai thật sự bị chặn, `main.py` chưa annotate `results: list[StageResult]` | Giảm — còn thiếu bước enforce trong CI |
 | `main.py` là orchestrator đơn khối | Thêm 1 stage cần sửa ~5 chỗ (import, `ThreadPoolExecutor` wiring, `_STAGE_NOUN`, dry-run plan text, CLI flag) | Trung bình — tăng chi phí mở rộng pipeline |
 | Output qua `print()`, không dùng `logging` | Không có level, không log ra ngoài tiến trình — phù hợp chạy tương tác, yếu cho chạy nền/lịch định kỳ | Thấp cho hiện tại, tăng dần theo quy mô vận hành |
 | Không có khái niệm workspace ngoài `outputs/<domain>/` | Không có scope/notes/knowledge base theo từng target — chỉ có scan artefact | Cao nếu muốn mở rộng thành "workspace nghiên cứu bảo mật" lâu dài |

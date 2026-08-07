@@ -9,9 +9,27 @@ import json
 import re
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Iterable, List, Optional, Sequence
+from typing import Any, Iterable, List, Literal, NotRequired, Optional, Sequence, TypedDict
 
 from . import layout as _layout
+
+# The dict shape every stage function returns (`_run_stage` in main.py relies
+# on it structurally). Declared here, not enforced at runtime — TypedDict is
+# a type-checker aid only, so this is purely additive: existing callers that
+# build/consume plain dicts keep working unchanged. Grep-verified against
+# every `make_result(...)` call site: `status` only ever takes these three
+# literal values.
+StageStatus = Literal["success", "failed", "skipped"]
+
+
+class StageResult(TypedDict):
+    stage: str
+    status: StageStatus
+    input: Optional[str]
+    outputs: list[str]
+    count: int
+    error: Optional[str]
+    extra: NotRequired[dict[str, Any]]
 
 # RFC 1035 / 1123 — pragmatic domain pattern, not a full parser.
 DOMAIN_RE = re.compile(
@@ -253,27 +271,27 @@ def filter_existing_outputs(outputs: Optional[Sequence[Path | str]]) -> List[str
 
 def make_result(
     stage: str,
-    status: str,
+    status: StageStatus,
     input_path: Optional[Path | str] = None,
     outputs: Optional[Sequence[Path | str]] = None,
     count: int = 0,
     error: Optional[str] = None,
     extra: Optional[dict] = None,
     filter_outputs: bool = True,
-) -> dict:
-    """Create a stage result dict.
+) -> StageResult:
+    """Create a stage result dict — see ``StageResult`` for the exact shape.
 
     By default (filter_outputs=True), only includes files that actually exist
     on disk. Set filter_outputs=False to include all listed paths (old behavior).
     This keeps the output log clean: no "file not found" noise in reports.
     """
-    output_list = outputs or []
+    output_list: List[str]
     if filter_outputs:
-        output_list = filter_existing_outputs(output_list)
+        output_list = filter_existing_outputs(outputs)
     else:
-        output_list = [str(p) for p in output_list]
+        output_list = [str(p) for p in (outputs or [])]
 
-    res: dict[str, Any] = {
+    res: StageResult = {
         "stage": stage,
         "status": status,
         "input": str(input_path) if input_path else None,
