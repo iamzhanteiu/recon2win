@@ -21,16 +21,25 @@ import yaml
 from modules import (
     apidocs as apidocs_mod,
     arjun as arjun_mod,
+    asm_report as asm_report_mod,
     audit as audit_mod,
+    buckets as buckets_mod,
     content_discovery as cd_mod,
     console,
+    cors_probe as cors_probe_mod,
+    dashboard as dashboard_mod,
     dirsearch as dirsearch_mod,
     doctor as doctor_mod,
     dnsx as dnsx_mod,
     ffuf as ffuf_mod,
+    gitdump as gitdump_mod,
     graphgen as graphgen_mod,
+    graphql_probe as graphql_probe_mod,
     httpx as httpx_mod,
     jsluice as jsluice_mod,
+    jsluice_verify as jsluice_verify_mod,
+    layout,
+    misconfig_probe as misconfig_probe_mod,
     nuclei as nuclei_mod,
     priority as priority_mod,
     progress as progress_mod,
@@ -68,8 +77,11 @@ _STAGE_NOUN: dict[str, str] = {
     "httpx_urls":        "alive urls",
     "xnlinkfinder":      "endpoints+urls",
     "jsluice":           "endpoints+urls",
+    "jsluice_verify":    "verified js urls",
+    "jsluice_method_check": "method-checked endpoints",
     "arjun":             "parameterized urls",
     "apidocs":           "api doc hits",
+    "misconfig_probe":   "server/microservice misconfig hits",
     "report":            "artifacts",
 }
 
@@ -177,8 +189,24 @@ def main() -> int:
     p.add_argument("--skip-jsluice", action="store_true")
     p.add_argument("--skip-apidocs", action="store_true",
                    help="skip the API-docs probe + external OSINT stage")
+    p.add_argument("--skip-misconfig-probe", action="store_true",
+                   help="skip the deep-tier server/microservice misconfig probe")
     p.add_argument("--skip-responses", action="store_true",
                    help="Skip capturing full responses for ffuf/dirsearch hits.")
+    p.add_argument("--skip-graphql-probe", action="store_true",
+                   help="skip the GraphQL introspection probe")
+    p.add_argument("--skip-cors-probe", action="store_true",
+                   help="skip the CORS misconfiguration probe")
+    p.add_argument("--skip-buckets", action="store_true",
+                   help="skip cloud storage bucket enumeration (off by default anyway)")
+    p.add_argument("--skip-gitdump", action="store_true",
+                   help="skip .git exposure source reconstruction (off by default anyway)")
+    p.add_argument("--xlsx-report", action="store_true",
+                   help="Also generate report/final_report.xlsx — a detailed, "
+                        "cross-referenced Excel workbook mirroring the HTML "
+                        "report. Requires the openpyxl package (pip install "
+                        "openpyxl). Same effect as setting report.xlsx: true "
+                        "in config.yml.")
     p.add_argument("--color", dest="color", action="store_true", default=None,
                    help="Force ANSI colors even when stdout is not a TTY")
     p.add_argument("--no-color", dest="color", action="store_false",
@@ -294,7 +322,7 @@ def main() -> int:
 
         # ---- 2. DNS resolution ----
         prog.start_phase("dnsx", num=2)
-        sub_file = output_dir / "processed" / "subdomains.txt"
+        sub_file = layout.path(output_dir, "subdomains.txt")
         r = _run_stage("dnsx", dnsx_mod.resolve,
                        sub_file, output_dir, cfg,
                        resume=args.resume, dry_run=False)
@@ -303,14 +331,14 @@ def main() -> int:
 
         # ---- 3. HTTP alive ----
         prog.start_phase("httpx_alive", num=3)
-        resolved_file = output_dir / "processed" / "resolved.txt"
+        resolved_file = layout.path(output_dir, "resolved.txt")
         r = _run_stage("httpx_alive", httpx_mod.alive_check,
                        resolved_file, output_dir, cfg,
                        resume=args.resume, dry_run=False)
         results.append(r)
         prog.finish_phase(r, num=3)
 
-        alive_file = output_dir / "processed" / "alive.txt"
+        alive_file = layout.path(output_dir, "alive.txt")
 
         # ------------------------------------------------------------------
         # 2-PASS FALLBACK — if httpx_alive produced 0 alive hosts on the
@@ -350,6 +378,12 @@ def main() -> int:
                            resume=False, dry_run=False)
             prog.finish_phase(r, num=3)
             results.append(r)
+
+        # ---- 3.post: screenshot alive hosts (optional, off by default) ----
+        shot = _run_stage("httpx_screenshot", httpx_mod.capture_screenshots,
+                          alive_file, output_dir, cfg,
+                          resume=args.resume, dry_run=args.dry_run)
+        results.append(shot)
 
         # ---- 4. parallel: katana/urlfinder + dirsearch + ffuf + waymore ----
         # nuclei no longer runs here — it is the last scan in the pipeline
@@ -410,6 +444,17 @@ def main() -> int:
                 f"param collapse: folded {_pc} value-only URL variant(s) "
                 f"(kept keyword values like ?action=delete distinct)"
             ))
+        # Show what the corpus is MADE of. One source at ~80% of the merge is
+        # the signature of a wildcard blow-up (ffuf answering every path on a
+        # host), and it is invisible in the total on its own.
+        _src = (r.get("extra") or {}).get("sources") or {}
+        if _src:
+            _tot = r.get("count") or 1
+            print(console.phase_info_line(
+                "sources: " + ", ".join(
+                    f"{k} {v} ({v * 100 // _tot}%)" for k, v in _src.items()
+                ) + " → processed/all_urls.jsonl"
+            ))
         prog.finish_phase(r, num=5)
 
         # ---- 5.post: body preview for ffuf/dirsearch hits ----
@@ -431,8 +476,8 @@ def main() -> int:
 
         # ---- 6. parallel: httpx URL check + xnLinkFinder + jsluice ----
         prog.start_phase("httpx_urls (and 3 others)", num=6)
-        all_urls_file = output_dir / "processed" / "all_urls.txt"
-        js_urls_file = output_dir / "processed" / "js_urls.txt"
+        all_urls_file = layout.path(output_dir, "all_urls.txt")
+        js_urls_file = layout.path(output_dir, "js_urls.txt")
         par6: dict[str, dict] = {}
         with prog.parallel(
             ["httpx_urls", "xnlinkfinder", "jsluice", "apidocs"], num=6,
@@ -478,11 +523,11 @@ def main() -> int:
         # scans these — it only sees alive.txt (hosts) in stage 8.
         prog.start_phase("url_merge_append", num=7)
         merge_candidates = [
-            output_dir / "processed" / "xnlinkfinder_endpoints.txt",
-            output_dir / "processed" / "xnlinkfinder_urls.txt",
-            output_dir / "processed" / "jsluice_endpoints.txt",
-            output_dir / "processed" / "jsluice_urls.txt",
-            output_dir / "processed" / "apidocs_urls.txt",
+            layout.path(output_dir, "xnlinkfinder_endpoints.txt"),
+            layout.path(output_dir, "xnlinkfinder_urls.txt"),
+            layout.path(output_dir, "jsluice_endpoints.txt"),
+            layout.path(output_dir, "jsluice_urls.txt"),
+            layout.path(output_dir, "apidocs_urls.txt"),
         ]
         extras = [p for p in merge_candidates if p.exists() and p.stat().st_size > 0]
         if extras:
@@ -499,6 +544,42 @@ def main() -> int:
                 num=7,
             )
 
+        # ---- 6.post.a2: verify the URLs jsluice mined out of JS ----
+        # httpx_urls (stage 6) probed all_urls.txt *before* jsluice ran, so
+        # everything jsluice extracted was merged in above unprobed — no
+        # status, no length, no content-type. On acronis.com that was 6,265
+        # of 6,306 JS-mined URLs. Probe them and fold the live ones back
+        # into alive_urls* so the report and ranking can see them.
+        jsv = _run_stage(
+            "jsluice_verify", jsluice_verify_mod.verify,
+            layout.path(output_dir, "jsluice_urls.txt"),
+            output_dir, cfg, resume=args.resume, dry_run=args.dry_run,
+        )
+        results.append(jsv)
+        if jsv.get("extra", {}).get("merged_into_alive_urls"):
+            print(console.phase_info_line(
+                f"jsluice_verify: +{jsv['extra']['merged_into_alive_urls']} "
+                f"newly verified URL(s) → processed/alive_urls.txt"))
+
+        # ---- 6.post.a3: re-probe method-tagged endpoints with THEIR verb ----
+        # jsluice_params.json records the method the JS source actually used
+        # (fetch/axios call, parsed by AST) — a blind GET against a
+        # POST-only or DELETE-only route answers 404/405 and looks dead. This
+        # re-requests those endpoints with the recorded method and captures
+        # status/length/content-type + a body preview, so a method that
+        # reveals more than GET did stands out.
+        jsm = _run_stage(
+            "jsluice_method_check", jsluice_verify_mod.verify_methods,
+            layout.path(output_dir, "jsluice_params.json"),
+            output_dir, cfg, resume=args.resume, dry_run=args.dry_run,
+        )
+        results.append(jsm)
+        if jsm.get("extra", {}).get("method_reveals_more_than_get"):
+            print(console.phase_info_line(
+                f"jsluice_method_check: {jsm['extra']['method_reveals_more_than_get']} "
+                f"endpoint(s) answer differently to their real method than to GET "
+                f"→ processed/jsluice_method_check.json"))
+
         # ---- 6.post.b: mine new in-scope subdomains from collected URLs ----
         # Archived/crawled URLs often reference hosts passive enum missed.
         subs = url_merge_mod.derive_subdomains_from_urls(output_dir, domain)
@@ -509,12 +590,77 @@ def main() -> int:
                 f"→ processed/url_derived_subdomains.txt"
             ))
 
+        # ---- 6.post.c: GraphQL introspection probe ----
+        # One POST per candidate — confirms introspection instead of just
+        # noting a /graphql URL exists. On by default (read-only, cheap).
+        gql = _run_stage(
+            "graphql_probe", graphql_probe_mod.discover,
+            alive_file, output_dir, cfg,
+            resume=args.resume, dry_run=args.dry_run,
+            skip=args.skip_graphql_probe,
+        )
+        results.append(gql)
+
+        # ---- 6.post.d: CORS misconfiguration probe ----
+        # One GET per alive host with a spoofed Origin. On by default.
+        cors = _run_stage(
+            "cors_probe", cors_probe_mod.discover,
+            alive_file, output_dir, cfg,
+            resume=args.resume, dry_run=args.dry_run,
+            skip=args.skip_cors_probe,
+        )
+        results.append(cors)
+
+        # ---- 6.post.d.2: server/microservice misconfig probe (deep-tier only) ----
+        # Actuator sub-paths, Jenkins script console, GitLab/k8s API, phpMyAdmin,
+        # ... — computes its own fuzz_depth tier, so it's independent of
+        # whether dirsearch/ffuf ran or were skipped.
+        misc = _run_stage(
+            "misconfig_probe", misconfig_probe_mod.discover,
+            alive_file, output_dir, cfg,
+            domain=domain,
+            resume=args.resume, dry_run=args.dry_run,
+            skip=args.skip_misconfig_probe,
+        )
+        results.append(misc)
+        # misconfig_probe runs after url_merge_append (6.post) already
+        # merged apidocs_urls.txt, so its own URLs need a dedicated append
+        # into all_urls.txt here rather than waiting for the next full merge.
+        misc_urls_path = layout.path(output_dir, "misconfig_urls.txt")
+        if misc_urls_path.exists() and misc_urls_path.stat().st_size > 0:
+            misc_merge = url_merge_mod.append_urls(
+                output_dir, [misc_urls_path], domain, cfg)
+            results.append(misc_merge)
+            if misc_merge["count"]:
+                print(console.phase_info_line(
+                    f"misconfig_probe: +{misc_merge['count']} URL(s) → all_urls.txt"))
+
+        # ---- 6.post.e: cloud storage bucket enumeration (opt-in) ----
+        buck = _run_stage(
+            "buckets", buckets_mod.discover,
+            output_dir, domain, cfg,
+            resume=args.resume, dry_run=args.dry_run,
+            skip=args.skip_buckets,
+        )
+        results.append(buck)
+
+        # ---- 6.post.f: .git exposure source dump (opt-in) ----
+        # Only walks confirmed exposures — a no-op unless something in
+        # this run already answered .git/HEAD.
+        gitd = _run_stage(
+            "gitdump", gitdump_mod.discover,
+            alive_file, output_dir, cfg,
+            resume=args.resume, dry_run=args.dry_run,
+            skip=args.skip_gitdump,
+        )
+        results.append(gitd)
+
         # Telegram summary after stage 6
         _send_summary("stage-6", domain, results, cfg, output_dir)
 
         # ---- 7. arjun on dynamic URLs ----
         prog.start_phase("arjun", num=8)
-        dyn_urls_file = output_dir / "processed" / "dynamic_urls.txt"
+        dyn_urls_file = layout.path(output_dir, "dynamic_urls.txt")
         r = _run_stage(
             "arjun", arjun_mod.discover,
             dyn_urls_file, output_dir, cfg,
@@ -556,7 +702,7 @@ def main() -> int:
         # so they go straight in rather than waiting for arjun to rediscover
         # them.
         api_params = url_merge_mod.append_param_urls(
-            output_dir, output_dir / "processed" / "apidocs_params.txt")
+            output_dir, layout.path(output_dir, "apidocs_params.txt"))
         results.append(api_params)
         if api_params["count"]:
             print(console.phase_info_line(
@@ -593,6 +739,9 @@ def main() -> int:
         except Exception:  # noqa: BLE001
             cfg_text = ""
 
+        xlsx_enabled = args.xlsx_report or bool(
+            (cfg.get("report") or {}).get("xlsx", False)
+        )
         report_info = report_mod.build_report(
             output_dir, domain, cfg,
             cfg_path=str(cfg_path),
@@ -602,11 +751,15 @@ def main() -> int:
             tool_versions=tool_versions,
             stage_results=results,
             scan_mode="active",
+            xlsx=xlsx_enabled,
         )
+        report_outputs = [report_info["html"], report_info["md"], report_info["json"]]
+        if report_info.get("xlsx"):
+            report_outputs.append(report_info["xlsx"])
         report_result = make_result(
             "report", "success", input_path=output_dir,
-            outputs=[report_info["html"], report_info["md"], report_info["json"]],
-            count=3, extra=report_info,
+            outputs=report_outputs,
+            count=len(report_outputs), extra=report_info,
         )
         results.append(report_result)
         prog.finish_phase(report_result, num=11)
@@ -631,8 +784,32 @@ def main() -> int:
         # opening outputs/<domain>/ makes it obvious what to read first. The
         # processed/ tree is mostly derived slices of all_urls.txt; INDEX
         # spells that out. Deep overlap on demand: python3 -m modules.audit.
+        # MANIFEST first: it records, per artefact, WHY it looks the way it
+        # does — above all whether a 0-line file means "we looked and there
+        # is none" or "we never looked". Only knowable here, with every
+        # stage result in hand. build_index reads it back for its ⚪ section.
+        manifest = audit_mod.build_manifest(output_dir, results)
+        results.append(manifest)
+        _states = (manifest.get("extra") or {}).get("states") or {}
+        _nodata = sum(_states.get(k, 0)
+                      for k in ("skipped", "failed", "truncated", "blocked"))
+        if _nodata:
+            print(console.phase_info_line(
+                f"{_nodata} artefact(s) are empty because the stage did not "
+                f"run to completion or was refused — NOT a finding of 'none'. "
+                f"See processed/MANIFEST.json"
+            ))
+
         index = audit_mod.build_index(output_dir, domain)
         results.append(index)
+
+        # ---- 10.post.e: ASM report → report/asm_report.html ----
+        # final_report.html says what the scan found; this says what to test
+        # first and how far the run can be trusted. Runs last so it can read
+        # the complete stage list (including priority/diff/graph above) and
+        # score confidence off the real outcome of every stage.
+        asm = asm_report_mod.build_asm_report(output_dir)
+        results.append(asm)
 
     # Final Telegram message includes the HTML report path
     _send_summary("final", domain, results, cfg, output_dir, report_info=report_info)
@@ -640,12 +817,27 @@ def main() -> int:
     # persist full stage log
     log_path = output_dir / "logs" / "stages.json"
     log_path.write_text(json.dumps(results, indent=2, ensure_ascii=False), encoding="utf-8")
+
+    # ---- 10.post.e: cross-target dashboard → outputs/dashboard.html ----
+    # Reads every outputs/<target>/logs/stages.json, including the one just
+    # written above — must run AFTER that write so this run's own health/
+    # delta numbers aren't read stale from a previous run's stages.json.
+    dash = dashboard_mod.build_dashboard(Path(cfg.get("output_root", "outputs")))
+
     print()
     print(console.phase_header("report"))
     print(console.kv("stage log   ", str(log_path), value_color="bright_cyan"))
+    print(console.kv("ASM report  ", str(output_dir / "report" / "asm_report.html"),
+                     value_color="bright_cyan"))
     print(console.kv("HTML report ", str(report_info["html"]), value_color="bright_cyan"))
     print(console.kv("Markdown    ", str(report_info["md"]), value_color="bright_cyan"))
     print(console.kv("JSON summary", str(report_info["json"]), value_color="bright_cyan"))
+    if report_info.get("xlsx"):
+        print(console.kv("Excel report", str(report_info["xlsx"]), value_color="bright_cyan"))
+    elif report_info.get("xlsx_skipped_reason"):
+        print(console.phase_warn_line(
+            f"Excel report skipped — {report_info['xlsx_skipped_reason']}"
+        ))
     print(console.kv("priority    ", str(output_dir / "report" / "priority_targets.txt"),
                      value_color="bright_cyan"))
     print(console.kv("delta       ", str(output_dir / "report" / "delta.md"),
@@ -654,6 +846,8 @@ def main() -> int:
                      value_color="bright_cyan"))
     print(console.kv("index       ", str(output_dir / "INDEX.md"),
                      value_color="bright_cyan"))
+    if dash.get("outputs"):
+        print(console.kv("dashboard   ", dash["outputs"][0], value_color="bright_cyan"))
     print(console.kv("output dir  ", str(output_dir), value_color="bright_cyan"))
 
     # One-line "what changed since last scan" summary.
@@ -886,6 +1080,11 @@ def _print_plan(domain: str, output_dir: Path, cfg: dict, args: argparse.Namespa
         ("skip-waymore  ", args.skip_waymore),
         ("skip-arjun    ", args.skip_arjun),
         ("skip-apidocs  ", args.skip_apidocs),
+        ("skip-misconfig-probe", args.skip_misconfig_probe),
+        ("skip-graphql-probe", args.skip_graphql_probe),
+        ("skip-cors-probe", args.skip_cors_probe),
+        ("skip-buckets  ", args.skip_buckets),
+        ("skip-gitdump  ", args.skip_gitdump),
         ("color enabled ", console.is_enabled()),
     ]:
         print(console.kv(k, v))
@@ -899,6 +1098,7 @@ def _print_plan(domain: str, output_dir: Path, cfg: dict, args: argparse.Namespa
         "  4  PARALLEL: katana/urlfinder + dirsearch + ffuf + waymore",
         "  5  url_merge (crawler + dirsearch + ffuf + waymore -> all_urls / js_urls / dynamic_urls)",
         "  6  PARALLEL: httpx url check + xnLinkFinder + jsluice + api-docs -> re-merge",
+        "     + graphql-probe + cors-probe + buckets (opt-in) + gitdump (opt-in)",
         "  7  arjun on dynamic_urls (+ seed already-param + jsluice params)",
         "  8  nuclei default on alive hosts (last scan, full rate to itself)",
         "  9  final telegram summary + report + priority + delta",
@@ -943,14 +1143,14 @@ def _build_final_summary(domain: str, output_dir: Path) -> dict:
         outputs=[output_dir],
         count=0,
         extra={
-            "total_subdomains": len(read_lines(output_dir / "processed" / "subdomains.txt")),
-            "total_resolved": len(read_lines(output_dir / "processed" / "resolved.txt")),
-            "total_alive_hosts": len(read_lines(output_dir / "processed" / "alive.txt")),
-            "total_collected_urls": len(read_lines(output_dir / "processed" / "all_urls.txt")),
-            "total_js_urls": len(read_lines(output_dir / "processed" / "js_urls.txt")),
-            "total_dynamic_urls": len(read_lines(output_dir / "processed" / "dynamic_urls.txt")),
+            "total_subdomains": len(read_lines(layout.path(output_dir, "subdomains.txt"))),
+            "total_resolved": len(read_lines(layout.path(output_dir, "resolved.txt"))),
+            "total_alive_hosts": len(read_lines(layout.path(output_dir, "alive.txt"))),
+            "total_collected_urls": len(read_lines(layout.path(output_dir, "all_urls.txt"))),
+            "total_js_urls": len(read_lines(layout.path(output_dir, "js_urls.txt"))),
+            "total_dynamic_urls": len(read_lines(layout.path(output_dir, "dynamic_urls.txt"))),
             "total_parameters_discovered": len(
-                read_lines(output_dir / "processed" / "parameterized_urls.txt")
+                read_lines(layout.path(output_dir, "parameterized_urls.txt"))
             ),
             "nuclei_default_findings_by_severity":
                 findings_default.get("severity_count", {}),

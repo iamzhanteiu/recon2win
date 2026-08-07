@@ -151,6 +151,29 @@ httpx:
   # genuine URLs out of the window. ``.js`` is NEVER dropped (jsluice /
   # xnLinkFinder mine it). Set false to probe every asset too.
   drop_static: true
+  # ------------------------------------------------------------------
+  # Screenshots — off by default: needs Chrome/Chromium installed and is
+  # far slower per-host than a plain probe (a real browser render vs one
+  # HTTP request). asm_report.py's own Coverage Gaps section already
+  # names this as missing with the exact fix: httpx already ships
+  # ``-screenshot``, no extra dependency (gowitness/aquatone) needed.
+  #
+  # Visual triage beats a status-code table: a 200 on /admin could be a
+  # real login form or a landing page answering every path — the only
+  # way to tell at a glance across hundreds of hosts is a screenshot.
+  #
+  # max_hosts caps the run (screenshotting a 5,000-host target would
+  # dwarf every other stage in wall time) — raise it only for small,
+  # curated targets. system_chrome uses the machine's installed browser
+  # instead of letting httpx download its own chromium (safer on an
+  # air-gapped/restricted VPS; requires chrome/chromium on $PATH).
+  screenshot:
+    enabled: false
+    max_hosts: 200
+    threads: 10
+    timeout: 1800
+    screenshot_timeout: 10
+    system_chrome: true
 
 # ---------- Content discovery ----------
 content_discovery:
@@ -218,10 +241,17 @@ dirsearch:
   #     ở max_rate=30 (giới hạn TOÀN CỤC) = 22,998s = 6.4 giờ  → thiếu ~4×
   # Với max_rate=200 dưới đây: 689,950 ÷ 200 × 1.3 ≈ 4,485s, vừa trần 6000s.
   #
+  # 2026-07-30: thêm raft-medium-directories.txt → wordlist lên 33.827 từ.
+  #     50 target × 33.827 từ ÷ 200 req/s × 1.3 ≈ 10.994s (~3,05 giờ)
+  # timeout nâng lên 12.000 để đủ chỗ cho cả 50 host thay vì để chunk cuối
+  # bị cắt (chunk_size=10 → mỗi chunk ~2.199s, 5 chunk ~10.994s tổng).
+  # Muốn giữ timeout thấp hơn thay vì kéo dài run: hạ max_hosts (~27 host thì
+  # vừa đúng 6000s cũ) hoặc bỏ bớt 1-2 wordlist nhỏ ít giá trị hơn.
+  #
   # timeout_per_host chỉ còn là đường lui khi max_rate=0 (không ghì tốc độ),
   # lúc đó không suy ra được rps nên quay lại cách tính cũ theo host.
   timeout_per_host: 120
-  timeout: 6000
+  timeout: 12000
   # ------------------------------------------------------------------
   # chunk_size — SỐ HOST MỖI LẦN GỌI dirsearch.
   #
@@ -303,6 +333,28 @@ dirsearch:
   include_status: [200, 401, 403, 500]
   exclude_status: [404, 429]  # hide 404 noise + rate-limit responses
   # ------------------------------------------------------------------
+  # Lọc theo HÀNH VI, chạy sau khi tool đã xong (modules/behavior.py).
+  # Gom hit theo hình dạng response — status + content-type + redirect đi
+  # đâu + words/lines — rồi bỏ cụm nào vừa LỚN vừa ÁP ĐẢO trên host đó.
+  #
+  # Vì sao cần dù ffuf đã có -ac: -ac lọc theo ĐỘ DÀI BYTE, mà trang chặn
+  # của Akamai echo lại path được yêu cầu nên độ dài đổi theo từng request.
+  # Đo trên discover.com: 4.082 hit của mapi.discover.com có 50 giá trị
+  # length khác nhau nhưng words = 13 cho cả 4.082 cái. -ac bó tay, gom
+  # theo words bắt trọn trong một nhát.
+  #
+  #   min_cluster  — cụm phải lớn tuyệt đối mới bị bỏ (tránh giết host nhỏ)
+  #   min_share    — VÀ phải chiếm tỉ lệ này trong tổng hit của host. Cụm to
+  #                  trên host có nhiều hit đa dạng là template lặp lại
+  #                  (trang lỗi, phân trang) — giữ lại.
+  #   length_tolerance — dung sai byte khi tool không báo words/lines.
+  # ------------------------------------------------------------------
+  screen:
+    enabled: true
+    min_cluster: 25
+    min_share: 0.5
+    length_tolerance: 16
+  # ------------------------------------------------------------------
   # Wordlists (SecLists) — dirsearch will receive one `-w` per file.
   # Paths may point to a single .txt file OR to a directory (directories
   # are recursively expanded to every .txt inside, sorted).
@@ -323,9 +375,45 @@ dirsearch:
   # toàn .git/config, .env, backup pattern, actuator — tỉ lệ finding/request
   # cao nhất. Service-Specific/ (~50 file) đã bỏ: nạp wordlist Spring cho host
   # PHP là request phí; xem ghi chú tech-aware trong README.
+  # BỘ NÀY ĐƯỢC CHỌN THEO NGÂN SÁCH, không theo "càng nhiều càng tốt".
+  # Thông lượng THẬT đo trên run 2026-07-28: 24 host × 13.799 từ / 6000s =
+  # ~55 req/s (config khai max_rate=200 — chênh 3,6 lần, đó là lý do stage
+  # này timeout ở MỌI lần chạy). Với 49 target và trần 6000s, ngân sách thật
+  # là ~5.200 từ/target. Bộ cũ (quickhits + raft-small-files = 13.799) vượt
+  # 2,7 lần, nên luôn chết giữa chừng và bỏ sót ~50% host.
+  #
+  # raft-small-files.txt (11.424) bị BỎ: nó chiếm 83% ngân sách để đổi lấy
+  # phần đuôi dài giá trị thấp. Thay bằng các list nhỏ, đặc, chọn theo đúng
+  # bề mặt của target này — discover.com có hàng chục host ``apis.*`` và
+  # Drupal trên nhóm developer (hit thật gồm /core, /sites, /modules,
+  # /profiles, /themes, /index.php).
+  #
+  # raft-medium-directories.txt (29.999 dòng) thêm vào 2026-07-30: dirsearch
+  # không recurse vào thư mục match được (khác ffuf — xem cảnh báo ở khối
+  # ffuf.wordlists bên dưới), nên chịu được list to mà không nhân số request
+  # theo số thư mục tìm thấy.
+  #
+  # 2026-08-02: thêm 3 file FILE-oriented, nhỏ, không trùng list đã có (đã
+  # diff để chắc versioning_metafiles.txt không đụng UnixDotfiles.fuzz.txt):
+  #   versioning_metafiles.txt              — lộ CVS/.svn/.git metadata
+  #   CMS/cms-configuration-files.txt       — wp-config.php/settings.php/env.php
+  #   vulnerability-scan_j2ee-...WEB-INF.txt — lộ WEB-INF/META-INF (Java EE)
+  # +277 từ sau dedup (không đáng kể — không cần chỉnh timeout/max_rate).
+  # Tổng sau dedup (13 file): 34.106 từ.
   wordlists:
-    - wordlists/SecLists/Discovery/Web-Content/quickhits.txt
-    - wordlists/SecLists/Discovery/Web-Content/raft-small-files.txt
+    - wordlists/SecLists/Discovery/Web-Content/quickhits.txt                     # 2570 — tỉ lệ finding/request cao nhất SecLists
+    - wordlists/SecLists/Discovery/Web-Content/Common-DB-Backups.txt             #  336 — .sql/.bak dump
+    - wordlists/SecLists/Discovery/Web-Content/UnixDotfiles.fuzz.txt             #   39 — .env/.git/.ssh
+    - wordlists/SecLists/Discovery/Web-Content/Logins.fuzz.txt                   #   89 — endpoint đăng nhập
+    - wordlists/SecLists/Discovery/Web-Content/api/api-endpoints.txt             #  295 — target nhiều host apis.*
+    - wordlists/SecLists/Discovery/Web-Content/api/actions.txt                   #  224
+    - wordlists/SecLists/Discovery/Web-Content/common-api-endpoints-mazen160.txt #  174
+    - wordlists/SecLists/Discovery/Web-Content/graphql.txt                       #  106
+    - wordlists/SecLists/Discovery/Web-Content/oauth-oidc-scopes.txt             #  592 — đã có hit /.well-known/openid-configuration
+    - wordlists/SecLists/Discovery/Web-Content/raft-medium-directories.txt       # 29999 — directory discovery tổng quát, chủ động chọn to hơn
+    - wordlists/SecLists/Discovery/Web-Content/versioning_metafiles.txt          #  118 — CVS/.svn/.git metadata exposure
+    - wordlists/SecLists/Discovery/Web-Content/CMS/cms-configuration-files.txt   #   16 — config file đa CMS (wp-config.php, settings.php, ...)
+    - wordlists/SecLists/Discovery/Web-Content/vulnerability-scan_j2ee-websites_WEB-INF.txt # 175 — WEB-INF/META-INF exposure (Java EE)
   # If true AND wordlists are present, dirsearch also tries each word
   # with each extension (extremely noisy — leave false unless you know
   # what you are doing).
@@ -391,12 +479,40 @@ ffuf:
   # -mc / -fc. Matchers run first, filters trim what survived.
   #   200 exists · 301/302 needed for recursion · 401/403 exists but
   #   gated · 405 wrong method (endpoint is real) · 500 often a sink
-  match_status: [200, 204, 301, 302, 307, 401, 403, 405, 500]
+  #   400 endpoint is real but the request is malformed for it (missing
+  #   required param/body, wrong content-type) — a route that doesn't
+  #   exist normally falls through to 404, not 400. A host that answers
+  #   400 to EVERY word (WAF/catch-all) is not filtered out here — it's
+  #   caught downstream by the `screen` behavior pass below, same as any
+  #   other blanket status.
+  match_status: [200, 204, 301, 302, 307, 400, 401, 403, 405, 500]
   filter_status: [404, 429]
   # -fr: lọc theo NỘI DUNG body thay vì kích thước. Cần cho target trả JSON
   # soft-404 kiểu {"error":"not found","path":"/<đã-thử>"} — body echo path
   # nên độ dài đổi mỗi request, -ac (lọc theo size) bó tay. Ví dụ: '"error"'
   filter_regex: ""
+  # ------------------------------------------------------------------
+  # Lọc theo HÀNH VI, chạy sau khi tool đã xong (modules/behavior.py).
+  # Gom hit theo hình dạng response — status + content-type + redirect đi
+  # đâu + words/lines — rồi bỏ cụm nào vừa LỚN vừa ÁP ĐẢO trên host đó.
+  #
+  # Vì sao cần dù ffuf đã có -ac: -ac lọc theo ĐỘ DÀI BYTE, mà trang chặn
+  # của Akamai echo lại path được yêu cầu nên độ dài đổi theo từng request.
+  # Đo trên discover.com: 4.082 hit của mapi.discover.com có 50 giá trị
+  # length khác nhau nhưng words = 13 cho cả 4.082 cái. -ac bó tay, gom
+  # theo words bắt trọn trong một nhát.
+  #
+  #   min_cluster  — cụm phải lớn tuyệt đối mới bị bỏ (tránh giết host nhỏ)
+  #   min_share    — VÀ phải chiếm tỉ lệ này trong tổng hit của host. Cụm to
+  #                  trên host có nhiều hit đa dạng là template lặp lại
+  #                  (trang lỗi, phân trang) — giữ lại.
+  #   length_tolerance — dung sai byte khi tool không báo words/lines.
+  # ------------------------------------------------------------------
+  screen:
+    enabled: true
+    min_cluster: 25
+    min_share: 0.5
+    length_tolerance: 16
   # Same resolution rules as dirsearch.wordlists: file or directory,
   # `~` expanded, missing paths skipped with a warning, several files
   # merged into one deduped list under raw/ffuf/merged_wordlists.txt.
@@ -405,11 +521,70 @@ ffuf:
   # theo số thư mục tìm thấy. common.txt (~4.6k) chịu được phép nhân đó;
   # raft-small-directories (~20k) thì không: 20k × 50 host × số dir = hàng
   # chục triệu request.
+  #
+  # 2026-07-30: thêm raft-medium-directories.txt theo yêu cầu — dedup với
+  # common.txt còn 31.283 từ. KHÔNG đổi vai trò cảnh báo ở trên, chỉ là
+  # `timeout`/`budget_seconds`/`rate` bên dưới đã ghì trần cứng nên sẽ không
+  # chạy tràn: một pass depth-0 ĐẦY ĐỦ cho một host đã tốn 31.283 ÷ 30 req/s
+  # ≈ 1.043s — hơn nửa `timeout: 1800`/host — nên recursion_depth: 2 gần như
+  # chắc chắn không chạy hết tới tầng 2 trên host có nhiều thư mục, và
+  # `budget_seconds: 3600` × `rate: 30` × `concurrency: 3` = 324.000 request
+  # cho CẢ stage chỉ đủ ~10 pass depth-0 trọn vẹn — phần lớn trong 50
+  # `max_hosts` sẽ không tới lượt. Muốn phủ rộng hơn thay vì sâu hơn: hạ
+  # `recursion_depth` xuống 1, hoặc nâng `budget_seconds`/`rate`/`concurrency`,
+  # hoặc hạ `max_hosts`.
+  #
+  # 2026-08-02: thêm 3 file DIRECTORY-oriented, mỗi file <50 dòng nên vẫn an
+  # toàn dù bị nhân theo recursion — reverse-proxy-inconsistencies.txt (bypass
+  # ACL qua reverse-proxy: ``..;/manager/html/``), ntlm-directories.txt
+  # (``autodiscover/``, ``adfs/ls/wia`` — phổ biến ở org dùng Exchange/AD),
+  # mcp-server.txt (``sse``, ``mcp/transport``). Tổng sau dedup: 31.350 từ
+  # (+67, không đáng kể so với 31.283 trước đó).
   wordlists:
     - wordlists/SecLists/Discovery/Web-Content/common.txt
+    - wordlists/SecLists/Discovery/Web-Content/raft-medium-directories.txt
+    - wordlists/SecLists/Discovery/Web-Content/reverse-proxy-inconsistencies.txt
+    - wordlists/SecLists/Discovery/Web-Content/ntlm-directories.txt
+    - wordlists/SecLists/Discovery/Web-Content/mcp-server.txt
   # -e, appended to every word (".php,.bak"). Dotted or bare both work.
   # Multiplies the request count by len(extensions) + 1 — keep it short.
   extensions: []
+
+# ---------- Baseline probe ----------
+# Chạy TRƯỚC dirsearch/ffuf/content_discovery: bắn vài path chắc chắn không
+# tồn tại vào mỗi host rồi nhìn cái gì trả về. Rẻ (số_host × probes request)
+# và trả lời hai câu mà pipeline trước đây đoán mò:
+#
+#   1. "Host này có fuzz được không?" — nếu mọi path không tồn tại đều trả
+#      về cùng một response VÀ response đó nằm trong match_status/include_status
+#      thì fuzz nó chỉ sinh ra nguyên wordlist. Đo trên discover.com: 11 host
+#      như vậy, ffuf đốt trọn 3.600s để sinh 44.230 bản sao trang chặn Akamai.
+#   2. "Hai host này có phải cùng một app không?" — dedup cũ so TRANG CHỦ, mà
+#      trang chủ khác nhau không có nghĩa là app khác nhau. Đúng 11 host trên
+#      có trang chủ riêng nên không bao giờ bị gom.
+#
+# Hỏng thì fail-open: không đo được thì không bỏ host nào, và bộ lọc hậu kiểm
+# trong modules/behavior.py vẫn đỡ. Tắt bằng enabled:false.
+baseline:
+  enabled: true
+  # Client nào ĐI PROBE. Phải là client sẽ đi fuzz, nếu không ta đo một
+  # target khác: trên discover.com httpx nhận 404 sạch từ webapp.src (host
+  # lành, fuzz được) trong khi ffuf bị Akamai Bot Manager trả 403 cho mọi
+  # path — probe bằng httpx cho qua một host mà ffuf không học được gì.
+  #   auto  → ffuf cho stage ffuf, httpx cho phần còn lại
+  client: auto
+  rate: 0                 # -rate khi probe bang ffuf (0 = khong ghi)
+  probes: 3               # số path không tồn tại thử mỗi host
+  threads: 40
+  # Ngân sách cho cả vòng probe. 180 là QUÁ CHẶT khi stage 4 chạy song song:
+  # đo riêng lẻ chỉ mất 20s, nhưng trong run thật probe của dirsearch chết ở
+  # 180s vì probe + scan của ffuf đang đập vào cùng 154 host cùng lúc. Probe
+  # chết = không host nào bị bỏ, và trước đây nó hỏng hoàn toàn im lặng.
+  timeout: 600
+  # Dung sai gom nhóm theo byte khi tool CHỈ báo kích thước (dirsearch).
+  # Trang chặn echo lại path nên độ dài lệch vài byte mỗi request — 16 đủ
+  # nuốt chênh lệch đó. Không dùng khi có words/lines (ffuf, httpx).
+  length_tolerance: 16
 
 # ---------- Response preview ----------
 # ffuf/dirsearch only report status + URL. To triage a hit (is a 200 a real
@@ -429,7 +604,14 @@ responses:
   threads: 40
   timeout: 900           # overall stage budget (seconds)
   request_timeout: 10    # per-request httpx timeout
-  snippet_bytes: 50      # chars of the response body to keep as preview
+  # chars of the response body to keep as preview. 250, not 50: this
+  # snippet is now also what modules/existence.py pattern-matches for
+  # existence signals ("Missing required parameter", "user not found", a
+  # Spring Boot/Django error shape, ...) — those phrases routinely sit past
+  # byte 50 in a JSON error body (message text after "timestamp"/"status"/
+  # "error" keys). Same number of requests, same -bp truncation mechanism,
+  # just a wider slice of what httpx already fetched.
+  snippet_bytes: 250
 
 # ---------- Waymore ----------
 waymore:
@@ -463,12 +645,61 @@ jsluice:
     - secrets
   # Per-file HTTP timeout when downloading each JS bundle (seconds).
   fetch_timeout: 10
-  # Cap how many JS files to fetch+parse. A crawl-heavy target can yield
-  # thousands of .js URLs; the top N (discovery order) keeps the stage
-  # bounded. 0 = no cap.
+  # Cap how many JS files from js_urls.txt to fetch+parse in the FIRST
+  # pass. A crawl-heavy target can yield thousands of .js URLs; the top N
+  # (discovery order) keeps the stage bounded. 0 = no cap.
+  # Recursion rounds have their own budget (max_js_recurse) — they used to
+  # share this one, which silently disabled recursion on every target with
+  # more than max_js JS URLs.
   max_js: 500
-  # Overall stage budget (fetch + both jsluice passes).
+  # Any URL jsluice extracts that itself looks like a JS file (webpack
+  # chunk, lazy-loaded bundle) is fetched and re-analysed for more
+  # endpoints/params/secrets — SPAs commonly only reference chunk names
+  # dynamically, so the entrypoint JS alone misses most of the surface.
+  # How deep to follow the chain:
+  #   -1  keep going until no unseen JS URL is left (default — a webpack
+  #       graph is however deep it is; guessing a number stops early)
+  #    0  disable recursion (only the URLs in js_urls.txt are analysed)
+  #    N  stop after N rounds
+  # The walk always stops on its own once nothing new turns up; the budget
+  # below is the safety bound, not the stop condition.
+  js_recurse_depth: -1
+  # Total JS files the recursion rounds may fetch, on top of max_js.
+  # 0 = unbounded, i.e. let the walk actually converge. When a budget does
+  # cut it short the stage reports js_recurse_exhausted: false, so a
+  # truncated walk is never mistaken for "no more JS found".
+  max_js_recurse: 0
+  # Wall-clock budget (seconds) for all recursion rounds combined. The
+  # stage `timeout` above only bounds each individual jsluice subprocess,
+  # so this is what keeps an unbounded walk from running for hours.
+  # 0 = no time limit.
+  recurse_time_budget: 900
+  # Overall stage budget (fetch + both jsluice passes, all rounds).
   timeout: 1200
+  # ---- jsluice_verify (stage 6.post.a2) ----
+  # httpx_urls (stage 6) probes all_urls.txt BEFORE jsluice runs, so every
+  # URL jsluice mines out of JS is merged in unprobed. This re-probes them
+  # (GET) so the report/priority ranking see a real status/length/type
+  # instead of a bare string.
+  verify:
+    threads: 50             # falls back to httpx.threads if unset
+    timeout: 600             # falls back to httpx.timeout if unset
+    max_urls: 20000          # cap on how many JS-mined URLs get (re)probed
+    body_preview_bytes: 200  # httpx -bp: first N chars of the body, kept
+                             # in jsluice_alive_detail.json for triage
+  # ---- jsluice_method_check (stage 6.post.a3) ----
+  # jsluice_params.json already records the HTTP method the JS source used
+  # per endpoint (fetch/axios call, parsed via AST) — a POST-only login
+  # route or a DELETE-only admin route answers 404/405 to the GET the
+  # verify stage above sent, and reads as dead when it is live. This
+  # re-requests each endpoint with ITS recorded method and captures
+  # status/length/content-type + a body preview, so a method that reveals
+  # more than GET did is visible instead of silently missed.
+  method_check:
+    threads: 50              # falls back to httpx.threads if unset
+    timeout: 300              # split across the distinct methods tested
+    max_urls: 300             # cap on how many method-tagged endpoints get re-tested
+    body_preview_bytes: 200   # httpx -bp: first N chars of the body
 
 # ---------- Arjun ----------
 arjun:
@@ -619,9 +850,42 @@ nuclei:
     - ssh
     - tcp
     - udp
+    # tls — cấu hình TLS/cipher là phát hiện hạ tầng, không phải lỗ hổng
+    # ứng dụng. Trên discover.com nó cho weak-cipher-suites ×10 và không
+    # dẫn tới bất cứ thứ gì test tay được.
+    - tls
+  # ------------------------------------------------------------------
+  # exclude_ids — passed to nuclei as ``-exclude-id``. Trục lọc KHÁC với
+  # exclude_tags: theo ID template cụ thể, không theo tag.
+  #
+  # Vì sao phải liệt kê từng cái thay vì bỏ nguyên một tag: các template
+  # dưới đây mang tag chung với những thứ có giá trị thật (`misconfig`,
+  # `headers`), nên bỏ theo tag sẽ cuốn theo cả finding thật.
+  #
+  # Đo trên run discover.com 2026-07-28: 343 finding, trong đó 329 là
+  # `info` và 6 template ID dưới đây chiếm 296 cái:
+  #     http-missing-security-headers   123
+  #     missing-cookie-samesite-strict   69
+  #     cookies-without-httponly         57
+  #     xss-deprecated-header            19
+  #     weak-csp-detect                  16
+  #     missing-sri                      12
+  #
+  # Đây đều là hygiene header: đúng về mặt kỹ thuật, nhưng không phải chỗ
+  # để soi tay và làm chìm phần đáng đọc của báo cáo. Bỏ dòng nào ra khỏi
+  # danh sách này thì template đó chạy lại ngay.
+  # ------------------------------------------------------------------
+  exclude_ids:
+    - http-missing-security-headers
+    - weak-hsts-detect
+    - missing-cookie-samesite-strict
+    - missing-sri
+    - cookies-without-httponly
+    - weak-csp-detect
+    - xss-deprecated-header
   default:
     enabled: true
-    # 2026-07-28: BẬT ĐỦ CẢ 5 SEVERITY theo yêu cầu.
+    # 2026-07-28: BẬT ĐỦ MỌI SEVERITY nuclei có — 5 mức chuẩn + `unknown`.
     #
     # Ghi chú cũ ở đây nói "info là phần lớn bộ ~9k template, bật vào là
     # scan chết ở timeout". Điều đó ĐÚNG khi chưa có ``tags`` bên dưới, và
@@ -645,12 +909,19 @@ nuclei:
     # KHI ĐỔI ``tags`` thì phải đo lại: bỏ tag filter đi mà vẫn để đủ 5
     # severity là vọt lên trên 12.419 template, tức đúng cái kịch bản làm
     # scan chết mà ghi chú cũ mô tả.
+    #
+    # ``unknown`` LÀ MỨC THỨ SÁU, không phải giá trị rác: nuclei gán nó cho
+    # template không khai báo severity, và `-severity` không nhận thì chúng
+    # bị loại hoàn toàn khỏi scan. Đo 2026-07-28 với đúng bộ tags + etags
+    # dưới đây: 7.765 → 7.804 template, tức +39 (+0,5%) — gần như miễn phí,
+    # nên "đủ mọi severity" ở đây là đủ 6, không phải 5.
     severity:
       - critical
       - high
       - medium
       - low
       - info
+      - unknown
     # Template tag filter. severity=critical,high,medium STILL leaves
     # ~7400 templates (measured: `nuclei -tl -severity critical,high,medium`
     # → 7401), and 562 alive hosts × 7401 templates at rate_limit=100 is
@@ -826,6 +1097,138 @@ apidocs:
   # ALPHABET chứ không theo độ liên quan — "stripe" ra 4.457 kết quả mà
   # trang đầu không có cái nào tên Stripe, và sort=BEST_MATCH cũng vậy.
   # Không có cách nào triage được, nên thêm vào chỉ tổ sinh rác.
+
+# ---------- Adaptive fuzz depth (fuzz_depth) ----------
+# Không phải mọi subdomain đáng đào sâu như nhau. fuzz_targets đã quyết định
+# CÓ fuzz host này không (dedup wildcard, WAF/blanket-deny, cap theo
+# score_subdomain) — module này quyết định KHÔNG PHẢI mọi host sống sót qua
+# bộ lọc đó đáng nhận cùng độ sâu. Dùng 2 tín hiệu sẵn có: score_subdomain
+# theo hostname, và tech/webserver/title từ httpx -td (bật ở stage
+# httpx_alive) — rồi xếp mỗi host vào 1 trong 3 tier: deep/standard/light.
+# dirsearch/ffuf cấp thêm wordlist cho tier "deep"; misconfig_probe CHỈ chạy
+# trên tier đó. Tier "light" không bị loại khỏi fuzzing, chỉ không được cấp
+# phần mở rộng tốn kém.
+fuzz_depth:
+  enabled: true
+  # Trần cho tier "deep" — vượt trần thì host điểm score_subdomain thấp hơn
+  # bị HẠ về "standard" (không bao giờ bị loại hẳn khỏi fuzzing).
+  deep_max_hosts: 15
+  deep_score_threshold: 1000
+  light_score_threshold: -500
+  # Wordlist CHỈ merge thêm cho host tier "deep", cộng thêm vào
+  # dirsearch.wordlists / ffuf.wordlists của từng stage. Cố định — luôn áp
+  # dụng cho MỌI host tier "deep" bất kể tech thật của host đó là gì.
+  deep_wordlists: []
+  # ------------------------------------------------------------------
+  # Tech-aware wordlist — PHÁT HIỆN tech (đã có sẵn: ``tech``/``webserver``/
+  # ``title`` từ httpx ``-td``, dùng để xếp tier "deep" ở trên) rồi FUZZ
+  # ĐÚNG wordlist của tech đó, thay vì nạp cả ``Service-Specific/`` (~50
+  # file) blanket cho mọi host — đây chính là mục "Còn lại: tech-aware
+  # wordlist" từng ghi trong README, giờ đã làm.
+  #
+  # Cơ chế (``modules/fuzz_depth.py::TECH_WORDLIST_MAP``): với MỖI host
+  # trong tier "deep" (sau demote — host bị hạ về "standard" thì không còn
+  # được tính), khớp keyword tech (jenkins/gitlab/grafana/prometheus/
+  # kubernetes/docker/elastic/kibana/confluence/consul/tomcat/spring/
+  # wordpress — subset của keyword đã dùng để xếp tier "deep") rồi cộng
+  # ĐÚNG file wordlist tương ứng vào (merge cùng ``deep_wordlists`` ở trên).
+  # Không có host nào chạy Jenkins trong run này → không file Jenkins nào
+  # được nạp. Không map hết mọi tech trong danh sách xếp tier — chỉ tech có
+  # sẵn file SecLists nhỏ, ĐẶC mới được map (map bừa sang list to là quay
+  # lại đúng vấn đề đã bỏ Service-Specific/).
+  #
+  # false → chỉ dùng ``deep_wordlists`` tĩnh ở trên, tắt hẳn phần tự động.
+  tech_aware_wordlists: true
+  # % ngân sách thời gian của dirsearch dành riêng cho nhóm "deep" (phần
+  # còn lại cho nhóm "standard"+"light" gộp chung).
+  deep_time_share: 0.35
+
+# ---------- Server/microservice misconfig probe (chỉ chạy trên tier deep) ----------
+# Actuator sub-path, Jenkins script console, GitLab API version, k8s API,
+# phpMyAdmin/Adminer, ... — những thứ apidocs.py không quét (apidocs chỉ có
+# bare /actuator, không có /actuator/env hay /actuator/heapdump). Chỉ chạy
+# trên host tier "deep" (fuzz_depth) nên không cần max_hosts riêng.
+misconfig_probe:
+  enabled: true
+  threads: 20
+  http_timeout: 10
+  timeout: 900
+  match_codes: "200,401,403"
+
+# ---------- GraphQL introspection probe ----------
+# A /graphql URL sitting in all_urls.txt only proves an API surface exists.
+# Most GraphQL servers that haven't explicitly disabled introspection will
+# hand over the ENTIRE schema (every query/mutation/type) to one POST —
+# the single highest-ROI request in the pipeline when it lands. Read-only,
+# same risk class as fetching a Swagger doc.
+graphql_probe:
+  enabled: true
+  max_hosts: 300      # curated-path candidates capped like apidocs.max_hosts
+  threads: 20
+  http_timeout: 10
+  timeout: 900
+
+# ---------- CORS misconfiguration probe ----------
+# Sends one GET per alive host with a spoofed Origin header and reads back
+# Access-Control-Allow-Origin / -Credentials. A server that reflects an
+# arbitrary Origin AND allows credentials is the single most common CORS
+# bug bounty programs still pay for — and it costs one extra request per
+# host on top of a probe that already ran.
+cors_probe:
+  enabled: true
+  max_hosts: 500
+  threads: 30
+  http_timeout: 10
+  timeout: 900
+  # Origin sent on every probe. Deliberately off-domain and obviously
+  # marked as a security test, in case it ends up logged anywhere.
+  test_origin: "https://recon2win-cors-test.invalid"
+
+# ---------- Cloud storage bucket enumeration ----------
+# Off by default — unlike every other active probe above, most requests
+# here go to third-party cloud infrastructure (AWS/GCP/Azure) rather than
+# the target's own hosts, on GUESSED names. Standard recon technique and
+# read-only (HEAD/GET only, no write/delete attempted), but opt-in so it's
+# a deliberate choice, not a side effect of running the framework.
+buckets:
+  enabled: false
+  # Extracted from the JS/URL corpus (s3.amazonaws.com, storage.googleapis.com,
+  # blob.core.windows.net literal references) ALWAYS runs when enabled —
+  # those are observed, not guessed. This toggle only gates the permutation
+  # step (domain-token + common suffixes), which is the guessing half.
+  permutations: true
+  max_candidates: 200
+  threads: 20
+  http_timeout: 10
+  timeout: 900
+
+# ---------- .git exposure dumper ----------
+# Off by default — reconstructs actual source files from a confirmed
+# .git/HEAD exposure, which is a heavier, more invasive step than the rest
+# of the pipeline (many requests, writes real source code to disk). A
+# confirmed ".git exposure" high-value target only tells you the door is
+# open; this is what walks through it.
+gitdump:
+  enabled: false
+  max_hosts: 50
+  http_timeout: 10
+  timeout: 1800
+  # Hard cap on blobs fetched per host — a large repo's working tree can be
+  # thousands of files; this bounds worst-case request count.
+  max_files_per_host: 2000
+
+# ---------- Report ----------
+# final_report.html / .md / summary.json are always written. This adds a
+# fourth, optional artefact: report/final_report.xlsx — the same data as a
+# multi-sheet Excel workbook (nuclei, high-value targets, secrets, params,
+# forms, API docs, misconfig, GraphQL, CORS, buckets, git dump, DNS, file
+# inventory) with a "URL Surface" hub sheet every other sheet cross-links
+# to and from, plus a table-of-contents sheet. Needs the ``openpyxl``
+# package (pip install openpyxl) — if it isn't installed, the run still
+# completes and just skips this one file with a warning.
+# Same effect as passing --xlsx-report on the command line.
+report:
+  xlsx: false
 
 # ---------- HackerOne (optional) ----------
 # Pull target scope straight from the H1 Hacker API instead of copy-pasting:

@@ -23,18 +23,48 @@ liệu, tham số lạ, secret trong JS.
 Chênh ~275 lần, và bản raw vượt quá context window.
 
 **KHÔNG BAO GIỜ** `Read`/`cat` nguyên các file này — chúng lên tới hàng MB:
-`processed/alive_urls_table.txt`, `processed/alive_urls.txt`,
-`processed/all_urls.txt`, `processed/crawler_urls.txt`,
-`processed/waymore_urls.txt`, `processed/alive_urls_detail.json`,
-`logs/*.log`.
+`alive_urls_table.txt`, `alive_urls.txt`, `all_urls.txt`, `crawler_urls.txt`,
+`waymore_urls.txt`, `alive_urls_detail.json`, `logs/*.log`.
 
 Luôn đi qua `awk`/`sort`/`uniq`/`jq` và chỉ để kết quả đã gộp vào context.
-File nhỏ (`findings/jsluice_secrets.json`, `processed/jsluice_params.json`,
+File nhỏ (`findings/jsluice_secrets.json`, `jsluice_params.json`,
 `report/priority_targets.txt`) thì đọc thẳng được — kiểm bằng `stat -c%s`
 trước, ngưỡng an toàn ~50 KB.
 
 Định dạng `alive_urls_table.txt`: `ST  LENGTH  CONTENT-TYPE  URL`
 → `$1`=status, `$2`=length, `$3`=content-type, `$4`=url, có dòng header.
+
+### Định vị file trong `processed/`
+
+`processed/` được chia theo vòng đời (`sources/` `corpus/` `hosts/` `js/`
+`targets/` — xem `modules/layout.py`), còn run cũ thì để phẳng hết. Đừng
+đoán đường dẫn; **định nghĩa hàm này một lần rồi dùng cho mọi lệnh bên
+dưới**, nó chạy đúng trên cả hai layout:
+
+```bash
+cd outputs/<domain>
+P() { find processed -name "$1" -type f | head -1; }
+```
+
+Nhóm nào chứa gì: `sources/` output thô từng tool (`ffuf_urls.txt`,
+`crawler_urls.txt`…), `corpus/` danh sách đã hợp nhất (`all_urls.txt`,
+`all_urls.jsonl`), `hosts/` (`alive*`, `subdomains.txt`), `js/`
+(`jsluice_*`, `xnlinkfinder_*`), `targets/` (`parameterized_urls.txt`,
+`forms.json`).
+
+### Đọc `corpus/all_urls.jsonl` trước khi tin một con số
+
+Mỗi dòng là `{"url": ..., "sources": [...]}` — tool nào đã tạo ra URL đó.
+Chất lượng giữa các nguồn chênh nhau cả chục lần (đo trên discover.com:
+jsluice 23,6% trả 200, ffuf ~0% vì wildcard), nên **một corpus 55k URL mà
+79% đến từ ffuf thì không phải bề mặt 55k**:
+
+```bash
+jq -r '.sources[]' "$(P all_urls.jsonl)" | sort | uniq -c | sort -rn
+```
+
+Nguồn nào chiếm ~80% corpus là dấu hiệu wildcard blow-up — báo cáo phải nói
+ra điều đó thay vì đếm tổng.
 
 ## Phase 0 — cổng tin cậy (bắt buộc, làm trước)
 
@@ -60,8 +90,7 @@ im lặng. Đặc biệt: `httpx_urls` cụt ⇒ `alive_urls.txt` thiếu ⇒ m�
 ## Phase 1 — hình dạng bề mặt
 
 ```bash
-cd outputs/<domain>
-awk 'NR>1 {print $1, $3}' processed/alive_urls_table.txt | sort | uniq -c | sort -rn | head -20
+awk 'NR>1 {print $1, $3}' "$(P alive_urls_table.txt)" | sort | uniq -c | sort -rn | head -20
 ```
 
 Đọc phân bố này để biết cái gì là nhiễu nền. Ví dụ acronis.com: 12.246× 301 và
@@ -70,8 +99,8 @@ awk 'NR>1 {print $1, $3}' processed/alive_urls_table.txt | sort | uniq -c | sort
 ## Phase 2 — nội dung không phải HTML (chỗ scanner yếu nhất)
 
 ```bash
-awk 'NR>1 && $1==200 && $3 ~ /json|octet|plain|xml|csv/ {print}' processed/alive_urls_table.txt | head -40
-awk 'NR>1 && $1==200 {print $2}' processed/alive_urls_table.txt | sort -n | uniq -c | sort -rn | tail -15
+awk 'NR>1 && $1==200 && $3 ~ /json|octet|plain|xml|csv/ {print}' "$(P alive_urls_table.txt)" | head -40
+awk 'NR>1 && $1==200 {print $2}' "$(P alive_urls_table.txt)" | sort -n | uniq -c | sort -rn | tail -15
 ```
 
 `application/json` trả 200 mà không cần auth là ứng viên hàng đầu (IDOR, rò
@@ -82,7 +111,7 @@ soft-404 cùng kích thước.
 ## Phase 3 — ranh giới xác thực (đọc kỹ, dễ sai)
 
 ```bash
-awk 'NR>1 && ($1==401 || $1==403 || $1>=500) {print}' processed/alive_urls_table.txt | head -40
+awk 'NR>1 && ($1==401 || $1==403 || $1>=500) {print}' "$(P alive_urls_table.txt)" | head -40
 ```
 
 **401 và 403 KHÔNG cùng giá trị:**
@@ -119,7 +148,7 @@ cùng một chỗ để test:
 
 ```bash
 awk -F'?' 'NF>1 {split($2,a,"&"); s=""; for(i in a){split(a[i],b,"="); s=s b[1] ","} print $1" ["s"]"}' \
-  processed/parameterized_urls.txt | sort -u | head -40
+  "$(P parameterized_urls.txt)" | sort -u | head -40
 ```
 
 Form ghi dữ liệu (POST) đáng giá hơn GET nhiều — CSRF, mass assignment, auth
@@ -127,7 +156,7 @@ bypass:
 
 ```bash
 jq -r '.forms[] | select(.method|ascii_upcase=="POST")
-       | "\(.method) \(.action)  [\(.parameters|join(","))]"' processed/forms.json | sort -u | head -30
+       | "\(.method) \(.action)  [\(.parameters|join(","))]"' "$(P forms.json)" | sort -u | head -30
 ```
 
 Tham số jsluice moi từ JS thường là tham số **không xuất hiện trong crawl** —
@@ -136,7 +165,7 @@ tức là đường đi ẩn:
 ```bash
 jq -r '.[] | select(((.queryParams-["/"])|length)>0 or ((.bodyParams-["/"])|length)>0)
        | "\(.url)  q=\((.queryParams-["/"])|join(","))  b=\((.bodyParams-["/"])|join(","))"' \
-  processed/jsluice_params.json | head -30
+  "$(P jsluice_params.json)" | head -30
 ```
 
 `- ["/"]` là bắt buộc: jsluice trả `queryParams: ["/"]` cho mọi route template

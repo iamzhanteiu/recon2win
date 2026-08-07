@@ -7,26 +7,36 @@ Automated recon framework that follows a strict 9-stage workflow
 
 ```
 0. Validate domain & create output/<domain>/ folder
-1. Subdomain collection  (subfinder, amass, chaos)   → processed/subdomains.txt
-2. DNS resolution        (dnsx)                      → processed/resolved.txt + resolved_detail.json
-3. HTTP alive check      (httpx)                     → processed/alive.txt + alive_detail.{json,csv}
-4. PARALLEL
+1. Subdomain collection  (subfinder, amass, chaos)   → processed/hosts/subdomains.txt
+2. DNS resolution        (dnsx)                      → processed/hosts/resolved.txt + resolved_detail.json
+3. HTTP alive check      (httpx)                     → processed/hosts/alive.txt + alive_detail.{json,csv}
+   + optional screenshots (httpx -screenshot, off by default: httpx.screenshot.enabled) → processed/hosts/screenshots_index.json
+4. PARALLEL — dirsearch/ffuf are fuzz_depth-aware: each selected host is
+   tiered deep/standard/light (hostname score + httpx -td tech signal) and
+   "deep" hosts get an extra merged wordlist + their own time-slice
    ├─ 4.1  katana + urlfinder + gau collection       → raw/{katana,urlfinder,gau}_urls.txt
-   ├─ 4.2  dirsearch (SecLists wordlists +/or sensitive ext) → processed/dirsearch_urls.txt
-   ├─ 4.3  ffuf (-ac/-ach + recursive dirs, per host) → processed/ffuf_urls.txt
-   └─ 4.4  waymore (archived URLs + JS)              → processed/waymore_urls.txt
-5. Merge                                                    → processed/all_urls.txt
-   + processed/js_urls.txt, processed/dynamic_urls.txt
-   + mine new in-scope subdomains from URLs → processed/url_derived_subdomains.txt
+   ├─ 4.2  dirsearch (SecLists wordlists +/or sensitive ext) → processed/sources/dirsearch_urls.txt
+   ├─ 4.3  ffuf (-ac/-ach + recursive dirs, per host) → processed/sources/ffuf_urls.txt
+   └─ 4.4  waymore (archived URLs + JS)              → processed/sources/waymore_urls.txt
+5. Merge                                                    → processed/corpus/all_urls.txt
+   + processed/corpus/js_urls.txt, processed/corpus/dynamic_urls.txt
+   + mine new in-scope subdomains from URLs → processed/hosts/url_derived_subdomains.txt
 6. PARALLEL
-   ├─ 6.1  httpx on all_urls.txt                    → processed/alive_urls.txt
-   ├─ 6.2  xnLinkFinder on js_urls.txt (regex)      → processed/xnlinkfinder_{endpoints,urls}.txt
-   ├─ 6.3  jsluice on js_urls.txt (AST)             → processed/jsluice_{endpoints,urls}.txt
+   ├─ 6.1  httpx on all_urls.txt                    → processed/hosts/alive_urls.txt
+   ├─ 6.2  xnLinkFinder on js_urls.txt (regex)      → processed/js/xnlinkfinder_{endpoints,urls}.txt
+   ├─ 6.3  jsluice on js_urls.txt (AST)             → processed/js/jsluice_{endpoints,urls}.txt
    │                                                   + findings/jsluice_secrets.json
-   └─ 6.4  api-docs probe + OSINT                   → processed/apidocs_{urls,params}.txt
+   └─ 6.4  api-docs probe + OSINT                   → processed/sources/apidocs_{urls,params}.txt
                                                        + findings/api_docs.json
        re-merge xnlinkfinder + jsluice + apidocs output back into all_urls.txt
-7. Arjun on dynamic_urls.txt                        → processed/parameterized_urls.txt
+   ├─ 6.5  GraphQL introspection probe (on by default) → findings/graphql_schema.json
+   ├─ 6.6  CORS misconfiguration probe (on by default) → findings/cors.json
+   ├─ 6.6.2 server/microservice misconfig probe — "deep"-tier hosts only
+   │        (on by default: misconfig_probe.enabled)  → processed/sources/misconfig_urls.txt
+   │                                                     + findings/misconfig_probe.json
+   ├─ 6.7  cloud storage bucket enumeration (opt-in: buckets.enabled) → findings/buckets.json
+   └─ 6.8  .git exposure source dump (opt-in: gitdump.enabled) → findings/git_dump.json
+7. Arjun on dynamic_urls.txt                        → processed/targets/parameterized_urls.txt
    + seed already-param URLs (arjun-independent) + jsluice params
 8. Nuclei default scan (alive hosts) — the last scan → findings/default/nuclei.{txt,json}
 9. Final Telegram summary  (HTML report path included)
@@ -102,8 +112,10 @@ python3 setup.py --no-color            # disable ANSI colors
 | `--skip-waymore`       | Skip the waymore archived-URL collection                  |
 | `--skip-arjun`         | Skip the arjun parameter discovery                        |
 | `--skip-apidocs`       | Skip the API-docs probe + external OSINT stage             |
+| `--skip-misconfig-probe` | Skip the deep-tier server/microservice misconfig probe   |
 | `--skip-xnlinkfinder`  | Skip the xnLinkFinder JS scan                             |
 | `--skip-jsluice`       | Skip the jsluice AST JS analysis (endpoints + secrets)    |
+| `--xlsx-report`        | Also generate `report/final_report.xlsx` (detailed, cross-referenced Excel workbook — needs `openpyxl`) |
 | `--color`              | Force ANSI colors even when stdout is not a TTY (CI, tmux capture) |
 | `--no-color`           | Disable ANSI colors (overrides `$FORCE_COLOR`)            |
 
@@ -198,26 +210,37 @@ outputs/<domain>/
 │   ├── subdomain/                      # subfinder.txt, amass.txt, chaos.txt
 │   ├── puredns/                        # resolvers.txt (validation resolver list)
 │   ├── content_discovery/              # katana_urls.txt, urlfinder_urls.txt, gau_urls.txt
-│   ├── dirsearch/                      # merged_wordlists.txt, targets.txt
-│   ├── ffuf/                           # <host>.json, ffuf_raw.txt, merged_wordlists.txt
+│   ├── dirsearch/                      # merged_wordlists.txt, merged_wordlists_deep.txt, targets.txt, deep/, standard/
+│   ├── ffuf/                           # <host>.json, ffuf_raw.txt, merged_wordlists.txt, merged_wordlists_deep.txt
 │   ├── waymore/                        # waymore_raw.txt
 │   ├── jsluice/                        # NNNN.js (fetched JS, one per URL)
+│   ├── misconfig_probe/                # candidates.txt, probe.jsonl (deep-tier hosts only)
 │   └── arjun/                          # input_subset.txt
-├── processed/                          # cleaned + merged (flat, single source of truth)
-│   ├── subdomains.txt
-│   ├── url_derived_subdomains.txt      # in-scope hosts mined from collected URLs
-│   ├── resolved.txt, resolved_detail.json
-│   ├── alive.txt, alive_detail.json
-│   ├── crawler_urls.txt, js_urls.txt
-│   ├── dirsearch_urls.txt, ffuf_urls.txt, waymore_urls.txt
-│   ├── all_urls.txt, dynamic_urls.txt
-│   ├── xnlinkfinder_endpoints.txt, xnlinkfinder_urls.txt
-│   ├── jsluice_endpoints.txt, jsluice_urls.txt, jsluice_params.json
-│   ├── alive_urls.txt, alive_urls_detail.json
-│   └── arjun_params.txt, parameterized_urls.txt
+├── processed/                          # cleaned + merged, grouped by lifecycle
+│   ├── sources/                        # per-tool output, pre-merge — scratch
+│   │   ├── crawler_urls.txt, dirsearch_urls.txt
+│   │   ├── ffuf_urls.txt, waymore_urls.txt
+│   │   ├── apidocs_urls.txt, apidocs_params.txt
+│   │   └── misconfig_urls.txt
+│   ├── corpus/                         # merged + classified — the pipeline's spine
+│   │   ├── all_urls.txt
+│   │   ├── all_urls.jsonl              # same list + which tool(s) produced each URL
+│   │   └── js_urls.txt, dynamic_urls.txt
+│   ├── hosts/                          # subdomain → DNS → liveness inventory
+│   │   ├── subdomains.txt, url_derived_subdomains.txt
+│   │   ├── resolved.txt, resolved_detail.json
+│   │   ├── alive.txt, alive_detail.json, alive_table.txt
+│   │   └── alive_urls.txt, alive_urls_detail.json, alive_urls_table.txt
+│   ├── js/                             # everything mined out of JavaScript
+│   │   ├── jsluice_endpoints.txt, jsluice_urls.txt, jsluice_params.json
+│   │   ├── jsluice_alive*.{txt,json}, jsluice_js_*.{txt,json}
+│   │   └── xnlinkfinder_endpoints.txt, xnlinkfinder_urls.txt
+│   └── targets/                        # ★ the hand-testing shortlist — open first
+│       └── parameterized_urls.txt, arjun_params.txt, forms.json
 ├── findings/                           # nuclei + jsluice secrets
 │   ├── default/                        # nuclei.json, nuclei.txt (alive hosts)
-│   └── jsluice_secrets.json            # secrets found in JS (kind/severity/url)
+│   ├── jsluice_secrets.json            # secrets found in JS (kind/severity/url)
+│   └── misconfig_probe.json            # server/microservice misconfig hits (deep-tier hosts)
 ├── logs/
 │   ├── commands.log                    # cumulative command history (UTC ts + argv)
 │   ├── <stage>.log                     # per-stage stdout/stderr (sub-stages merged)
@@ -225,6 +248,7 @@ outputs/<domain>/
 └── report/
     ├── final_report.html
     ├── final_report.md
+    ├── final_report.xlsx              # optional — see "Final report" below
     ├── priority_targets.txt           # ranked "test these first" URLs
     ├── delta.md                       # what changed since the previous scan
     └── summary.json
@@ -232,6 +256,90 @@ outputs/<domain>/
 
 (`outputs/<domain>/.scan_state.json` holds the previous run's snapshot for
 the delta — a hidden state file, not a per-run artifact.)
+
+**`processed/` grouping (v3).** It used to be one flat folder of ~25 files
+that mixed per-tool scratch, the merged corpus, and the two or three files
+a human actually opens — opening it told you nothing about which was which.
+`modules/layout.py` is now the single source of truth for where each
+artefact lives; nothing else should join a `processed/` path by hand:
+
+```python
+from modules import layout
+layout.path(output_dir, "all_urls.txt")   # → processed/corpus/all_urls.txt
+```
+
+`layout.path()` resolves for both reading and writing, and falls back to
+the pre-v3 flat location when a file already exists there — so `--resume`
+over an older output tree keeps reading and rewriting it in place. Only
+artefacts with no legacy counterpart are created in the new folders.
+
+**Behavioural screening (v3).** Content discovery is a comparison, and the
+pipeline never established what it was comparing against. Two new pieces fix
+that, both built on `modules/behavior.py`:
+
+* **`modules/baseline.py`** probes every host with a few paths that cannot
+  exist, *before* fuzzing. If all the answers are identical **and** that
+  answer is already in the tool's match list (`ffuf.match_status` /
+  `dirsearch.include_status`), the host cannot tell real paths from fake ones
+  and is skipped. The same measurement replaces the old dedup key — grouping
+  used to compare **home pages**, but what decides whether two hosts are the
+  same app is how they answer a path that isn't there.
+* **`behavior.screen`** runs after each tool and drops hit clusters that are
+  one response wearing many paths, keyed on status + content-type family +
+  redirect destination + words/lines.
+
+Byte length is deliberately *not* the key. ffuf's own `-ac` was enabled on the
+discover.com run and could not fire, because the Akamai block page echoes the
+requested path: 4,082 hits on one host showed **50 distinct lengths** while
+`words` was 13 for every one of them. `parse_report` had been discarding
+`words`/`lines` entirely.
+
+Measured over that run's raw output:
+
+| stage | hits before | after | dropped |
+|---|---|---|---|
+| ffuf | 44,442 | 128 | 99.7% |
+| dirsearch | 13,895 | 155 | 98.9% |
+
+A cluster must be both large (`min_cluster`) and dominant for its host
+(`min_share`) to be dropped, so a repeated error template on an otherwise
+varied host survives; and a host is only marked `blanket` when *nothing*
+survived, so `app.discover.com` — 84 of 89 hits one redirect-to-apex cluster,
+5 of them real — keeps its 5.
+
+**`processed/MANIFEST.json` (v3).** A 0-line file has two opposite meanings
+that look identical on disk — "we looked and the target has none of this"
+(a result) and "we never looked" (no data) — and reporting the second as
+the first is how a broken run turns into a clean bill of health. The
+manifest records, per artefact, which one it is:
+
+| state | means |
+|---|---|
+| `ok` | has data |
+| `ran_empty` | stage ran, found nothing — **this IS a result** |
+| `blocked` | stage ran but the target refused it (401/403) — **not** a result |
+| `truncated` | stage hit its time budget — partial or no data, **not** a result |
+| `skipped` | stage never ran (flag, missing binary, dry-run) |
+| `failed` | stage failed |
+| `absent` | never written |
+
+Written at end of run by `audit.build_manifest()`, which attributes each
+file to a stage from that stage's own declared `outputs` — so a new
+artefact is covered without editing a table. `INDEX.md`'s ⚪ section reads
+it back, and the run log prints a warning when any artefact is empty for a
+no-data reason. Stages signal a refused probe with `extra["blocked"]`
+rather than leaving it to be sniffed out of error text.
+
+**URL provenance (v3).** `corpus/all_urls.jsonl` carries
+`{"url": …, "sources": [tool, …]}` for every line of `all_urls.txt`. The
+merge used to flatten sources of wildly different quality into an anonymous
+list: on a real `discover.com` run, jsluice-mined URLs came back 23.6% HTTP
+200 while ffuf's 44,431 hits were a near-pure wildcard-403 artefact — and
+after the merge nothing downstream could tell them apart, so
+`arjun.max_urls=200` drew its whole sample from the noise. Capped consumers
+now sort by source before they cut (`url_merge.rank_urls_by_source`), and
+`url_merge`'s stage result reports the corpus mix, so one source at ~80% of
+the total is visible in the run log instead of hidden inside it.
 
 **Log consolidation:** every tool's stdout/stderr is captured into
 `stages.json` (structured). If a stage needs its own per-call log file
@@ -283,7 +391,7 @@ Per-stage messages look like:
 
 ```
 ✅ subdomain — 343 result(s)
-  • processed/subdomains.txt
+  • processed/hosts/subdomains.txt
   • raw/subdomain/subfinder.txt
   • raw/subdomain/amass.txt
   • raw/subdomain/chaos.txt
@@ -292,43 +400,96 @@ Per-stage messages look like:
 ## Final report
 
 After the workflow completes, the framework writes three artefacts to
-`outputs/<domain>/report/`:
+`outputs/<domain>/report/` — plus a fourth, optional one:
 
 | File | Purpose |
 |------|---------|
 | `final_report.html` | Self-contained HTML with CSS, clickable links to every output, severity-grouped findings, KPI cards, searchable/filterable tables, collapsible sections. Open it in any browser. |
 | `final_report.md`   | Flat Markdown mirror for quick terminal review. |
 | `summary.json`      | The same structured data the report renders, as JSON (for downstream tooling). |
+| `final_report.xlsx` | **Opt-in** — `--xlsx-report` or `report.xlsx: true` in `config.yml`. A 17-sheet Excel workbook built from the same data as the HTML report: Nuclei, High-Value Targets, JS Secrets, Params, Forms, API Docs, Misconfig, GraphQL, CORS, Buckets, Git Dump, Subdomains & DNS, **Endpoint Existence** (Confirmed/Likely/Unknown/Not Found verdict per ffuf/dirsearch hit — see section 7 of the report for what drives it), Files — all cross-linked to and from a central **URL Surface** hub sheet (every URL seen anywhere in the run, one row each), plus a table-of-contents sheet. Every one of those 13 detail sheets also carries a blank **Tag** column (dropdown: Reviewed / False Positive / Reported / Duplicate / Ignore / Need Retest) for manual triage while reviewing in Excel — the tool never fills it in. Needs `openpyxl` (`pip install openpyxl`); if it isn't installed the run still completes and just skips this one file with a console warning. |
 
-The report has 14 sections:
+The report has 16 sections. Endpoint extraction (JavaScript Analysis) and
+Nuclei Findings sit right after the KPIs (sections 3–4) — they are the two
+things a reader wants first, not buried after DNS/content-discovery
+bookkeeping — everything else keeps its original relative order:
 
 1. Executive Summary — target / timing / mode / config
 2. Recon Coverage Summary — KPI cards + clickable source counts
-3. Asset Inventory — search/filterable table of every alive host
-4. DNS Inventory — search/filterable table of resolved subdomains
-5. Content Discovery — katana / urlfinder / dirsearch / ffuf / waymore summary,
-   plus a link to `responses/index.md` (body previews for ffuf/dirsearch hits)
-6. JavaScript Analysis — JS file count, **both** JS tools side by side
-   (xnLinkFinder = regex, jsluice = AST), plus jsluice's param table
-   (`url / method / queryParams / bodyParams`) and interesting API paths
-   6.1 JavaScript Secrets — API keys/tokens jsluice extracted from JS, grouped by severity
-7. Parameter Discovery — Arjun + jsluice params + the first 100 lines of
+3. JavaScript Analysis (Endpoint Extraction) — JS file count, **both** JS
+   tools side by side (xnLinkFinder = regex, jsluice = AST), plus jsluice's
+   param table (`url / method / queryParams / bodyParams`) and interesting
+   API paths
+   3.1 JavaScript Secrets — API keys/tokens jsluice extracted from JS, grouped by severity
+   3.2 HTTP Method Check — endpoints re-probed with the HTTP verb jsluice
+   found in the JS source (not a blind GET), flagging routes a GET-only
+   probe would read as dead
+4. Nuclei Findings — **grouped by severity**, with template / name / URL / matcher / evidence
+   4.1 GraphQL Introspection — endpoints where a single POST returned a live
+   schema (query/mutation/subscription fields + type names), not just "a
+   /graphql URL exists"
+   4.2 CORS Misconfiguration — hosts that reflect an arbitrary `Origin` back
+   in `Access-Control-Allow-Origin`, flagged critical when
+   `Access-Control-Allow-Credentials: true` is also sent
+   4.3 Cloud Storage Buckets — confirmed public/private S3 & GCS buckets
+   (extracted references always checked; domain-permutation guessing is
+   opt-in via `buckets.enabled`), plus any Azure Blob account references seen
+   4.4 Git Exposure Dump — actual source files reconstructed from a
+   confirmed `.git/HEAD` exposure via `.git/index` + loose objects
+   (opt-in via `gitdump.enabled`; best-effort — objects packed by `git gc`
+   are skipped, not fabricated)
+5. Asset Inventory — search/filterable table of every alive host
+6. DNS Inventory — search/filterable table of resolved subdomains
+7. Content Discovery — katana / urlfinder / dirsearch / ffuf / waymore summary,
+   plus a link to `responses/index.md` (body previews for ffuf/dirsearch hits).
+   Two independent fuzzing diagnostics, easy to conflate but computed at
+   different times:
+     * **Host fuzzing coverage** — a PRE-fuzz number: how many alive hosts got
+       deduped/WAF-skipped/blanket-skipped (via a baseline probe,
+       `modules/fuzz_targets.py` + `modules/baseline.py`) before the wordlist
+       ever ran, and how many were capped by `max_hosts`.
+     * **Behavioural hit screening** — a POST-fuzz number: of the hits the
+       wordlist actually produced, how many were fingerprinted (status +
+       content-type + redirect target + words/lines, `modules/behavior.py`)
+       as one response shape repeated across many paths and dropped, plus
+       which hosts triggered it (`blanket_hosts`). This is what tells you a
+       `400`/`403`/any status was a real per-path signal and not a
+       WAF/catch-all answering everything the same way.
+   * **Endpoint existence** (`modules/existence.py`) — a THIRD, per-hit
+     verdict: **Confirmed Exists** / **Likely Exists** / **Unknown** /
+     **Not Found**, computed from response *behaviour* instead of trusting
+     status code alone. Combines three signals, all already on disk from
+     earlier in the same run (no extra requests): (1) does this hit's
+     response shape match what `modules/baseline.py` measured as THIS
+     host's answer for a path guaranteed not to exist; (2) does the body
+     preview (`responses/preview.json`) contain a validation/parsing/auth/
+     business-logic/framework-specific error phrase (`Missing required
+     parameter`, `Invalid JWT`, `User not found`, a Spring/Django/Laravel
+     error shape, …) — a `404 {"error":"user not found"}` means routing
+     AND business logic both ran, very different from a blank webserver
+     404 page; (3) does the status itself structurally imply a routed
+     request (`401/403/405/406/415/422`). The report table lists every
+     Confirmed/Likely hit with its matched evidence; Not Found entries are
+     counted but not listed (they're noise, already explained by matching
+     the baseline).
+8. Parameter Discovery — Arjun + jsluice params + the first 100 lines of
    `parameterized_urls.txt` embedded inline (the hand-testing shortlist)
-   7.1 Forms & Input Surface — every `<form>` the crawler saw, **ranked by
+   8.1 Forms & Input Surface — every `<form>` the crawler saw, **ranked by
    testing value**: uploads first, then POST bodies, then forms carrying
    auth/identity fields
-   7.2 API Documentation — parsed OpenAPI/Swagger specs (paths / auth
+   8.2 API Documentation — parsed OpenAPI/Swagger specs (paths / auth
    schemes / document URL), docs UIs, and external Postman/GitHub hits
-8. Nuclei Findings — **grouped by severity**, with template / name / URL / matcher / evidence
-9. High-Value Targets — auto-detected admin / login / API / env / git / backups
+9. High-Value Targets — auto-detected admin / login / API / env / git / backups /
+   directory listings (detected from the response title/body — `Index of /…` —
+   not the URL text, so an autoindexed `/uploads/` is caught too)
 10. Errors / Skipped / Missing Tools — clickable link to `commands.log`
 11. Manual Testing Recommendations — prioritized list
 12. Appendix — tool versions, config snapshot, all file links
 
 ### Form ranking
 
-`processed/forms.json` routinely holds 100+ forms and most are search boxes
-and newsletter signups, so section 7.1 sorts them by `report.form_score()`:
+`processed/targets/forms.json` routinely holds 100+ forms and most are search boxes
+and newsletter signups, so section 8.1 sorts them by `report.form_score()`:
 multipart uploads (+100) → POST (+50) → number of *real* inputs (capped at
 +8) → fields whose names look like identity/auth (+8 each, capped).
 
@@ -448,7 +609,7 @@ ffuf:
   recursion_strategy: ""           # -recursion-strategy ("default" | "greedy")
   follow_redirects: false          # -r  (see the warning below)
   rate: 0                          # -rate, req/s (0 = unlimited)
-  match_status: [200, 204, 301, 302, 307, 401, 403, 405, 500]   # -mc
+  match_status: [200, 204, 301, 302, 307, 400, 401, 403, 405, 500]   # -mc
   filter_status: [404, 429]                                     # -fc
   wordlists: [...]                 # same rules as dirsearch.wordlists
   extensions: []                   # -e, ".php,.bak"
@@ -476,7 +637,7 @@ host list, so the stage walks `alive.txt` itself: the first `max_hosts`
 targets, `concurrency` processes at a time, `timeout` seconds each. One
 host timing out costs you that host's results, not the stage. Each
 target gets its own `raw/ffuf/<host>.json`; the hits are merged into
-`processed/ffuf_urls.txt` and flow into `all_urls.txt` from there.
+`processed/sources/ffuf_urls.txt` and flow into `all_urls.txt` from there.
 
 Turn it off with `--skip-ffuf` for one run, or `enabled: false` for good.
 
@@ -614,11 +775,52 @@ finding thật đắt hơn nhiều so với vài phút quét thừa. Bật bằn
 `nuclei.default.dedup_targets: true` khi bạn biết chắc mình đang nhìn
 wildcard.
 
-### Còn lại: tech-aware wordlist
+### Tech-aware wordlist
 
 `alive_detail.json` có field `tech` từ httpx (`["Cloudflare"]`, `PHP`,
-`Spring`…) nhưng chưa stage nào dùng. Bước tiếp theo đáng làm: map tech →
-wordlist tương ứng thay vì nạp cả `Service-Specific/` cho mọi host.
+`Spring`…) — `modules/fuzz_depth.py` đã dùng tín hiệu này để phát hiện
+tech VÀ fuzz đúng theo tech xác định được, thay vì nạp cả
+`Service-Specific/` (~50 file) cho mọi host:
+
+1. **Detect** — mỗi host tier "deep" được khớp `tech`/`webserver`/`title`
+   với một tập keyword (`jenkins`, `gitlab`, `grafana`, `prometheus`,
+   `kubernetes`, `docker`, `elastic`/`kibana`, `confluence`, `consul`,
+   `tomcat`, `spring`, `wordpress`, …) — cùng tín hiệu đã dùng để xếp tier.
+2. **Fuzz theo tech xác định** — với MỖI keyword khớp có wordlist SecLists
+   riêng (`TECH_WORDLIST_MAP`), file đó được merge thêm vào wordlist của
+   dirsearch/ffuf **chỉ cho run có host đó** — không có host nào chạy
+   Jenkins thì không file Jenkins nào được nạp.
+
+Cấu hình ở `fuzz_depth.tech_aware_wordlists` (mặc định `true`; đặt `false`
+để chỉ dùng `deep_wordlists` tĩnh). Không phải keyword nào cũng có wordlist
+riêng — chỉ map khi SecLists có file nhỏ, đặc dành riêng cho đúng tech đó
+(map bừa sang list to là quay lại đúng vấn đề đã bỏ `Service-Specific/`).
+Host demote khỏi tier "deep" (vượt `deep_max_hosts`) không còn được tính,
+nên không kéo theo wordlist tốn kém cho một host sắp không được fuzz sâu.
+
+### Nguồn tech thứ 2: CONFIRMED, không phải đoán
+
+httpx `-td` (Wappalyzer rút gọn) chỉ bắt tech lộ rõ qua header/meta-tag —
+nhiều host chạy Jenkins/Spring/GitLab... vẫn "im lặng" với httpx nếu
+banner bị ẩn/đổi. `misconfig_probe` (chạy sau dirsearch/ffuf trong cùng
+lần scan) đã TỰ XÁC NHẬN tech bằng cách đọc nội dung response thật — một
+hit `/actuator/env` trả đúng `propertySources` chắc chắn là Spring Boot,
+đáng tin hơn nhiều so với đoán qua title.
+
+Kết quả xác nhận này được lưu vào `processed/tech_confirmed.json`
+(`{host: [tech_key, ...]}`, tích luỹ qua nhiều lần scan — không bị ghi đè
+mỗi run như `alive_detail.json`) và tự động merge vào tín hiệu tier/tech ở
+trên — `modules/fuzz_depth.py::load_confirmed_tech` /
+`merge_confirmed_tech`.
+
+**Thứ tự chạy trong MỘT lần scan**: dirsearch/ffuf (stage 4) chạy TRƯỚC
+misconfig_probe (stage 6+), nên `tech_confirmed.json` của chính lần scan
+này chưa tồn tại lúc dirsearch/ffuf tier — không có vòng lặp ngược trong
+cùng một run. Giá trị thật nằm ở **lần scan SAU của cùng target**
+(`outputs/<domain>/` giữ nguyên giữa các lần chạy, đúng mô hình
+scandiff/dashboard đã có sẵn): tech xác nhận ở lần trước làm tier +
+tech-aware wordlist ở lần sau chính xác hơn — không cần đợi httpx đoán
+đúng, không cần chạy lại misconfig_probe để "làm nóng" tín hiệu.
 
 ## Scan delta — "what changed since last time"
 
@@ -695,8 +897,8 @@ jsluice recovered **21** real routes (e.g. `/docs/src/routes/users.php`).
 2. Runs `jsluice urls <files…>` and `jsluice secrets <files…>`.
 3. Resolves relative URLs against each file's *original* URL and
    scope-filters to the target domain (drops CDN/tracker noise).
-4. Writes `processed/jsluice_{urls,endpoints}.txt` +
-   `processed/jsluice_params.json` + `findings/jsluice_secrets.json`.
+4. Writes `processed/js/jsluice_{urls,endpoints}.txt` +
+   `processed/js/jsluice_params.json` + `findings/jsluice_secrets.json`.
 5. Endpoints/URLs are merged back into `all_urls.txt` (→ httpx);
    parameterised ones flow on to arjun. Secrets fire a Telegram alert.
 6. **Param intel → shortlist:** right after arjun (stage 8),
@@ -733,7 +935,7 @@ than raw throughput.
 
 > **Known trade-off:** nuclei only sees the root hosts. Endpoints that
 > katana / dirsearch / jsluice / waymore discover are *not* scanned; they
-> land in `processed/alive_urls.txt` and `processed/parameterized_urls.txt`
+> land in `processed/hosts/alive_urls.txt` and `processed/targets/parameterized_urls.txt`
 > for hand-testing, and feed `report/priority_targets.txt`. Two earlier
 > passes (`endpoints` on discovered URLs, `dynamic` with `-dast` on
 > parameterised URLs) were removed on 2026-07-28.
@@ -745,7 +947,7 @@ drain on a scanner). It's a fast no-op when already current; disable with
 
 ## `parameterized_urls.txt` — the hand-testing shortlist
 
-Stage 8 builds `processed/parameterized_urls.txt`: every endpoint the run
+Stage 8 builds `processed/targets/parameterized_urls.txt`: every endpoint the run
 found that takes a parameter. Nothing scans it automatically — it is the
 list you open in Burp/curl, and it feeds `report/priority_targets.txt`.
 
@@ -820,6 +1022,92 @@ apidocs:
   osint: true
   postman: true
   github_token: "${GITHUB_TOKEN}"   # empty → GitHub search skipped
+```
+
+## Adaptive fuzz depth + microservice misconfig probe (`fuzz_depth`, stage 6.6.2)
+
+`fuzz_targets` already decides **which** alive hosts get fuzzed at all
+(wildcard dedup, WAF/blanket-deny skip, `score_subdomain`-ranked cap). Until
+this stage, every host that survived that filter got the exact same
+wordlist and the exact same depth — a host named `jenkins-ci.example.com`
+got no more attention than `cdn-assets-3.example.com`.
+
+`modules/fuzz_depth.py` adds a second layer: it tiers each already-selected
+host into `deep` / `standard` / `light` using two signals:
+
+1. **`score_subdomain(host)`** — the existing hostname scorer (apex, high-value
+   prefixes like `api`/`admin`, known bug-bounty tech substrings). A score at
+   or above `fuzz_depth.deep_score_threshold` (default 1000) → `deep`; at or
+   below `fuzz_depth.light_score_threshold` (default -500, i.e. it matched
+   the noise list) → `light`.
+2. **httpx `-td` tech-detection** — `alive_detail.json`'s `tech`/`webserver`/
+   `title` fields, matched against a curated list of interesting stacks
+   (Spring, Jenkins, GitLab, Kubernetes, Grafana, Prometheus, Elasticsearch,
+   WordPress, phpMyAdmin, Jira, Confluence, Consul, Nexus, …). **Any match
+   wins outright, regardless of hostname score** — this is what catches a
+   generically-named host that happens to run Jenkins, which the hostname
+   string alone would never reveal. Measured live on a real `discover.com`
+   run: `dbblog.discover.com` (a name that scores nothing on its own) was
+   correctly flagged `deep` because httpx's tech fingerprint found
+   WordPress + MySQL + PHP running on it.
+
+`light` never means "skip" — a host that classifies there still gets fuzzed
+at the normal depth; it just doesn't receive the expensive extras. A host
+can only be dropped entirely by `fuzz_targets`, never by this stage.
+
+**What "deep" actually buys a host:**
+
+- `dirsearch`/`ffuf` merge `fuzz_depth.deep_wordlists` on top of the stage's
+  normal wordlist for that host only (`raw/dirsearch/merged_wordlists_deep.txt`).
+  dirsearch additionally runs the deep-tier hosts as their **own group** with
+  a dedicated slice of the stage's timeout (`fuzz_depth.deep_time_share`,
+  default 0.35) — so one slow deep-tier host can't starve the standard
+  group's budget, and vice versa. `deep_max_hosts` (default 15) caps how
+  many hosts qualify for this heavier treatment; anything past the cap is
+  demoted to `standard`, never dropped.
+- `misconfig_probe` (below) runs **only** against the `deep` set.
+
+```yaml
+fuzz_depth:
+  enabled: true
+  deep_max_hosts: 15
+  deep_score_threshold: 1000
+  light_score_threshold: -500
+  deep_wordlists: []      # extra files merged ONLY for deep-tier hosts
+  deep_time_share: 0.35   # % of dirsearch's stage timeout reserved for "deep"
+```
+
+### `misconfig_probe` — sensitive service sub-endpoints, deep-tier only
+
+`apidocs.py` already probes every alive host for OpenAPI/Swagger plus a
+handful of discovery documents (bare `/actuator`, `/wp-json`,
+`/.well-known/*`). `misconfig_probe` goes further — the **sensitive**
+sub-endpoints of specific services (Spring actuator `/env`/`/heapdump`,
+Jenkins `/script` console, GitLab `/api/v4/version`, Kubernetes
+`/api/v1/namespaces`, Docker registry `/v2/_catalog`, phpMyAdmin/Adminer,
+Prometheus, Elasticsearch, Consul, Nexus, …) — but only against the `deep`
+tier, since this is a narrower, more expensive probe than apidocs' broad
+sweep.
+
+Same precision discipline as `apidocs.parse_spec`: **a 200 is not proof.**
+Confirmed live against `gitlab.com` — its own frontend answers 200 with its
+normal app shell for any unrecognised path (`/pma/` included), which would
+misreport as phpMyAdmin under a status-only check. Every path family has a
+dedicated content validator (e.g. actuator/env requires a `propertySources`
+key, GitLab version requires both `version` and `revision` keys, Kubernetes'
+own 403 `Status` body on `/api/v1/namespaces` still counts because it proves
+the apiserver is reachable). Paths with no strong validator available
+(Consul, Nexus ping) are accepted on status alone but tagged
+`confidence: "low"` so they can never outrank a validated hit in the report
+or `priority_targets.txt`.
+
+```yaml
+misconfig_probe:
+  enabled: true
+  threads: 20
+  http_timeout: 10
+  timeout: 900
+  match_codes: "200,401,403"
 ```
 
 ## Arjun tunables (input capping)
