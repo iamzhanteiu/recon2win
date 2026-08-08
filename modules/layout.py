@@ -49,6 +49,7 @@ GROUPS: dict[str, tuple[str, ...]] = {
         "apidocs_urls.txt",
         "apidocs_params.txt",
         "misconfig_urls.txt",
+        "fuzz_recurse_urls.txt",
     ),
     # The merged spine. all_urls.jsonl carries the provenance for
     # all_urls.txt line-for-line (see modules.url_merge).
