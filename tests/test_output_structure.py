@@ -2,6 +2,8 @@
 
 Covers:
   * create_output_structure() — creates the per-stage subdirs
+  * create_output_structure(project=...) — optional project grouping
+  * validate_project() — CLI-boundary validation for --project
   * raw_dir() / findings_dir() — typed accessors with validation
   * runner.run() with log_name= — sub-stages land in one log file
   * end-to-end smoke: subdomain + dirsearch populate the right paths
@@ -17,6 +19,7 @@ from modules.utils import (
     create_output_structure,
     findings_dir,
     raw_dir,
+    validate_project,
 )
 
 
@@ -54,6 +57,59 @@ def test_create_output_structure_is_idempotent(tmp_path: Path):
     a = create_output_structure("example.com", root=str(tmp_path))
     b = create_output_structure("example.com", root=str(tmp_path))
     assert a == b
+
+
+# ----------------------------------------------------------------------
+# create_output_structure(project=...) — optional project grouping
+# ----------------------------------------------------------------------
+def test_create_output_structure_without_project_stays_flat(tmp_path: Path):
+    base = create_output_structure("example.com", root=str(tmp_path))
+    assert base == tmp_path / "example.com"
+
+
+def test_create_output_structure_with_project_nests_one_level(tmp_path: Path):
+    base = create_output_structure("example.com", root=str(tmp_path), project="acme")
+    assert base == tmp_path / "acme" / "example.com"
+    assert (base / "raw" / "subdomain").is_dir()
+    assert (base / "logs").is_dir()
+
+
+def test_create_output_structure_with_project_is_idempotent(tmp_path: Path):
+    a = create_output_structure("example.com", root=str(tmp_path), project="acme")
+    b = create_output_structure("example.com", root=str(tmp_path), project="acme")
+    assert a == b
+
+
+def test_create_output_structure_same_domain_different_projects_are_distinct(tmp_path: Path):
+    """The same domain scanned under two different projects gets two
+    independent output trees — no collision."""
+    a = create_output_structure("example.com", root=str(tmp_path), project="acme")
+    b = create_output_structure("example.com", root=str(tmp_path), project="globex")
+    assert a != b
+    assert a.is_dir() and b.is_dir()
+
+
+# ----------------------------------------------------------------------
+# validate_project() — CLI-boundary validation
+# ----------------------------------------------------------------------
+@pytest.mark.parametrize("raw,expected", [
+    ("acme", "acme"),
+    ("  acme  ", "acme"),          # stripped
+    ("acme-corp", "acme-corp"),
+    ("acme_corp.2026", "acme_corp.2026"),
+    ("Acme-Corp", "Acme-Corp"),    # case preserved, unlike validate_domain
+])
+def test_validate_project_accepts_and_cleans(raw, expected):
+    assert validate_project(raw) == expected
+
+
+@pytest.mark.parametrize("bad", [
+    "", "   ", ".", "..", "../../etc", "acme/../../etc",
+    "/etc/passwd", ".hidden", "-leading-dash",
+])
+def test_validate_project_rejects_traversal_and_empty(bad):
+    with pytest.raises(ValueError):
+        validate_project(bad)
 
 
 # ----------------------------------------------------------------------

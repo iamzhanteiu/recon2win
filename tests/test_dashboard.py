@@ -78,25 +78,59 @@ def test_stale_days_handles_missing_and_bad_input():
 # discover_targets
 # ----------------------------------------------------------------------
 def test_discover_targets_lists_dirs_skips_dotfiles(tmp_path: Path):
-    (tmp_path / "a.com").mkdir()
-    (tmp_path / "b.com").mkdir()
+    # A bare mkdir() has none of create_output_structure()'s skeleton dirs
+    # and so is NOT recognized as a target — matches real recon2win output,
+    # where a target directory always has at least raw/logs/report/processed
+    # the moment a scan starts (even a run that crashes immediately).
+    create_output_structure("a.com", root=str(tmp_path))
+    create_output_structure("b.com", root=str(tmp_path))
     (tmp_path / ".gitkeep").write_text("")
     found = dashboard.discover_targets(tmp_path)
-    assert [p.name for p in found] == ["a.com", "b.com"]
+    assert [(t["project"], t["domain"]) for t in found] == [
+        (None, "a.com"), (None, "b.com"),
+    ]
 
 
 def test_discover_targets_missing_root_returns_empty(tmp_path: Path):
     assert dashboard.discover_targets(tmp_path / "nope") == []
 
 
+def test_discover_targets_groups_project_subdirs(tmp_path: Path):
+    """outputs/<project>/<domain>/ nests one level under a project folder;
+    outputs/<domain>/ (no project) stays ungrouped — both coexist."""
+    create_output_structure("solo.com", root=str(tmp_path))
+    create_output_structure("a.com", root=str(tmp_path), project="acme")
+    create_output_structure("b.com", root=str(tmp_path), project="acme")
+    create_output_structure("c.com", root=str(tmp_path), project="other")
+
+    found = dashboard.discover_targets(tmp_path)
+    pairs = [(t["project"], t["domain"]) for t in found]
+    assert (None, "solo.com") in pairs
+    assert ("acme", "a.com") in pairs
+    assert ("acme", "b.com") in pairs
+    assert ("other", "c.com") in pairs
+    assert len(pairs) == 4
+
+    acme_a = next(t for t in found if t["project"] == "acme" and t["domain"] == "a.com")
+    assert acme_a["path"] == tmp_path / "acme" / "a.com"
+
+
+def test_discover_targets_empty_project_dir_yields_nothing(tmp_path: Path):
+    """A top-level dir with no target-like subdirs (and no skeleton of its
+    own) contributes no rows — it's neither a target nor a populated
+    project, just noise."""
+    (tmp_path / "empty-project").mkdir()
+    assert dashboard.discover_targets(tmp_path) == []
+
+
 # ----------------------------------------------------------------------
 # _load_target — single target, hand-built summary.json + stages.json
 # ----------------------------------------------------------------------
-def _seed_target(root: Path, domain: str, *, health_stages=None,
+def _seed_target(root: Path, domain: str, *, project=None, health_stages=None,
                   nuclei_sev=None, secrets_sev=None, secrets_findings=None,
                   high_value=None, scan_end="2026-07-28T10:00:00+00:00",
                   with_summary=True, delta_extra=None) -> Path:
-    base = create_output_structure(domain, root=str(root))
+    base = create_output_structure(domain, root=str(root), project=project)
     if with_summary:
         summary = {
             "meta": {"domain": domain, "scan_start": "2026-07-28T09:00:00+00:00",
@@ -165,9 +199,45 @@ def test_load_target_reports_failed_stages_and_missing_tools(tmp_path: Path):
     assert "dirsearch" in rec["missing_tools"]
 
 
+def test_load_target_defaults_project_to_none(tmp_path: Path):
+    """project= is optional and defaults to None — existing call sites that
+    don't pass it (e.g. direct _load_target(base, dashboard_path) calls)
+    keep working unchanged."""
+    base = _seed_target(tmp_path, "ok.com")
+    rec = dashboard._load_target(base, tmp_path / "dashboard.html")
+    assert rec["project"] is None
+
+
+def test_load_target_records_project_and_nested_report_link(tmp_path: Path):
+    base = _seed_target(tmp_path, "a.com", project="acme")
+    rec = dashboard._load_target(base, tmp_path / "dashboard.html", project="acme")
+    assert rec["project"] == "acme"
+    assert rec["report_rel"] == "acme/a.com/report/final_report.html"
+
+
 # ----------------------------------------------------------------------
 # build_dashboard — multi-target, I/O
 # ----------------------------------------------------------------------
+def test_build_dashboard_groups_grouped_and_ungrouped_targets(tmp_path: Path):
+    root = tmp_path / "outputs"
+    _seed_target(root, "solo.com",
+                 health_stages=[{"stage": "subdomain", "status": "success"}])
+    _seed_target(root, "a.com", project="acme",
+                 health_stages=[{"stage": "subdomain", "status": "success"}])
+    _seed_target(root, "b.com", project="acme",
+                 health_stages=[{"stage": "subdomain", "status": "success"}])
+
+    res = dashboard.build_dashboard(root)
+    assert res["count"] == 3
+    assert sorted(res["extra"]["targets"]) == ["acme/a.com", "acme/b.com", "solo.com"]
+
+    html = (root / "dashboard.html").read_text()
+    assert "<th>Project</th>" in html
+    assert "<code>acme</code>" in html
+    assert 'href="acme/a.com/report/final_report.html"' in html
+    assert 'href="solo.com/report/final_report.html"' in html
+
+
 def test_build_dashboard_lists_all_targets_sorted_by_risk(tmp_path: Path):
     root = tmp_path / "outputs"
     _seed_target(root, "hot.com",

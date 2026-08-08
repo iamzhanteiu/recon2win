@@ -123,23 +123,54 @@ def _stale_days(scan_end: str | None) -> int | None:
 # ----------------------------------------------------------------------
 # Target discovery + per-target record
 # ----------------------------------------------------------------------
-def discover_targets(outputs_root: Path) -> list[Path]:
-    """List every scan-target directory under *outputs_root*.
+def _is_target_dir(p: Path) -> bool:
+    """True if *p* looks like a scan-target root — has at least one of the
+    subdirs ``create_output_structure()`` always creates. Distinguishes a
+    target directory from a project directory that merely CONTAINS target
+    subdirectories (see ``discover_targets``)."""
+    return any((p / sub).is_dir() for sub in ("raw", "logs", "report", "processed"))
 
-    Includes directories that never finished a report — a crashed/partial
-    run is something an operator managing targets wants to see, not have
-    silently dropped. Skips dotfiles (``.gitkeep``) and non-directories.
+
+def discover_targets(outputs_root: Path) -> list[dict]:
+    """List every scan-target directory under *outputs_root*, one or two
+    levels deep.
+
+    Two shapes coexist on purpose — no forced migration of existing scans:
+
+      * ``outputs/<domain>/``            — legacy/ungrouped (``project: None``)
+      * ``outputs/<project>/<domain>/``  — grouped (``main.py --project NAME``)
+
+    A top-level directory is a target itself if it has the skeleton
+    ``create_output_structure()`` always creates (see ``_is_target_dir``);
+    otherwise it's treated as a project folder and its immediate
+    subdirectories are checked the same way, one level down only (no
+    deeper nesting). Includes directories that never finished a report —
+    a crashed/partial run is something an operator managing targets wants
+    to see, not have silently dropped. Skips dotfiles (``.gitkeep``).
+
+    Returns ``[{"path": Path, "project": str | None, "domain": str}, ...]``,
+    sorted by ``(project or "", domain)`` so ungrouped targets sort first.
     """
     outputs_root = Path(outputs_root)
     if not outputs_root.is_dir():
         return []
-    return sorted(
-        p for p in outputs_root.iterdir()
-        if p.is_dir() and not p.name.startswith(".")
-    )
+
+    found: list[dict] = []
+    for p in sorted(outputs_root.iterdir()):
+        if not p.is_dir() or p.name.startswith("."):
+            continue
+        if _is_target_dir(p):
+            found.append({"path": p, "project": None, "domain": p.name})
+            continue
+        for sub in sorted(p.iterdir()):
+            if sub.is_dir() and not sub.name.startswith(".") and _is_target_dir(sub):
+                found.append({"path": sub, "project": p.name, "domain": sub.name})
+    return sorted(found, key=lambda t: (t["project"] or "", t["domain"]))
 
 
-def _load_target(target_dir: Path, dashboard_path: Path) -> dict[str, Any]:
+def _load_target(
+    target_dir: Path, dashboard_path: Path, project: str | None = None,
+) -> dict[str, Any]:
     """Build one dashboard row from a target directory's on-disk state."""
     domain = target_dir.name
     summary = load_json_safe(target_dir / "report" / "summary.json")
@@ -180,6 +211,7 @@ def _load_target(target_dir: Path, dashboard_path: Path) -> dict[str, Any]:
 
     return {
         "domain": domain,
+        "project": project,
         "has_report": has_summary,
         "scan_start": meta.get("scan_start"),
         "scan_end": meta.get("scan_end"),
@@ -299,6 +331,10 @@ def _render_html(targets: list[dict], generated_at: str) -> str:
             f'<a href="{escape(t["report_rel"])}"><code>{escape(t["domain"])}</code></a>'
             if t["report_rel"] else f'<code>{escape(t["domain"])}</code>'
         )
+        project_cell = (
+            f'<code>{escape(t["project"])}</code>' if t["project"]
+            else '<span class="small">—</span>'
+        )
         stale_note = ""
         if t["stale_days"] is not None and t["stale_days"] > _STALE_DAYS:
             stale_note = f'<br><span class="stale">stale — {t["stale_days"]}d ago</span>'
@@ -306,6 +342,7 @@ def _render_html(targets: list[dict], generated_at: str) -> str:
         dur_str = f"{dur:,.0f}s" if isinstance(dur, (int, float)) else "—"
         rows.append(
             "<tr>"
+            f"<td>{project_cell}</td>"
             f"<td>{domain_cell}</td>"
             f"<td>{_health_badge(t['health'])}</td>"
             f"<td><span class=\"small\">{escape(str(t['scan_end'] or '—'))}</span>"
@@ -330,7 +367,7 @@ def _render_html(targets: list[dict], generated_at: str) -> str:
         '<input class="filter" placeholder="filter… (domain)" '
         'onkeyup="filterTable(this, \'tbl-targets\')">\n'
         '<table id="tbl-targets"><thead><tr>'
-        "<th>Domain</th><th>Health</th><th>Last scan</th>"
+        "<th>Project</th><th>Domain</th><th>Health</th><th>Last scan</th>"
         "<th>Nuclei severity</th><th>Secrets</th><th>High-value</th>"
         "<th>Delta since last scan</th><th>Risk</th>"
         "</tr></thead>"
@@ -353,8 +390,8 @@ def build_dashboard(outputs_root: Path) -> dict:
     outputs_root = Path(outputs_root)
     dashboard_path = outputs_root / "dashboard.html"
 
-    target_dirs = discover_targets(outputs_root)
-    targets = [_load_target(d, dashboard_path) for d in target_dirs]
+    refs = discover_targets(outputs_root)
+    targets = [_load_target(r["path"], dashboard_path, project=r["project"]) for r in refs]
     targets.sort(key=lambda t: t["risk_score"], reverse=True)
 
     generated_at = now_iso()
@@ -367,7 +404,10 @@ def build_dashboard(outputs_root: Path) -> dict:
         "dashboard", status, input_path=outputs_root,
         outputs=[dashboard_path], count=len(targets), error=error,
         extra={
-            "targets": [t["domain"] for t in targets],
+            "targets": [
+                f"{t['project']}/{t['domain']}" if t["project"] else t["domain"]
+                for t in targets
+            ],
             "stale": sum(1 for t in targets if (t["stale_days"] or 0) > _STALE_DAYS),
             "broken": sum(1 for t in targets if t["health"] == "broken"),
             "no_report": sum(1 for t in targets if t["health"] == "no_report"),

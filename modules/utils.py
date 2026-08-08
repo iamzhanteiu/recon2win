@@ -36,6 +36,11 @@ DOMAIN_RE = re.compile(
     r"^(?=.{1,253}$)(?!-)[A-Za-z0-9-]{1,63}(?:\.[A-Za-z0-9-]{1,63})+$"
 )
 
+# A project name becomes a directory path component
+# (outputs/<project>/<domain>/) — letters/digits plus '.', '_', '-' only,
+# no leading dot (rules out "." / ".." and hidden-dir surprises).
+PROJECT_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
+
 
 # ----------------------------------------------------------------------
 # Validation
@@ -58,15 +63,44 @@ def validate_domain(domain: str) -> str:
     return d
 
 
+def validate_project(name: str) -> str:
+    """Return a cleaned project name, or raise ValueError.
+
+    Plays the same role for the optional project grouping
+    (``outputs/<project>/<domain>/``) that ``validate_domain`` plays for the
+    domain component — guards a CLI-supplied string before it becomes a
+    directory path component (path traversal, empty/reserved names).
+    """
+    n = (name or "").strip()
+    if not n:
+        raise ValueError("project name is empty")
+    if not PROJECT_RE.match(n):
+        raise ValueError(
+            f"invalid project name: {name!r} — use letters, digits, "
+            "'.', '_', '-' only, and don't start with one of the punctuation chars"
+        )
+    return n
+
+
 # ----------------------------------------------------------------------
 # Filesystem layout
 # ----------------------------------------------------------------------
-def create_output_structure(domain: str, root: str = "outputs") -> Path:
-    """Create the standard folder tree under ``<root>/<domain>/``.
+def create_output_structure(
+    domain: str, root: str = "outputs", project: Optional[str] = None,
+) -> Path:
+    """Create the standard folder tree under ``<root>/<domain>/`` — or, when
+    *project* is given, ``<root>/<project>/<domain>/``.
+
+    Both shapes coexist on purpose: existing scans keep working at their
+    flat ``<root>/<domain>/`` path (``modules.dashboard`` treats those as
+    "ungrouped"); *project* is opt-in for new scans that want to be grouped.
+    *project* is not re-validated here — call ``validate_project()`` at the
+    CLI boundary before passing it through, same as ``validate_domain()``
+    for *domain*.
 
     Layout (v2 — grouped by stage for ``raw/`` and ``findings/``):
 
-        <root>/<domain>/
+        <root>/[<project>/]<domain>/
             raw/                     # tool outputs grouped by stage
                 subdomain/           # subfinder.txt, amass.txt, chaos.txt
                 content_discovery/   # katana_urls.txt, urlfinder_urls.txt
@@ -82,7 +116,7 @@ def create_output_structure(domain: str, root: str = "outputs") -> Path:
             tests_input/             # reserved for future sample inputs
             report/                  # final_report.{html,md,json}
     """
-    base = Path(root) / domain
+    base = Path(root) / project / domain if project else Path(root) / domain
     for sub in (
         "raw",
         "raw/subdomain",
@@ -116,7 +150,8 @@ def raw_dir(output_dir: Path, stage: str) -> Path:
     valid = {"subdomain", "content_discovery", "dirsearch", "ffuf", "waymore",
              "arjun", "nuclei_default", "httpx_urls", "responses",
              "apidocs", "baseline", "httpx_screenshot", "graphql_probe",
-             "cors_probe", "buckets", "gitdump", "misconfig_probe"}
+             "cors_probe", "buckets", "gitdump", "misconfig_probe",
+             "fuzz_recurse"}
     if stage not in valid:
         raise ValueError(
             f"unknown raw subfolder {stage!r} — valid options: {sorted(valid)}"
