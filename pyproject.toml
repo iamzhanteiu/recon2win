@@ -32,6 +32,7 @@ dependencies = [
 
 [project.optional-dependencies]
 web = ["flask>=3.0"]      # web/app.py — optional browser UI
+web-prod = ["flask>=3.0", "gunicorn>=21"]  # + production WSGI server (see README § Web UI deployment)
 xlsx = ["openpyxl>=3.1"]  # modules/xlsx_report.py — optional --xlsx-report
 all = ["recon2win[web,xlsx]"]
 
