@@ -12,6 +12,13 @@ làm điểm mốc đầu tiên.
 
 ### Added
 
+* **Web results browser** (`web/app.py` `/results/*`, `modules/webdata.py`) —
+  duyệt kết quả scan qua trình duyệt: danh sách target theo project, bảng
+  hosts/urls/findings lọc + phân trang, link thẳng tới `final_report.html`/
+  `asm_report.html` có sẵn. Đọc file trên đĩa trực tiếp, không có
+  SQLite index (đủ nhanh cho 1 người dùng cục bộ — xem
+  `docs/architecture/decisions.md`). `dashboard._load_target` đổi thành
+  `dashboard.load_target` (public) để dùng chung.
 * **API-docs discovery — recall redesign** (`modules/apidocs.py`, mục tiêu
   tăng coverage):
   * **Chain UI→spec** (`apidocs.spec_chase`): gặp swagger-ui/redoc/scalar thì

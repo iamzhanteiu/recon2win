@@ -261,6 +261,48 @@ chương trình H1.
 gom nhóm). CHƯA làm: web UI (`web/app.py`), REST API, gán project cho 12
 target cũ (còn "ungrouped" tới khi tự tay làm hoặc yêu cầu công cụ hỗ trợ).
 
+### Web results browser (`/results/*`) — lát cắt tối thiểu của `ui-design.md`
+
+**Bối cảnh:** `docs/ui-design.md` đã có sẵn một spec rất đầy đủ (SQLite index
+per-target, REST API riêng, triage state, saved filter chia sẻ team, graph
+WebGL...) — quy mô cấp sản phẩm doanh nghiệp. Yêu cầu thực tế chỉ là "hiển
+thị kết quả trực quan hơn", cho một người dùng, đứng sau Cloudflare Tunnel
+(không cần tự làm auth).
+
+**Quyết định phạm vi:** không làm theo `ui-design.md` toàn bộ. Mở rộng
+`web/app.py` (Flask + template server-render, đúng phong cách
+`final_report.html`/`dashboard.html` đã có) thay vì SPA riêng. Đọc file
+trên đĩa trực tiếp (`alive_table.txt`/`alive_urls_table.txt`/`nuclei.json`
+qua `layout.path()`), phân trang/lọc bằng Python — KHÔNG có SQLite index
+như spec đề xuất.
+
+**Vì sao chấp nhận được:** đo trên acronis.com thật — bảng URL 18.723
+dòng chia 188 trang, mỗi trang trả về tức thời (đọc file text, không parse
+JSON lớn). `docs/ui-design.md §0.1` đã tự nêu rõ ngưỡng đáng lo là
+guildwars2.com 469.143 dòng / 63MB — khi đó (hoặc khi có >1 người dùng
+cùng lúc) mới cần quay lại xây SQLite index như spec đã thiết kế sẵn.
+
+**Tái dùng có chủ đích, không viết lại:** `report/final_report.html` (đã có
+searchable table qua `filterTable()`) và `report/asm_report.html` (đã có
+sẵn) được SERVE TRỰC TIẾP qua `/results/<target>/report/<filename>` thay vì
+xây lại. `modules/webdata.py` tái dùng `dashboard.discover_targets()` +
+`dashboard.load_target()` (đổi từ `_load_target` sang public — xem mục
+dưới) cho danh sách target theo project, không viết lại logic health/risk
+score.
+
+**Đổi `dashboard._load_target` → `dashboard.load_target` (public):**
+`webdata.py` cần gọi hàm này từ ngoài module — giữ tiền tố `_` (private)
+trong khi có caller thật ở module khác là code smell, không phải giữ tương
+thích ngược có giá trị. Đổi tên xuyên suốt `modules/dashboard.py` +
+`tests/test_dashboard.py` (12 chỗ), verify lại bằng test suite đầy đủ.
+
+**Bảo mật đường dẫn:** `target_ref` (URL segment `domain` hoặc
+`project/domain`) qua `webdata.resolve_target()` — loại bỏ segment
+`.`/`..`, giới hạn tối đa 2 segment, và bắt buộc path kết quả phải khớp
+`dashboard._is_target_dir()` (có skeleton `raw/logs/report/processed`)
+trước khi được coi là hợp lệ — một thư mục bất kỳ khác trên hệ thống không
+thể lọt qua kiểm tra này dù dùng `..` hay path tuyệt đối.
+
 ## Nợ kỹ thuật đã biết (chưa xử lý, ghi lại để không phải phát hiện lại)
 
 | Nợ | Mô tả | Mức ảnh hưởng |

@@ -85,6 +85,13 @@ mỗi module (không suy đoán). Nhóm theo vai trò trong pipeline (xem
 | `asm_report.py` | `asm_report.html` — chấm điểm tin cậy run, danh sách test tay ưu tiên | `layout` |
 | `dashboard.py` | `outputs/dashboard.html` — tổng quan mọi target, đọc lại `logs/stages.json`. `discover_targets()` nhận diện 2 tầng: `outputs/<domain>/` (ungrouped, `project: None`) VÀ `outputs/<project>/<domain>/` (`_is_target_dir()` phân biệt qua skeleton `raw/logs/report/processed`) | `report` (`classify_stages`, `load_json_safe`, `missing_tools_from_skips`, `rel_link`) |
 
+## Web UI (`web/`, tuỳ chọn)
+
+| File | Trách nhiệm | Phụ thuộc |
+|---|---|---|
+| `web/app.py` | Flask — chạy scan qua subprocess (`/`, `/api/*`) + browse kết quả (`/results/*`) | `modules.webdata` |
+| `modules/webdata.py` | Đọc `alive_table.txt`/`alive_urls_table.txt`/`nuclei.json` cho `/results/*` — phân trang/lọc bằng Python, không index | `dashboard`, `layout` |
+
 ## Tích hợp phụ
 
 | Module | Trách nhiệm |

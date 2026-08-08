@@ -1240,7 +1240,8 @@ The tests cover the pure helpers in `modules/url_merge.py` and
 ## Web UI (optional)
 
 `web/app.py` is a tiny Flask server that lets you run recon2win from
-a browser with a live terminal view (xterm.js + Server-Sent Events).
+a browser with a live terminal view (xterm.js + Server-Sent Events),
+and browse existing scan results without touching the filesystem.
 
 ```bash
 pip install flask                 # optional — CLI works without it
@@ -1248,7 +1249,7 @@ python3 web/app.py                # http://127.0.0.1:5000
 python3 web/app.py --host 0.0.0.0 --port 8080
 ```
 
-Endpoints:
+**Run a scan** (`/`) — form + live terminal:
 
 | Route | Method | Purpose |
 |---|---|---|
@@ -1258,9 +1259,30 @@ Endpoints:
 | `/api/status/<scan_id>` | GET | JSON snapshot |
 | `/api/scans` | GET | List known scan_ids |
 
+**Browse results** (`/results`) — read-only, over whatever is already in
+`output_root` (`outputs/` by default; `-p/--project`-grouped targets show
+up grouped, ungrouped targets show up ungrouped, exactly like
+`outputs/dashboard.html`):
+
+| Route | Purpose |
+|---|---|
+| `/results` | Target list, grouped by project |
+| `/results/<domain>` or `/results/<project>/<domain>` | Target overview — KPIs, stage health, links |
+| `.../hosts`, `.../urls` | Paginated, filterable (`q=`, `status=`) tables — reads `alive_table.txt` / `alive_urls_table.txt` directly, no database |
+| `.../findings` | Paginated, filterable (`q=`, `severity=`) nuclei findings |
+| `.../report/<filename>` | Serves `report/final_report.html` / `asm_report.html` / etc. directly |
+
+No index/database yet — each request reads and filters the relevant file
+from disk. Fine for one local user; `docs/architecture/decisions.md`
+records when to revisit that (a SQLite index per target, already designed
+in `docs/ui-design.md`, is the documented next step if this ever needs to
+serve more than one person at once or the biggest targets make per-request
+scans noticeably slow).
+
 No auth, no persistence — single-process dev server only. For
-real-world usage run behind a reverse proxy (nginx + auth_basic) or
-use a production WSGI server (`gunicorn web.app:app`).
+real-world usage run behind a reverse proxy (nginx + auth_basic) or a
+tunnel that handles auth (e.g. Cloudflare Tunnel), or use a production
+WSGI server (`gunicorn web.app:app`).
 
 ## Required external tools
 

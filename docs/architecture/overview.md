@@ -154,10 +154,18 @@ thuật).
 * **Telegram** (`modules/telegram.py`) — 3 chế độ thông báo (`notify_high_
   critical`, `notify_summary`, `per_phase`), fail-soft (không có token thì
   không gửi, không lỗi).
-* **Web UI** (`web/app.py`) — Flask dev server tuỳ chọn, chạy `main.py` qua
-  subprocess + xterm.js qua SSE. Không auth, không persistence — chỉ dùng
-  dev/demo, xem `ui-design.md` cho hướng nâng cấp thành read API + state
-  store thật.
+* **Web UI** (`web/app.py`) — Flask dev server tuỳ chọn, 2 phần:
+  1. **Run** (`/`) — chạy `main.py` qua subprocess + xterm.js qua SSE.
+  2. **Browse results** (`/results/*`, `modules/webdata.py`) — đọc trực
+     tiếp `alive_table.txt`/`alive_urls_table.txt`/`nuclei.json` qua
+     `layout.path()`, phân trang/lọc bằng Python, KHÔNG có index/database
+     riêng (chấp nhận đánh đổi này cho 1 người dùng cục bộ — xem
+     `decisions.md`). Tái dùng `dashboard.discover_targets()`/
+     `dashboard.load_target()` cho danh sách target theo project.
+  Không auth (dựa vào tunnel/reverse-proxy đứng trước, vd Cloudflare
+  Tunnel), không persistence ngoài file trên đĩa. `ui-design.md` là spec
+  đầy đủ hơn nhiều (SQLite index, triage state, multi-user) — `/results/*`
+  hiện tại là một lát cắt tối thiểu của spec đó, không phải toàn bộ.
 
 ## 8. Testing & CI
 
