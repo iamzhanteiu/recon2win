@@ -371,7 +371,8 @@ def scan(
     if depth_stats.get("deep"):
         print(console.phase_info_line(f"[ffuf] {fuzz_depth.summary_line(depth_stats)}"))
 
-    def _build(target: str, wordlist: Path | None) -> list[str]:
+    def _build(target: str, wordlist: Path | None,
+               exts: list[str] | None = None) -> list[str]:
         return _build_cmd(
             target, raw_ff / report_name(target), wordlist,
             threads=threads,
@@ -387,7 +388,7 @@ def scan(
             match_status=f_cfg.get("match_status") or [],
             filter_status=f_cfg.get("filter_status") or [],
             filter_regex=f_cfg.get("filter_regex") or "",
-            extensions=extensions,
+            extensions=extensions if exts is None else exts,
         )
 
     if dry_run:
@@ -463,6 +464,14 @@ def scan(
                 raw_ff / "merged_wordlists_deep.txt",
             )
 
+    # Extensions to ADD for deep-tier hosts, derived from the tech seen on
+    # them (B2 — e.g. a PHP host gets ``.php`` appended). Only these hosts
+    # pay for them, so a ``.php`` guess never hits an ASP.NET host.
+    deep_exts: list[str] = []
+    if deep_targets_set and depth_cfg.get("tech_aware_extensions", True):
+        deep_exts = [e for e in (depth_stats.get("deep_tech_exts") or [])
+                     if e not in extensions]
+
     results: dict[str, list[tuple[int, int, str]]] = {}
     failures: list[str] = []
     skipped_over_budget: list[str] = []
@@ -492,8 +501,10 @@ def scan(
             # đúng phần còn lại, không hơn.
             host_timeout = min(timeout, max(1, int(deadline - time.monotonic())))
             budget_capped = host_timeout < timeout
+        is_deep = target in deep_targets_set
+        target_exts = (list(extensions) + deep_exts) if (is_deep and deep_exts) else None
         r = runner.run(
-            _build(target, deep_wordlist if target in deep_targets_set else wordlist),
+            _build(target, deep_wordlist if is_deep else wordlist, target_exts),
             stage=stage, output_dir=output_dir,
             timeout=host_timeout, log_name=stage,
         )

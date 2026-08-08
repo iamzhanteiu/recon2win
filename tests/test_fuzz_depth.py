@@ -323,3 +323,80 @@ def test_summary_line_no_demoted_note_when_zero():
     line = fuzz_depth.summary_line(
         {"deep": 2, "standard": 10, "light": 1, "demoted": 0})
     assert "hạ về" not in line
+
+
+# ----------------------------------------------------------------------
+# B3 — API-aware tiering + wordlists
+# ----------------------------------------------------------------------
+def test_api_hostname_forces_deep():
+    tier, reasons = fuzz_depth.classify_depth("api.example.com", {})
+    assert tier == "deep"
+    assert any("api" in r for r in reasons)
+
+
+def test_rest_and_graphql_hostnames_are_api():
+    assert fuzz_depth.api_signal("rest.example.com", {})
+    assert fuzz_depth.api_signal("graphql.example.com", {})
+
+
+def test_confirmed_api_tech_marks_generic_host_deep():
+    # apidocs writes ["api"] into confirmed-tech; merge_confirmed_tech folds
+    # it into the row's tech list, and that must force "deep".
+    row = {"url": "https://app7.example.com", "tech": ["api"]}
+    tier, reasons = fuzz_depth.classify_depth("app7.example.com", row)
+    assert tier == "deep"
+
+
+def test_rapidapi_title_is_not_api_signal():
+    # loose substring "api" in a title must not count
+    row = {"tech": [], "title": "RapidAPI marketplace"}
+    assert not fuzz_depth.api_signal("www.example.com", row)
+
+
+def test_tech_wordlists_for_api_expands_to_api_lists():
+    wl = fuzz_depth.tech_wordlists_for({"api": 1})
+    assert any("api-endpoints.txt" in w for w in wl)
+    assert any("graphql.txt" in w for w in wl)
+
+
+def test_tier_targets_api_host_gets_api_wordlist():
+    rows = [{"url": "https://api.example.com", "tech": []}]
+    buckets, stats = fuzz_targets_stub(rows)
+    assert "https://api.example.com" in buckets["deep"]
+    assert "api" in stats["deep_tech_hits"]
+    assert any("api-endpoints.txt" in w for w in stats["deep_tech_wordlists"])
+
+
+def fuzz_targets_stub(rows):
+    targets = [r["url"] for r in rows]
+    return fuzz_depth.tier_targets(targets, rows, {})
+
+
+def test_tier_targets_api_aware_can_be_disabled():
+    rows = [{"url": "https://api.example.com", "tech": []}]
+    buckets, stats = fuzz_depth.tier_targets(
+        [r["url"] for r in rows], rows, {"fuzz_depth": {"api_aware_wordlists": False}})
+    assert "api" not in stats["deep_tech_hits"]
+
+
+# ----------------------------------------------------------------------
+# B2 — tech-aware extensions
+# ----------------------------------------------------------------------
+def test_matched_ext_keys_word_boundary():
+    assert fuzz_depth._matched_ext_keys({"tech": ["PHP"]}) == {"php"}
+    # "java" must NOT fire on "javascript"
+    assert "java" not in fuzz_depth._matched_ext_keys({"tech": ["JavaScript"]})
+
+
+def test_tech_exts_for_php():
+    assert ".php" in fuzz_depth.tech_exts_for({"php": 1})
+
+
+def test_tier_targets_reports_deep_tech_exts():
+    rows = [{"url": "https://shop.example.com", "tech": ["PHP"],
+             "title": "Store"}]
+    # shop scores standard by hostname; PHP alone doesn't force deep, so use
+    # an apex which is deep, carrying PHP tech.
+    rows = [{"url": "https://example.com", "tech": ["PHP"]}]
+    _, stats = fuzz_depth.tier_targets(["https://example.com"], rows, {})
+    assert ".php" in stats["deep_tech_exts"]

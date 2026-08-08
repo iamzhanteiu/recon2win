@@ -36,6 +36,7 @@ lần trước làm tier + tech-aware wordlist ở lần sau chính xác hơn.
 """
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 from . import layout
@@ -97,6 +98,46 @@ TECH_WORDLIST_MAP: dict[str, str] = {
     "wordpress": "wordlists/SecLists/Discovery/Web-Content/CMS/wordpress.fuzz.txt",
 }
 
+# ------------------------------------------------------------------
+# API-aware fuzzing (B3). A REST/GraphQL host is worth a wordlist of API
+# route names — ``common.txt``/``raft`` barely contain any, so root-only
+# fuzzing of an API host finds almost nothing. Three signals mark a host as
+# API: an api-ish hostname label (``api.``, ``rest.``, ``graphql.``), an API
+# framework in httpx ``-td``, or the ``"api"`` confirmed-tech marker apidocs
+# writes after seeing a spec/UI on a PRIOR scan (see modules/apidocs.py A6).
+# ------------------------------------------------------------------
+_API_HOST_LABELS = {"api", "apis", "rest", "restapi", "graphql", "gql",
+                    "webservice", "webservices", "ws", "gateway"}
+_API_TECH_KEYWORDS = ("fastapi", "express", "swagger", "openapi", "graphql",
+                      "restify", "hapi", "django rest")
+# Small, dedicated API-route wordlists (verified present in SecLists
+# 2026-08-08). Kept small on purpose: they are merged onto the base list and
+# ffuf's recursion multiplies whatever it is handed.
+API_WORDLISTS: tuple[str, ...] = (
+    "wordlists/SecLists/Discovery/Web-Content/api/api-endpoints.txt",
+    "wordlists/SecLists/Discovery/Web-Content/common-api-endpoints-mazen160.txt",
+    "wordlists/SecLists/Discovery/Web-Content/graphql.txt",
+)
+
+# tech keyword → extensions to append via ``-e`` (B2). Only the extensions a
+# host's stack actually serves are worth fuzzing: a ``.php`` guess on an
+# ASP.NET host is a wasted request. Signal is httpx ``-td`` (same blob used
+# for tiering), so no extra probing. Leading dots match SENSITIVE_EXT style.
+TECH_EXT_MAP: dict[str, tuple[str, ...]] = {
+    "php": (".php", ".phtml", ".php5", ".bak"),
+    "wordpress": (".php", ".phtml"),
+    "laravel": (".php",),
+    "asp.net": (".aspx", ".asmx", ".ashx", ".asp"),
+    "asp": (".asp", ".aspx"),
+    "iis": (".aspx", ".asp", ".asmx"),
+    "java": (".jsp", ".do", ".action"),
+    "tomcat": (".jsp", ".do"),
+    "spring": (".jsp", ".do"),
+    "coldfusion": (".cfm", ".cfc"),
+    "ruby": (".rb",),
+    "python": (".py",),
+}
+
 _DEFAULT_DEEP_THRESHOLD = 1000
 _DEFAULT_LIGHT_THRESHOLD = -500
 _DEFAULT_DEEP_MAX_HOSTS = 15
@@ -122,14 +163,65 @@ def _matched_tech_keys(row: dict) -> list[str]:
     return [kw for kw in _TECH_HINTS if kw in blob]
 
 
+def _matched_ext_keys(row: dict) -> set[str]:
+    """``TECH_EXT_MAP`` keys matched in *row*, on WORD boundaries so ``java``
+    does not fire on ``javascript`` and ``php`` does not fire on a random
+    substring. Signal is the same tech/webserver/title blob as everything
+    else in this module."""
+    blob = _tech_blob(row)
+    return {k for k in TECH_EXT_MAP
+            if re.search(r"\b" + re.escape(k) + r"\b", blob)}
+
+
+def _is_api_host(host: str) -> bool:
+    """True when a hostname label marks it as an API endpoint."""
+    labels = re.split(r"[.\-]", (host or "").lower())
+    return any(lbl in _API_HOST_LABELS for lbl in labels)
+
+
+def _has_api_tech(row: dict | None) -> bool:
+    """True when a row's tech signal marks it as an API host.
+
+    Checks the ``tech`` list explicitly for the ``"api"`` confirmed-tech
+    marker (never a loose substring — ``"rapidapi"`` in a title must not
+    count), then the content blob for real API frameworks.
+    """
+    row = row or {}
+    tech = row.get("tech")
+    tech_list = [str(t).lower() for t in tech] if isinstance(tech, list) else []
+    if "api" in tech_list:
+        return True
+    blob = _tech_blob(row)
+    return any(k in blob for k in _API_TECH_KEYWORDS)
+
+
+def api_signal(host: str, row: dict | None) -> bool:
+    """A host is API-facing by hostname OR by tech (httpx / confirmed)."""
+    return _is_api_host(host) or _has_api_tech(row)
+
+
 def tech_wordlists_for(tech_hits: dict[str, int]) -> list[str]:
-    """``TECH_WORDLIST_MAP`` paths for every key in *tech_hits*, deduped and
-    sorted for a deterministic merge order. Keys with no mapped file (not
-    every tech in ``_TECH_HINTS`` has a good dedicated SecLists list) are
-    silently skipped — that host still tiers "deep", it just gets no extra
-    wordlist beyond whatever ``deep_wordlists`` configures."""
+    """SecLists wordlist paths implied by *tech_hits*, deduped + sorted.
+
+    ``TECH_WORDLIST_MAP`` handles infra tech (jenkins/gitlab/…); the special
+    ``"api"`` key expands to :data:`API_WORDLISTS` (B3). Keys with no mapped
+    file are silently skipped — that host still tiers "deep", it just gets no
+    extra wordlist beyond whatever ``deep_wordlists`` configures."""
     paths = {TECH_WORDLIST_MAP[k] for k in tech_hits if k in TECH_WORDLIST_MAP}
+    if "api" in tech_hits:
+        paths.update(API_WORDLISTS)
     return sorted(paths)
+
+
+def tech_exts_for(tech_hits: dict[str, int]) -> list[str]:
+    """Extensions implied by *tech_hits* (:data:`TECH_EXT_MAP`), deduped and
+    order-stable so the ``-e`` argument is deterministic between runs."""
+    out: list[str] = []
+    for key in tech_hits:
+        for ext in TECH_EXT_MAP.get(key, ()):  # noqa: PERF401 — dedupe needed
+            if ext not in out:
+                out.append(ext)
+    return out
 
 
 def classify_depth(
@@ -150,15 +242,18 @@ def classify_depth(
     """
     row = row or {}
     blob = _tech_blob(row)
-    tech_hits = [label for kw, label in _TECH_HINTS.items() if kw in blob]
-    if tech_hits:
-        # dedupe giữ thứ tự (nhiều keyword có thể trỏ cùng nhãn, vd nexus/artifactory)
-        seen: set[str] = set()
-        reasons = []
-        for label in tech_hits:
-            if label not in seen:
-                seen.add(label)
-                reasons.append(f"tech: {label}")
+    # dedupe giữ thứ tự (nhiều keyword có thể trỏ cùng nhãn, vd nexus/artifactory)
+    seen: set[str] = set()
+    reasons: list[str] = []
+    # An API host is high-value on its own — force it "deep" so it gets the
+    # API wordlist (B3), even when its hostname score alone would not.
+    if api_signal(host, row):
+        reasons.append("api host")
+    for kw, label in _TECH_HINTS.items():
+        if kw in blob and label not in seen:
+            seen.add(label)
+            reasons.append(f"tech: {label}")
+    if reasons:
         return "deep", reasons
 
     hscore = score_subdomain(host)
@@ -220,10 +315,18 @@ def tier_targets(
     # Tech đã phát hiện trên tập "deep" CUỐI CÙNG (sau demote) — một host bị
     # demote không còn đáng nhận wordlist tốn kém, kể cả khi nó có tech
     # signal (demote chỉ xét hostname score, không phân biệt lý do vào deep).
+    api_aware = bool(d_cfg.get("api_aware_wordlists", True))
+    ext_aware = bool(d_cfg.get("tech_aware_extensions", True))
     tech_hits: dict[str, int] = {}
+    ext_keys: set[str] = set()
     for u in buckets["deep"]:
-        for key in _matched_tech_keys(by_url.get(u) or {}):
+        row = by_url.get(u) or {}
+        for key in _matched_tech_keys(row):
             tech_hits[key] = tech_hits.get(key, 0) + 1
+        if api_aware and api_signal(_host_of(u), row):
+            tech_hits["api"] = tech_hits.get("api", 0) + 1
+        if ext_aware:
+            ext_keys |= _matched_ext_keys(row)
 
     stats = {
         "deep": len(buckets["deep"]),
@@ -233,6 +336,7 @@ def tier_targets(
         "reasons": reasons_map,
         "deep_tech_hits": tech_hits,
         "deep_tech_wordlists": tech_wordlists_for(tech_hits),
+        "deep_tech_exts": tech_exts_for(ext_keys),
     }
     return buckets, stats
 

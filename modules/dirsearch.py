@@ -890,8 +890,22 @@ def scan(
         deep_raw_out = raw_ds / "dirsearch_raw_deep.txt"
         standard_raw_out = raw_ds / "dirsearch_raw_standard.txt"
 
+        # Tech-implied extensions (B2) apply to the deep group only. In
+        # wordlist mode dirsearch honours ``-e`` only with ``--combine`` on,
+        # so enable it for this group when there are extra extensions to fuzz
+        # (bounded: few deep hosts × a 2–4 entry ext list).
+        deep_extensions = extensions
+        deep_combine = combine
+        deep_exts = ([e for e in (depth_stats.get("deep_tech_exts") or [])]
+                     if depth_cfg.get("tech_aware_extensions", True) else [])
+        if deep_exts:
+            base_exts = list(extensions) if isinstance(extensions, list) else []
+            deep_extensions = base_exts + [e for e in deep_exts if e not in base_exts]
+            if wordlist_file is not None:
+                deep_combine = True
+
         deep_urls, deep_extra = _run_group(
-            deep_targets, deep_wordlist_file, extensions, combine,
+            deep_targets, deep_wordlist_file, deep_extensions, deep_combine,
             deep_ceiling, raw_ds / "deep", deep_raw_out, [], "deep",
         )
         standard_urls, standard_extra = _run_group(
