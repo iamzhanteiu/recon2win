@@ -901,6 +901,7 @@ class ReportBuilder:
         ("processed/crawler_urls.txt",   "processed", "crawler union"),
         ("processed/dirsearch_urls.txt", "processed", "dirsearch URL list"),
         ("processed/ffuf_urls.txt",      "processed", "ffuf URL list"),
+        ("processed/fuzz_recurse_urls.txt", "processed", "hits under discovered dirs"),
         ("processed/waymore_urls.txt",   "processed", "waymore URL list"),
         ("processed/all_urls.txt",       "processed", "merged normalised URLs"),
         ("processed/js_urls.txt",        "processed", "JS URLs (final)"),
@@ -991,6 +992,7 @@ class ReportBuilder:
             "crawler_urls":      count_lines(layout.path(self.inputs.output_dir, "crawler_urls.txt")),
             "dirsearch_urls":    count_lines(layout.path(self.inputs.output_dir, "dirsearch_urls.txt")),
             "ffuf_urls":         count_lines(layout.path(self.inputs.output_dir, "ffuf_urls.txt")),
+            "fuzz_recurse_urls": count_lines(layout.path(self.inputs.output_dir, "fuzz_recurse_urls.txt")),
             "waymore_urls":      count_lines(layout.path(self.inputs.output_dir, "waymore_urls.txt")),
             "xnlinkfinder_endpoints": count_lines(layout.path(self.inputs.output_dir, "xnlinkfinder_endpoints.txt")),
             "xnlinkfinder_urls": count_lines(layout.path(self.inputs.output_dir, "xnlinkfinder_urls.txt")),
@@ -1836,6 +1838,7 @@ class ReportBuilder:
             ("katana crawl (+urlfinder/gau if on)", "crawler_urls", "../processed/crawler_urls.txt"),
             ("dirsearch",                  "dirsearch_urls", "../processed/dirsearch_urls.txt"),
             ("ffuf",                       "ffuf_urls", "../processed/ffuf_urls.txt"),
+            ("fuzz_recurse (under discovered dirs)", "fuzz_recurse_urls", "../processed/fuzz_recurse_urls.txt"),
             ("waymore",                    "waymore_urls", "../processed/waymore_urls.txt"),
         ]:
             out.append(f"| {label} | `{c.get(key,0)}` | [{rel}]({rel}) |")
@@ -2027,9 +2030,13 @@ class ReportBuilder:
             out.append(f"- External OSINT hits: `{len(_osint)}`")
             out.append("- Output file: "
                        "[`../findings/api_docs.json`](../findings/api_docs.json)\n")
+            _chased = sum(1 for x in _specs if x.get("source") == "ui-chase")
+            if _chased:
+                out.append(f"- Specs recovered by following a docs UI → spec: "
+                           f"`{_chased}`")
             if _specs:
-                out.append("| Type | Title | Paths | Auth | Document |")
-                out.append("|------|-------|------:|------|----------|")
+                out.append("| Type | Title | Paths | Auth | Source | Document |")
+                out.append("|------|-------|------:|------|--------|----------|")
                 for x in _specs:
                     out.append(
                         f"| `{escape(str(x.get('kind','')))} "
@@ -2037,6 +2044,7 @@ class ReportBuilder:
                         f"| {escape(str(x.get('title','')))} "
                         f"| `{int(x.get('paths', 0) or 0)}` "
                         f"| `{escape(', '.join(x.get('security_schemes') or []) or 'none')}` "
+                        f"| `{escape(str(x.get('source','probe')))}` "
                         f"| `{escape(str(x.get('url','')))}` |"
                     )
                 out.append("")
@@ -2360,6 +2368,7 @@ class ReportBuilder:
                 ("katana crawl (+urlfinder/gau if on)", "crawler_urls",  "../processed/crawler_urls.txt"),
                 ("dirsearch",                  "dirsearch_urls","../processed/dirsearch_urls.txt"),
                 ("ffuf",                       "ffuf_urls",     "../processed/ffuf_urls.txt"),
+                ("fuzz_recurse (under discovered dirs)", "fuzz_recurse_urls", "../processed/fuzz_recurse_urls.txt"),
                 ("waymore",                    "waymore_urls",  "../processed/waymore_urls.txt"),
                 ("raw katana output",          None,            "../raw/content_discovery/katana_urls.txt"),
                 ("raw urlfinder output",       None,            "../raw/content_discovery/urlfinder_urls.txt"),
@@ -2942,6 +2951,7 @@ class ReportBuilder:
             "</table>"
         )
         if specs:
+            chased = sum(1 for s in specs if s.get("source") == "ui-chase")
             rows = "".join(
                 "<tr>"
                 f"<td><code>{escape(str(s.get('kind', '')))} "
@@ -2951,16 +2961,19 @@ class ReportBuilder:
                 f"<td><span class=\"small\"><code>"
                 f"{escape(', '.join(s.get('security_schemes') or []) or 'none')}"
                 "</code></span></td>"
+                f"<td><code>{escape(str(s.get('source', 'probe')))}</code></td>"
                 f"<td><a href=\"{escape(str(s.get('url', '')))}\"><code>"
                 f"{escape(str(s.get('url', '')))}</code></a></td>"
                 "</tr>"
                 for s in specs
             )
+            chase_note = (f" &mdash; {chased} via UI&rarr;spec chase"
+                          if chased else "")
             out.append(
                 f"<details open><summary><strong>{len(specs):,} spec(s)"
-                "</strong></summary>\n"
+                f"</strong>{chase_note}</summary>\n"
                 "<table><thead><tr><th>Type</th><th>Title</th><th>Paths</th>"
-                "<th>Auth</th><th>Document</th></tr></thead>"
+                "<th>Auth</th><th>Source</th><th>Document</th></tr></thead>"
                 f"<tbody>{rows}</tbody></table></details>"
             )
         if ui or disc:

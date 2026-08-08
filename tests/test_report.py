@@ -239,6 +239,9 @@ def fake_outputs(tmp_path: Path) -> Path:
     (layout.path(base, "ffuf_urls.txt")).write_text(
         "https://example.com/admin\nhttps://example.com/api/\n"
     )
+    (layout.path(base, "fuzz_recurse_urls.txt")).write_text(
+        "https://example.com/api/keys\n"
+    )
     (layout.path(base, "waymore_urls.txt")).write_text("https://example.com/old/login\n")
     (layout.path(base, "all_urls.txt")).write_text(
         "https://example.com/login\nhttps://example.com/admin\n"
