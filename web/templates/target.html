@@ -1,0 +1,49 @@
+{% extends "_page.html" %}
+{% block title %}{{ summary.domain }}{% endblock %}
+{% block content %}
+<p class="breadcrumb"><a href="{{ url_for('results_index') }}">Results</a> ›
+    {% if summary.project %}{{ summary.project }} › {% endif %}{{ summary.domain }}</p>
+
+<h1>
+    <code>{{ summary.domain }}</code>
+    <span class="badge badge-{{ {'ok':'low','degraded':'medium','broken':'critical','no_report':'info'}[summary.health] }}">{{ summary.health|upper }}</span>
+</h1>
+<p class="muted">
+    Last scan: {{ summary.scan_end or 'never' }}
+    {% if summary.duration_seconds %} · {{ "%.0f"|format(summary.duration_seconds) }}s{% endif %}
+    {% if summary.stale_days and summary.stale_days > 30 %}<span class="stale"> · stale — {{ summary.stale_days }}d ago</span>{% endif %}
+</p>
+
+<div class="kpi-row">
+    <div class="kpi"><span class="kpi-label">Risk score</span><span class="kpi-value">{{ "{:,}".format(summary.risk_score) }}</span></div>
+    <div class="kpi"><span class="kpi-label">Secrets</span><span class="kpi-value">{{ summary.secrets_total }}</span></div>
+    <div class="kpi"><span class="kpi-label">High-value</span><span class="kpi-value">{{ summary.high_value_count }}</span></div>
+    {% for sev, n in summary.nuclei_severity.items() %}{% if n %}
+    <div class="kpi"><span class="kpi-label">Nuclei {{ sev }}</span><span class="kpi-value">{{ n }}</span></div>
+    {% endif %}{% endfor %}
+</div>
+
+{% if summary.failed_stages %}
+<p class="warn-banner">⚠ {{ summary.failed_stages|length }} stage(s) failed: {{ summary.failed_stages|join(', ') }} — counts below may be undercounted.</p>
+{% endif %}
+
+<nav class="section-links">
+    <a href="{{ url_for('results_hosts', target_ref=target_ref) }}">Hosts →</a>
+    <a href="{{ url_for('results_urls', target_ref=target_ref) }}">URLs →</a>
+    <a href="{{ url_for('results_findings', target_ref=target_ref) }}">Findings →</a>
+    {% if has_final_report %}<a href="{{ url_for('results_report_file', target_ref=target_ref, filename='final_report.html') }}" target="_blank">Full report ↗</a>{% endif %}
+    {% if has_asm_report %}<a href="{{ url_for('results_report_file', target_ref=target_ref, filename='asm_report.html') }}" target="_blank">ASM report ↗</a>{% endif %}
+</nav>
+
+{% if summary.delta %}
+<h2>Since last scan</h2>
+{% if summary.delta.first_run %}
+<p class="muted">First scan — baseline established.</p>
+{% else %}
+<p>
+    {% for k, n in summary.delta.new.items() %}{% if n %}+{{ n }} {{ k }}&nbsp;&nbsp;{% endif %}{% endfor %}
+    {% if not summary.delta.new.values()|select|list %}<span class="muted">no changes</span>{% endif %}
+</p>
+{% endif %}
+{% endif %}
+{% endblock %}

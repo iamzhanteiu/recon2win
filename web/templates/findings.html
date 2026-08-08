@@ -1,0 +1,52 @@
+{% extends "_page.html" %}
+{% block title %}Findings · {{ target_ref }}{% endblock %}
+{% block content %}
+<p class="breadcrumb"><a href="{{ url_for('results_index') }}">Results</a> ›
+    <a href="{{ url_for('results_target', target_ref=target_ref) }}">{{ target_ref }}</a> › Findings</p>
+
+<h1>Findings <span class="muted">— {{ "{:,}".format(total) }} matching</span></h1>
+
+{% if severity_count %}
+<p class="severity-summary">
+    {% for sev, n in severity_count.items() %}{% if n %}<span class="chip">{{ sev }} {{ n }}</span>{% endif %}{% endfor %}
+</p>
+{% endif %}
+
+<form class="filter-bar" method="get">
+    <input type="text" name="q" value="{{ q }}" placeholder="search name / template / host…">
+    <select name="severity">
+        <option value="" {% if not severity %}selected{% endif %}>all severities</option>
+        {% for sev in ["critical", "high", "medium", "low", "info", "unknown"] %}
+        <option value="{{ sev }}" {% if severity == sev %}selected{% endif %}>{{ sev }}</option>
+        {% endfor %}
+    </select>
+    <button type="submit">Filter</button>
+    {% if q or severity %}<a class="clear-link" href="{{ url_for('results_findings', target_ref=target_ref) }}">Clear</a>{% endif %}
+</form>
+
+{% if rows %}
+<table class="data-table">
+    <thead><tr><th>Severity</th><th>Finding</th><th>Template</th><th>Matched at</th></tr></thead>
+    <tbody>
+    {% for f in rows %}
+    <tr>
+        <td><span class="badge badge-{{ f.severity }}">{{ f.severity|upper }}</span></td>
+        <td>{{ f.name }}</td>
+        <td><code>{{ f.template_id }}</code>{% if f.template_url %} <a href="{{ f.template_url }}" target="_blank" rel="noopener">↗</a>{% endif %}</td>
+        <td class="url-cell">{{ f.matched_at }}</td>
+    </tr>
+    {% endfor %}
+    </tbody>
+</table>
+
+<nav class="pager">
+    {% if page > 1 %}<a href="{{ url_for('results_findings', target_ref=target_ref, q=q, severity=severity, page=page-1, limit=limit) }}">‹ Prev</a>{% endif %}
+    <span class="muted">Page {{ page }} of {{ pages }}</span>
+    {% if page < pages %}<a href="{{ url_for('results_findings', target_ref=target_ref, q=q, severity=severity, page=page+1, limit=limit) }}">Next ›</a>{% endif %}
+</nav>
+{% else %}
+<p class="empty-state">
+    {% if q or severity %}No findings match this filter.{% else %}No findings recorded — nuclei may not have run, or found nothing (check the target overview for stage health before reading this as "clean").{% endif %}
+</p>
+{% endif %}
+{% endblock %}

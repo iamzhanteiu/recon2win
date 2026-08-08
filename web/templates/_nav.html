@@ -1,0 +1,7 @@
+<header class="topnav">
+    <a class="brand" href="{{ url_for('index') }}">recon2win</a>
+    <nav>
+        <a href="{{ url_for('index') }}" {% if active=='run' %}class="active"{% endif %}>Run scan</a>
+        <a href="{{ url_for('results_index') }}" {% if active=='results' %}class="active"{% endif %}>Browse results</a>
+    </nav>
+</header>

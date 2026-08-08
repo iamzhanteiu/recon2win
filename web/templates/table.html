@@ -1,0 +1,44 @@
+{% extends "_page.html" %}
+{% block title %}{{ title }} · {{ target_ref }}{% endblock %}
+{% block content %}
+<p class="breadcrumb"><a href="{{ url_for('results_index') }}">Results</a> ›
+    <a href="{{ url_for('results_target', target_ref=target_ref) }}">{{ target_ref }}</a> › {{ title }}</p>
+
+<h1>{{ title }} <span class="muted">— {{ "{:,}".format(total) }} matching</span></h1>
+
+<form class="filter-bar" method="get">
+    <input type="text" name="q" value="{{ q }}" placeholder="search url / content-type…">
+    <input type="text" name="status" value="{{ status }}" placeholder="status (e.g. 200)" class="status-input">
+    <button type="submit">Filter</button>
+    {% if q or status %}<a class="clear-link" href="{{ url_for(request.endpoint, target_ref=target_ref) }}">Clear</a>{% endif %}
+</form>
+
+{% if rows %}
+<table class="data-table">
+    <thead><tr>{% for c in columns %}<th>{{ c.replace('_', ' ') }}</th>{% endfor %}</tr></thead>
+    <tbody>
+    {% for row in rows %}
+    <tr>
+        {% for c in columns %}
+        <td>
+            {% if c == 'status' %}<span class="badge status-{{ row[c][0] if row[c] else '' }}xx">{{ row[c] }}</span>
+            {% elif c == 'url' %}<a href="{{ row[c] }}" target="_blank" rel="noopener" class="url-cell">{{ row[c] }}</a>
+            {% else %}{{ row[c] }}{% endif %}
+        </td>
+        {% endfor %}
+    </tr>
+    {% endfor %}
+    </tbody>
+</table>
+
+<nav class="pager">
+    {% if page > 1 %}<a href="{{ url_for(request.endpoint, target_ref=target_ref, q=q, status=status, page=page-1, limit=limit) }}">‹ Prev</a>{% endif %}
+    <span class="muted">Page {{ page }} of {{ pages }}</span>
+    {% if page < pages %}<a href="{{ url_for(request.endpoint, target_ref=target_ref, q=q, status=status, page=page+1, limit=limit) }}">Next ›</a>{% endif %}
+</nav>
+{% else %}
+<p class="empty-state">
+    {% if q or status %}No rows match this filter.{% else %}No data yet — this stage may not have run, or found nothing.{% endif %}
+</p>
+{% endif %}
+{% endblock %}

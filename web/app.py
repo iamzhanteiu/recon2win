@@ -9,13 +9,22 @@ Endpoints
 ``GET  /api/status/<scan_id>``  — JSON: status + accumulated output
 ``GET  /api/scans``              — JSON: list of known scan_ids
 
+``GET  /results``                                  — target list, grouped by project
+``GET  /results/<target_ref>``                      — target overview (KPIs + links)
+``GET  /results/<target_ref>/hosts``                — paginated/filterable host table
+``GET  /results/<target_ref>/urls``                 — paginated/filterable URL table
+``GET  /results/<target_ref>/findings``             — paginated/filterable findings table
+``GET  /results/<target_ref>/report/<filename>``    — serves report/* files directly
+  (``target_ref`` is ``domain`` or ``project/domain`` — see modules/webdata.py)
+
 Run with::
 
     python3 web/app.py            # http://localhost:5000
 
 The UI is intentionally minimal — no auth, no persistence, no fancy
-analytics. The point is "run recon2win from a browser and watch the
-terminal". For real-world usage, run behind a reverse proxy with auth.
+analytics. The point is "run recon2win from a browser and browse/watch
+results". For real-world usage, run behind a reverse proxy (or a tunnel)
+that handles auth — this app does not implement any itself.
 """
 from __future__ import annotations
 
@@ -27,8 +36,10 @@ import uuid
 from pathlib import Path
 from typing import Any
 
+import yaml
 from flask import (
-    Flask, Response, jsonify, render_template, request, stream_with_context,
+    Flask, Response, abort, jsonify, render_template, request,
+    send_from_directory, stream_with_context,
 )
 
 
@@ -51,7 +62,23 @@ if str(REPO_ROOT) not in sys.path:
 
 # Imported once after the path fix so the smoke-test server works
 # without the user manually setting PYTHONPATH.
+from modules import webdata  # noqa: E402
 from modules.utils import validate_domain  # noqa: E402
+
+
+def _output_root() -> Path:
+    """``output_root`` from config.yml (same key main.py reads), default
+    "outputs". Re-read on every call — config.yml can change between
+    requests on a long-running dev server, and this is cheap."""
+    root = "outputs"
+    if CONFIG_YML.exists():
+        try:
+            cfg = yaml.safe_load(CONFIG_YML.read_text(encoding="utf-8")) or {}
+            root = cfg.get("output_root", "outputs")
+        except yaml.YAMLError:
+            pass
+    p = Path(root)
+    return p if p.is_absolute() else REPO_ROOT / p
 
 
 # ----------------------------------------------------------------------
@@ -122,6 +149,20 @@ def _scan_or_404(scan_id: str) -> dict | tuple[dict, int]:
 # Flask app
 # ----------------------------------------------------------------------
 app = Flask(__name__, template_folder="templates", static_folder="static")
+
+
+@app.context_processor
+def _inject_nav_active() -> dict:
+    """Which top-nav link is "active", inferred from the endpoint name —
+    so a new /results/* route doesn't need to remember to pass it."""
+    ep = request.endpoint or ""
+    if ep.startswith("results_") or ep == "results_index":
+        active = "results"
+    elif ep == "index":
+        active = "run"
+    else:
+        active = None
+    return {"active": active}
 
 
 @app.route("/")
@@ -230,6 +271,105 @@ def api_scans():
                 for sid, s in SCANS.items()
             ],
         })
+
+
+# ----------------------------------------------------------------------
+# Results browser — read-only, all data via modules/webdata.py
+# ----------------------------------------------------------------------
+def _resolve_or_404(target_ref: str) -> dict:
+    """``webdata.resolve_target()`` or Flask 404 — one place to call from
+    every /results/<target_ref>... route."""
+    ref = webdata.resolve_target(_output_root(), target_ref)
+    if ref is None:
+        abort(404, description=f"no such target: {target_ref!r}")
+    return ref
+
+
+def _page_args() -> tuple[str, str, int, int]:
+    """Common query-string args every table route accepts."""
+    q = request.args.get("q", "")
+    status = request.args.get("status", "")
+    page = request.args.get("page", "1")
+    limit = request.args.get("limit", "100")
+    try:
+        page = int(page)
+    except ValueError:
+        page = 1
+    try:
+        limit = int(limit)
+    except ValueError:
+        limit = 100
+    return q, status, page, limit
+
+
+@app.route("/results")
+def results_index():
+    """Target list, grouped by project — the results-browsing landing page."""
+    targets = webdata.list_targets(_output_root())
+    groups: dict[str | None, list[dict]] = {}
+    for t in targets:
+        groups.setdefault(t["project"], []).append(t)
+    # Ungrouped (None) first, then projects alphabetically. Risk-score order
+    # from list_targets() is preserved within each group.
+    ordered_groups = sorted(groups.items(), key=lambda kv: (kv[0] is not None, kv[0] or ""))
+    return render_template("results.html", groups=ordered_groups, total=len(targets))
+
+
+@app.route("/results/<path:target_ref>")
+def results_target(target_ref: str):
+    """Target overview: KPIs + links to Hosts/URLs/Findings + full report."""
+    ref = _resolve_or_404(target_ref)
+    summary = webdata.target_overview(ref["path"], project=ref["project"])
+    return render_template(
+        "target.html", target_ref=target_ref, summary=summary,
+        has_final_report=(ref["path"] / "report" / "final_report.html").exists(),
+        has_asm_report=(ref["path"] / "report" / "asm_report.html").exists(),
+    )
+
+
+@app.route("/results/<path:target_ref>/hosts")
+def results_hosts(target_ref: str):
+    ref = _resolve_or_404(target_ref)
+    q, status, page, limit = _page_args()
+    data = webdata.hosts_table(ref["path"], q=q, status=status, page=page, limit=limit)
+    return render_template(
+        "table.html", target_ref=target_ref, view="hosts", title="Hosts",
+        q=q, status=status, columns=["status", "length", "content_type", "url"],
+        **data,
+    )
+
+
+@app.route("/results/<path:target_ref>/urls")
+def results_urls(target_ref: str):
+    ref = _resolve_or_404(target_ref)
+    q, status, page, limit = _page_args()
+    data = webdata.urls_table(ref["path"], q=q, status=status, page=page, limit=limit)
+    return render_template(
+        "table.html", target_ref=target_ref, view="urls", title="URLs",
+        q=q, status=status, columns=["status", "length", "content_type", "url"],
+        **data,
+    )
+
+
+@app.route("/results/<path:target_ref>/findings")
+def results_findings(target_ref: str):
+    ref = _resolve_or_404(target_ref)
+    q, _status, page, limit = _page_args()
+    severity = request.args.get("severity", "")
+    data = webdata.list_findings(ref["path"], q=q, severity=severity, page=page, limit=limit)
+    return render_template(
+        "findings.html", target_ref=target_ref, q=q, severity=severity, **data,
+    )
+
+
+@app.route("/results/<path:target_ref>/report/<path:filename>")
+def results_report_file(target_ref: str, filename: str):
+    """Serve report/* files (final_report.html, asm_report.html, ...)
+    directly — the existing rich static reports stay one click away
+    instead of duplicating what they already render well."""
+    ref = _resolve_or_404(target_ref)
+    report_dir = ref["path"] / "report"
+    return send_from_directory(report_dir, filename)
 
 
 # ----------------------------------------------------------------------

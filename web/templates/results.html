@@ -1,0 +1,46 @@
+{% extends "_page.html" %}
+{% block title %}Results{% endblock %}
+{% block content %}
+<h1>Results <span class="muted">— {{ total }} target{{ 's' if total != 1 else '' }}</span></h1>
+
+{% if total == 0 %}
+<p class="empty-state">
+    No targets scanned yet. Run a scan from the <a href="{{ url_for('index') }}">Run scan</a> page,
+    or point <code>output_root</code> in <code>config.yml</code> at an existing <code>outputs/</code> tree.
+</p>
+{% else %}
+{% for project, targets in groups %}
+<section class="project-group">
+    <h2>{{ project if project else 'Ungrouped' }} <span class="muted">({{ targets|length }})</span></h2>
+    <table class="data-table">
+        <thead>
+        <tr>
+            <th>Domain</th><th>Health</th><th>Last scan</th>
+            <th>Nuclei</th><th>Secrets</th><th>High-value</th><th>Risk</th>
+        </tr>
+        </thead>
+        <tbody>
+        {% for t in targets %}
+        {% set ref = (t.project ~ '/' ~ t.domain) if t.project else t.domain %}
+        <tr>
+            <td><a href="{{ url_for('results_target', target_ref=ref) }}"><code>{{ t.domain }}</code></a></td>
+            <td><span class="badge badge-{{ {'ok':'low','degraded':'medium','broken':'critical','no_report':'info'}[t.health] }}">{{ t.health|upper }}</span></td>
+            <td class="muted">
+                {{ t.scan_end or '—' }}
+                {% if t.stale_days and t.stale_days > 30 %}<br><span class="stale">stale — {{ t.stale_days }}d ago</span>{% endif %}
+            </td>
+            <td>
+                {% for sev, n in t.nuclei_severity.items() %}{% if n %}<span class="chip">{{ sev }} {{ n }}</span>{% endif %}{% endfor %}
+                {% if not t.nuclei_severity %}<span class="muted">—</span>{% endif %}
+            </td>
+            <td>{{ t.secrets_total }}</td>
+            <td>{{ t.high_value_count }}</td>
+            <td><code>{{ "{:,}".format(t.risk_score) }}</code></td>
+        </tr>
+        {% endfor %}
+        </tbody>
+    </table>
+</section>
+{% endfor %}
+{% endif %}
+{% endblock %}
