@@ -12,10 +12,14 @@ import json
 from modules import apidocs, layout
 from modules.apidocs import (
     build_candidates,
+    build_candidates_tech,
     domain_tokens,
     parse_spec,
+    parse_swagger_config,
     spec_endpoints,
     spec_summary,
+    spec_urls_from_ui,
+    tech_spec_paths,
 )
 from modules.utils import create_output_structure, read_lines
 
@@ -96,11 +100,13 @@ def test_spec_endpoints_uses_servers_url():
     assert "https://api.example.com/v2/users/{id}" in urls
 
 
-def test_spec_endpoints_emits_only_query_params():
+def test_spec_endpoints_emits_query_and_path_params():
     _, params = spec_endpoints(OPENAPI3, "https://x.example.com/openapi.json")
-    assert params == ["https://api.example.com/v2/users?page=&limit="]
+    assert "https://api.example.com/v2/users?page=&limit=" in params
     # header params must not become query params
     assert not any("X-Trace" in p for p in params)
+    # a path-template endpoint is itself a parameter surface (A3)
+    assert any(p.endswith("/users/{id}") for p in params)
 
 
 def test_spec_endpoints_keeps_path_templates_intact():
@@ -339,9 +345,11 @@ def test_discover_parses_spec_and_writes_endpoints(tmp_path, monkeypatch):
     urls = read_lines(layout.path(base, "apidocs_urls.txt"))
     assert "https://api.example.com/v2/users" in urls
     params = read_lines(layout.path(base, "apidocs_params.txt"))
-    assert params == ["https://api.example.com/v2/users?page=&limit="]
+    assert "https://api.example.com/v2/users?page=&limit=" in params
+    assert any(p.endswith("/users/{id}") for p in params)   # path-template (A3)
     saved = json.loads((base / "findings" / "api_docs.json").read_text())
     assert saved["specs"][0]["title"] == "Billing API"
+    assert saved["specs"][0]["source"] == "probe"
 
 
 def test_discover_does_not_count_catch_all_200_as_spec(tmp_path, monkeypatch):
@@ -378,7 +386,9 @@ def test_discover_caps_hosts(tmp_path, monkeypatch):
                            domain="example.com")
     pr = res["extra"]["probe"]
     assert pr["hosts"] == 3
-    assert pr["hosts_capped"] == 7
+    # capping is now done by fuzz_targets.select_targets (dedup-then-cap),
+    # reported under "selection" rather than a bespoke "hosts_capped".
+    assert pr["selection"]["capped"] == 7
     assert pr["error"] == "httpx binary not found"
 
 
@@ -414,3 +424,183 @@ def test_discover_osint_failure_is_not_fatal(tmp_path, monkeypatch):
 
 def test_search_github_without_token_returns_empty():
     assert apidocs.search_github("example.com", "") == []
+
+
+# ----------------------------------------------------------------------
+# A1 — UI → spec chase helpers
+# ----------------------------------------------------------------------
+def test_spec_urls_from_ui_swagger_bundle():
+    html = 'SwaggerUIBundle({ url: "/v3/api-docs", dom_id: "#s" })'
+    got = spec_urls_from_ui(html, "https://h.example.com/swagger-ui.html")
+    assert "https://h.example.com/v3/api-docs" in got
+
+
+def test_spec_urls_from_ui_redoc_and_scalar_and_configurl():
+    html = (
+        '<redoc spec-url="/openapi.json"></redoc>'
+        '<script data-url="/static/swagger.yaml"></script>'
+        'configUrl: "/v3/api-docs/swagger-config"'
+    )
+    got = spec_urls_from_ui(html, "https://h.example.com/docs")
+    assert "https://h.example.com/openapi.json" in got
+    assert "https://h.example.com/static/swagger.yaml" in got
+    assert "https://h.example.com/v3/api-docs/swagger-config" in got
+
+
+def test_spec_urls_from_ui_ignores_non_spec_assets():
+    html = 'url: "/static/app.css"  url: "/bundle.js"'
+    assert spec_urls_from_ui(html, "https://h.example.com/docs") == []
+
+
+def test_parse_swagger_config_object_and_list_forms():
+    # springdoc object shape
+    obj = json.dumps({"urls": [{"url": "/v3/api-docs/public", "name": "public"}]})
+    assert parse_swagger_config(obj, "https://h.example.com") == [
+        "https://h.example.com/v3/api-docs/public"]
+    # springfox list shape (/swagger-resources)
+    lst = json.dumps([{"url": "/v2/api-docs", "location": "/v2/api-docs"}])
+    assert parse_swagger_config(lst, "https://h.example.com") == [
+        "https://h.example.com/v2/api-docs"]
+
+
+def test_parse_swagger_config_absolute_url_kept():
+    obj = json.dumps({"url": "https://other.example.com/spec.json"})
+    assert parse_swagger_config(obj, "https://h.example.com") == [
+        "https://other.example.com/spec.json"]
+
+
+def test_discover_chases_ui_to_spec(tmp_path, monkeypatch):
+    """A swagger-ui hit with no spec at a guessed path must still yield a
+    parsed spec by following the swagger-config pointer (A1)."""
+    base, alive = _base(tmp_path)
+    monkeypatch.setattr(apidocs.runner, "tool_available", lambda b: True)
+    monkeypatch.setattr(apidocs, "search_postman", lambda *a, **k: [])
+
+    calls = {"n": 0}
+
+    def fake_run(cmd, **kw):
+        out = cmd[cmd.index("-o") + 1]
+        calls["n"] += 1
+        with open(out, "w") as fh:
+            if calls["n"] == 1:
+                # round 1: only a swagger-ui shell, no spec body
+                fh.write(json.dumps({
+                    "url": "https://a.example.com/swagger-ui.html",
+                    "status_code": 200, "content_type": "text/html",
+                    "body": '<html><div id="swagger-ui"></div>'
+                            'SwaggerUIBundle({url:"/v3/api-docs"})</html>',
+                }) + "\n")
+            elif calls["n"] == 2:
+                # round 2: the real spec at /v3/api-docs
+                fh.write(json.dumps({
+                    "url": "https://a.example.com/v3/api-docs",
+                    "status_code": 200, "content_type": "application/json",
+                    "body": json.dumps(OPENAPI3),
+                }) + "\n")
+        return {"success": True, "missing_binary": False, "timed_out": False,
+                "stdout": "", "stderr": "", "returncode": 0}
+
+    monkeypatch.setattr(apidocs.runner, "run", fake_run)
+    res = apidocs.discover(alive, base, {}, domain="example.com")
+    assert res["extra"]["specs"] == 1
+    assert res["extra"]["specs_via_chase"] == 1
+    saved = json.loads((base / "findings" / "api_docs.json").read_text())
+    assert saved["specs"][0]["source"] == "ui-chase"
+
+
+# ----------------------------------------------------------------------
+# A2 — tech-aware paths
+# ----------------------------------------------------------------------
+def test_tech_spec_paths_spring_adds_actuator():
+    paths = tech_spec_paths(["spring"])
+    assert "/actuator" in paths
+    assert "/v3/api-docs" in paths
+
+
+def test_build_candidates_tech_adds_only_for_matching_host():
+    hosts = ["https://api.example.com", "https://www.example.com"]
+    host_tech = {"https://api.example.com": ("spring",)}
+    cand = build_candidates_tech(hosts, ("/openapi.json",), host_tech)
+    assert "https://api.example.com/actuator" in cand
+    assert "https://www.example.com/actuator" not in cand
+    # base path still applies to both
+    assert "https://www.example.com/openapi.json" in cand
+
+
+# ----------------------------------------------------------------------
+# A3 — body params + $ref
+# ----------------------------------------------------------------------
+OPENAPI3_BODY = {
+    "openapi": "3.0.0",
+    "servers": [{"url": "https://api.example.com"}],
+    "paths": {
+        "/login": {"post": {"requestBody": {"content": {"application/json": {
+            "schema": {"$ref": "#/components/schemas/Login"}}}}}},
+    },
+    "components": {"schemas": {"Login": {"type": "object", "properties": {
+        "username": {"type": "string"}, "password": {"type": "string"}}}}},
+}
+
+
+def test_spec_endpoints_extracts_body_params_via_ref():
+    _, params = spec_endpoints(OPENAPI3_BODY, "https://api.example.com/openapi.json")
+    assert any("username=" in p and "password=" in p for p in params)
+
+
+def test_spec_endpoints_swagger2_formdata_body():
+    spec = {"swagger": "2.0", "host": "h.example.com", "paths": {
+        "/upload": {"post": {"parameters": [
+            {"name": "file", "in": "formData"},
+            {"name": "token", "in": "query"},
+        ]}}}}
+    _, params = spec_endpoints(spec, "https://h.example.com/swagger.json")
+    assert any("file=" in p and "token=" in p for p in params)
+
+
+def test_server_variable_default_substituted():
+    spec = {"openapi": "3.0.0",
+            "servers": [{"url": "https://{env}.example.com/v1",
+                         "variables": {"env": {"default": "api"}}}],
+            "paths": {"/x": {}}}
+    urls, _ = spec_endpoints(spec, "https://h.example.com/openapi.json")
+    assert urls == ["https://api.example.com/v1/x"]
+
+
+# ----------------------------------------------------------------------
+# A4 — AsyncAPI
+# ----------------------------------------------------------------------
+def test_parse_spec_accepts_asyncapi_with_channels():
+    doc = json.dumps({"asyncapi": "2.6.0", "channels": {"user/signedup": {}}})
+    parsed = parse_spec(doc)
+    assert parsed and spec_summary(parsed, "https://h/x")["kind"] == "asyncapi"
+
+
+def test_parse_spec_rejects_asyncapi_without_channels():
+    assert parse_spec(json.dumps({"asyncapi": "2.6.0"})) is None
+
+
+# ----------------------------------------------------------------------
+# A6 — confirmed-tech feedback for next-run fuzzing
+# ----------------------------------------------------------------------
+def test_discover_marks_api_host_confirmed_tech(tmp_path, monkeypatch):
+    from modules import fuzz_depth
+    base, alive = _base(tmp_path)
+    monkeypatch.setattr(apidocs.runner, "tool_available", lambda b: True)
+    monkeypatch.setattr(apidocs, "search_postman", lambda *a, **k: [])
+
+    def fake_run(cmd, **kw):
+        out = cmd[cmd.index("-o") + 1]
+        with open(out, "w") as fh:
+            fh.write(json.dumps({
+                "url": "https://a.example.com/openapi.json",
+                "status_code": 200, "content_type": "application/json",
+                "body": json.dumps(OPENAPI3),
+            }) + "\n")
+        return {"success": True, "missing_binary": False, "timed_out": False,
+                "stdout": "", "stderr": "", "returncode": 0}
+
+    monkeypatch.setattr(apidocs.runner, "run", fake_run)
+    apidocs.discover(alive, base, {}, domain="example.com")
+    confirmed = fuzz_depth.load_confirmed_tech(base)
+    assert "a.example.com" in confirmed
+    assert "api" in confirmed["a.example.com"]
