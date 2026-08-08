@@ -1087,6 +1087,19 @@ apidocs:
   # Thêm path riêng của target (phải bắt đầu bằng "/").
   extra_paths: []
 
+  # Gom host wildcard (trả cùng response) về 1 đại diện TRƯỚC khi nhân path,
+  # dùng chung fuzz_targets như dirsearch/ffuf. Cắt mạnh số request trên
+  # target wildcard, và nhờ đó cho phép danh sách path dài + chase 2 vòng mà
+  # tổng request vẫn thấp. false → giữ cách cũ (cap thẳng max_hosts).
+  dedup_targets: true
+  # Mỗi host còn được thử thêm path riêng theo tech (Spring→/actuator,/v3/api-docs;
+  # DRF→/api/schema/; ...) dựa trên tech httpx -td + tech xác nhận lần trước.
+  tech_aware_paths: true
+  # Chain UI→spec: gặp swagger-ui/redoc/scalar thì đọc tiếp swagger-config +
+  # HTML để lấy URL spec THẬT rồi probe vòng 2/3 — biến UI (trước đây là ngõ
+  # cụt) thành spec đã parse. Đây là bước tăng recall lớn nhất của stage.
+  spec_chase: true
+
   # --- 2. OSINT ngoài ---
   osint: true
   # Postman public workspace search. Dùng backend search của chính
@@ -1099,6 +1112,9 @@ apidocs:
   # biến stage này thành máy sinh nhiễu.
   postman: true
   postman_limit: 25
+  # Khi một public collection khớp domain, fetch luôn collection JSON và rút
+  # request URL in-scope → biến "có collection" thành endpoint thật (A5).
+  postman_fetch_collections: true
   # GitHub code search — BẮT BUỘC có token, API này từ chối request ẩn danh.
   # Để trống thì bỏ qua, stage vẫn chạy phần probe bình thường.
   github_token: "${GITHUB_TOKEN}"
@@ -1150,9 +1166,51 @@ fuzz_depth:
   #
   # false → chỉ dùng ``deep_wordlists`` tĩnh ở trên, tắt hẳn phần tự động.
   tech_aware_wordlists: true
+  # API-aware wordlist (B3): host API (tên api./rest./graphql., tech API
+  # framework, hoặc tech "api" xác nhận bởi apidocs ở lần scan TRƯỚC) được xếp
+  # "deep" và cấp thêm wordlist route API nhỏ (api-endpoints, mazen160,
+  # graphql). common.txt/raft gần như không có endpoint API nên đây là phần
+  # tăng coverage đúng loại target bug bounty quan tâm nhất. false → tắt.
+  api_aware_wordlists: true
+  # Extension-aware -e (B2): host tier "deep" được cấp extension đúng theo
+  # stack thật (PHP→.php, ASP.NET→.aspx, Java→.jsp...) dựa trên tech httpx -td,
+  # thay vì đoán .php cho mọi host. Chỉ áp cho host deep khớp tech. false → tắt.
+  tech_aware_extensions: true
   # % ngân sách thời gian của dirsearch dành riêng cho nhóm "deep" (phần
   # còn lại cho nhóm "standard"+"light" gộp chung).
   deep_time_share: 0.35
+
+# ---------- Fuzz theo directory đã phát hiện (fuzz_recurse) ----------
+# dirsearch/ffuf ở stage 4 fuzz từ GỐC mỗi host; recursion của ffuf chỉ đi
+# theo redirect nó tự tìm. Directory do katana/gau/waymore/jsluice/dirsearch
+# tìm ra (/api/, /admin/, /internal/...) KHÔNG bao giờ được dùng làm gốc fuzz.
+# Stage này chạy SAU merge (corpus đã đủ), rút directory prefix từ all_urls.txt,
+# gom host wildcard về đại diện, rồi fuzz <host><dir>FUZZ bằng wordlist nhỏ +
+# auto-calibration (dùng lại command builder/parser/screen của ffuf). Hit merge
+# ngược all_urls.txt. Tắt bằng --skip-fuzz-recurse hoặc enabled: false.
+fuzz_recurse:
+  enabled: true
+  # Wordlist NHỎ — stage này nhân nó với từng directory. common.txt (~4.7k) ok.
+  wordlist: wordlists/SecLists/Discovery/Web-Content/common.txt
+  max_depth: 3           # số segment tối đa của directory prefix (/a/b/c/ = 3)
+  max_hosts: 30          # host đại diện tối đa (sau dedup wildcard)
+  max_dirs_per_host: 30  # directory tối đa mỗi host (đã xếp theo độ đáng ngờ)
+  max_total_dirs: 300    # trần tổng số (host×dir) toàn stage
+  threads: 40
+  concurrency: 3         # số ffuf process song song
+  rate: 30               # -rate req/s mỗi process (0 = không giới hạn)
+  timeout: 600           # trần MỖI (host,dir)
+  budget_seconds: 1800   # trần cho CẢ stage — hết giờ thì không khởi động target mới
+  tech_aware_extensions: true   # -e theo tech của host (giống fuzz_depth B2)
+  match_status: [200, 204, 301, 302, 307, 401, 403]
+  filter_status: [404, 429]
+  filter_regex: ""       # -fr lọc theo nội dung body (API soft-404)
+  extensions: []         # extension cố định thêm (ngoài tech-aware)
+  screen:
+    enabled: true        # behavior screen: bỏ cụm "1 response đội nhiều path"
+    min_cluster: 25
+    min_share: 0.5
+    length_tolerance: 16
 
 # ---------- Server/microservice misconfig probe (chỉ chạy trên tier deep) ----------
 # Actuator sub-path, Jenkins script console, GitLab API version, k8s API,
