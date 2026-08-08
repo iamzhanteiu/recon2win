@@ -27,8 +27,12 @@ Automated recon framework that follows a strict 9-stage workflow
    ├─ 6.3  jsluice on js_urls.txt (AST)             → processed/js/jsluice_{endpoints,urls}.txt
    │                                                   + findings/jsluice_secrets.json
    └─ 6.4  api-docs probe + OSINT                   → processed/sources/apidocs_{urls,params}.txt
-                                                       + findings/api_docs.json
+           (wildcard-dedup + tech-aware paths; follows swagger-ui/redoc     + findings/api_docs.json
+            UIs to the real spec; extracts query+path+body params)
        re-merge xnlinkfinder + jsluice + apidocs output back into all_urls.txt
+   ├─ 6.post fuzz_recurse — fuzz UNDER discovered dirs (/api/FUZZ, /admin/…)
+   │        (on by default: fuzz_recurse.enabled)     → processed/sources/fuzz_recurse_urls.txt
+   │                                                     re-merged into all_urls.txt
    ├─ 6.5  GraphQL introspection probe (on by default) → findings/graphql_schema.json
    ├─ 6.6  CORS misconfiguration probe (on by default) → findings/cors.json
    ├─ 6.6.2 server/microservice misconfig probe — "deep"-tier hosts only
@@ -112,12 +116,14 @@ python3 bootstrap.py --no-color            # disable ANSI colors
 | Flag                   | Effect                                                    |
 |------------------------|-----------------------------------------------------------|
 | `-d DOMAIN`            | Target domain (required)                                  |
+| `-p, --project NAME`   | Optional grouping: `outputs/<project>/<domain>/` instead of the flat `outputs/<domain>/`. Independent of `--h1-program`. Omit to keep the flat layout. |
 | `--config PATH`        | YAML config (default: `config.yml`)                       |
 | `--resume`             | Skip stages whose expected outputs already exist          |
 | `--dry-run`            | Print the plan and exit — never invokes external tools    |
 | `--skip-nuclei`        | Skip the nuclei default scan                              |
 | `--skip-dirsearch`     | Skip the dirsearch sensitive-extension scan               |
 | `--skip-ffuf`          | Skip the ffuf recursive fuzzing stage                     |
+| `--skip-fuzz-recurse`  | Skip fuzzing under discovered directories (post-merge stage) |
 | `--skip-waymore`       | Skip the waymore archived-URL collection                  |
 | `--skip-arjun`         | Skip the arjun parameter discovery                        |
 | `--skip-apidocs`       | Skip the API-docs probe + external OSINT stage             |
@@ -188,6 +194,7 @@ recon-agent/
 │   ├── content_discovery.py  # Stage 4.1
 │   ├── dirsearch.py       # Stage 4.2
 │   ├── ffuf.py            # Stage 4.3 (-ac/-ach + recursive dirs)
+│   ├── fuzz_recurse.py    # Stage 6.post — fuzz UNDER discovered directories
 │   ├── fuzz_targets.py    # Chọn host fuzz (dedup response + rank + cap)
 │   ├── waymore.py         # Stage 4.4
 │   ├── url_merge.py       # Stage 5 (+ 6.post re-merge)
@@ -213,8 +220,17 @@ layout — ``raw/`` is grouped per stage and ``findings/`` per kind so
 you can `ls raw/<stage>/` to see everything one tool produced, instead
 of grepping through a flat 50-file dir.
 
+**Optional project grouping.** Pass `-p/--project NAME` and the same
+layout nests one level deeper: `outputs/<project>/<domain>/`. The two
+shapes coexist — existing scans keep working at their flat
+`outputs/<domain>/` path (`modules/dashboard.py` shows them as
+"ungrouped"); grouping is opt-in per invocation, not a forced migration.
+`--project` is independent of `--h1-program` — it's a free-form label
+(client, campaign, engagement, …), not tied to a HackerOne program.
+`outputs/dashboard.html` groups/filters by project when set.
+
 ```
-outputs/<domain>/
+outputs/[<project>/]<domain>/
 ├── raw/                                # tool outputs grouped per stage
 │   ├── subdomain/                      # subfinder.txt, amass.txt, chaos.txt
 │   ├── puredns/                        # resolvers.txt (validation resolver list)
@@ -831,6 +847,48 @@ scandiff/dashboard đã có sẵn): tech xác nhận ở lần trước làm tie
 tech-aware wordlist ở lần sau chính xác hơn — không cần đợi httpx đoán
 đúng, không cần chạy lại misconfig_probe để "làm nóng" tín hiệu.
 
+### API-aware wordlist (fuzz_depth)
+
+`common.txt`/`raft` gần như không chứa endpoint API, nên fuzz một host REST
+bằng chúng gần như không ra gì. `modules/fuzz_depth.py` nhận diện **host API**
+qua 3 tín hiệu — tên host (`api.`/`rest.`/`graphql.`), tech framework API từ
+httpx `-td`, hoặc tech `"api"` do `apidocs` XÁC NHẬN ở lần scan trước
+(`tech_confirmed.json`) — rồi xếp host đó vào tier "deep" và cấp thêm wordlist
+route API nhỏ (`api/api-endpoints.txt`, `common-api-endpoints-mazen160.txt`,
+`graphql.txt`). Tắt bằng `fuzz_depth.api_aware_wordlists: false`.
+
+### Extension-aware `-e` (fuzz_depth)
+
+Corpus chưa tồn tại lúc stage 4, nhưng tech httpx `-td` thì có. Host tier
+"deep" được cấp extension đúng theo stack thật (PHP→`.php`, ASP.NET→`.aspx`,
+Java→`.jsp`…, khớp theo word-boundary nên `java` không dính `javascript`)
+thay vì đoán `.php` cho mọi host. Chỉ áp cho host deep khớp tech. Tắt bằng
+`fuzz_depth.tech_aware_extensions: false`.
+
+## Fuzz theo directory đã phát hiện (fuzz_recurse — stage 6.post)
+
+dirsearch/ffuf ở stage 4 chỉ fuzz từ **gốc** mỗi host; `-recursion` của ffuf
+chỉ đi theo redirect nó tự tìm. Directory do katana/gau/waymore/jsluice/
+dirsearch phát hiện (`/api/`, `/admin/`, `/internal/`…) **không bao giờ được
+dùng làm gốc fuzz** — một wordlist đáng ra tìm ra `/api/v2/keys` không có cơ
+hội, vì `/api/` được biết SAU khi fuzz gốc đã xong.
+
+`modules/fuzz_recurse.py` đóng vòng lặp đó. Chạy **sau merge** (khi
+`all_urls.txt` đã đủ), nó:
+
+1. rút directory prefix của mọi URL trong corpus, theo host, tới `max_depth`
+   segment;
+2. gom host wildcard về 1 đại diện (dùng lại `fuzz_targets.select_targets`);
+3. xếp directory theo độ đáng ngờ (`/api/`, `/admin/` > `/static/`; bỏ hẳn
+   cây asset tĩnh), cap, rồi fuzz `<host><dir>FUZZ` bằng wordlist nhỏ +
+   auto-calibration — **dùng lại** command builder / parser / behavior screen
+   của ffuf, không viết lại phần xử lý hit.
+
+Hit ghi ra `processed/sources/fuzz_recurse_urls.txt` và merge ngược
+`all_urls.txt`. Cap nhiều tầng (`max_dirs_per_host`, `max_total_dirs`,
+`max_hosts`, `budget_seconds`). Tắt bằng `--skip-fuzz-recurse` hoặc
+`fuzz_recurse.enabled: false`.
+
 ## Scan delta — "what changed since last time"
 
 Recon is run against the same target again and again; 95% of each run is
@@ -984,23 +1042,46 @@ down. One `/v3/api-docs` hit beats a day of directory brute-forcing.
 
 Two independent sources, both fail-soft:
 
-**1. Active probe.** ~60 well-known paths (`/openapi.json`, `/v3/api-docs`,
-`/swagger-ui.html`, `/graphql`, `/wp-json`, `/actuator`,
+**1. Active probe.** A curated list of well-known spec paths (`/openapi.json`,
+`/v3/api-docs`, `/swagger-ui.html`, `/graphql`, `/wp-json`, `/actuator`,
 `/.well-known/openid-configuration`, …) against every alive host, via httpx
-with `-irr` so the body comes back. Cost is `hosts × paths` requests — 154
-hosts is ~9.2k — hence `apidocs.max_hosts` (default 300). `401/403` is kept
-as a match: a `/v3/api-docs` behind auth still proves the spec exists.
+with `-irr` so the body comes back. `401/403` is kept as a match: a
+`/v3/api-docs` behind auth still proves the spec exists.
+
+**Wildcard-dedup + tech-aware paths.** The probe reuses
+`fuzz_targets.select_targets` so a wildcard target's 200 identical hosts
+collapse to one representative *before* the path list is multiplied out —
+the same waste the fuzzers already avoid (`apidocs.dedup_targets`). Freed of
+that cost, each real host also gets the extra paths its tech implies
+(Spring→`/actuator`,`/v3/api-docs`; DRF→`/api/schema/`; …), driven by httpx
+`-td` + tech confirmed on a prior scan (`apidocs.tech_aware_paths`).
 
 **A 200 is not a spec.** Plenty of SPA hosts answer 200-with-index.html on
 *every* path, so a status-code check alone would report a swagger doc on
-every host in the run. Nothing counts unless the body parses as OpenAPI or
-Swagger — see `apidocs.parse_spec()`, which requires both the version key
-and a `paths` object.
+every host in the run. Nothing counts unless the body parses as OpenAPI,
+Swagger or AsyncAPI — see `apidocs.parse_spec()`, which requires both the
+version key and the structural object (`paths`/`channels`).
+
+**A docs UI is not a dead end (spec chase).** When the probe finds a
+swagger-ui / redoc / scalar shell but no spec at a guessed path, it follows
+the pointer the UI hands the browser — `/v3/api-docs/swagger-config`,
+`/swagger-resources`, or a `url:`/`spec-url=` inside the HTML — and fetches
+the real document in a second/third probe round (`apidocs.spec_chase`). This
+is the single biggest recall win in the stage; specs found this way are
+tagged `source: ui-chase` in `findings/api_docs.json` and the report.
 
 Parsed specs become absolute URLs merged into `all_urls.txt` (→ httpx →
-nuclei), and their **declared query parameters** go straight to
-`parameterized_urls.txt`. Path templates keep their `{id}` placeholders:
-substituting a guessed value would fabricate a URL nobody observed.
+nuclei), and their **declared parameters — query, path-template AND
+body/`requestBody` (with local `$ref` resolved)** — go straight to
+`parameterized_urls.txt`. Body params are exactly the POST/PUT surface a
+GET-only crawler never sees. Path templates keep their `{id}` placeholders:
+substituting a guessed value would fabricate a URL nobody observed. Server
+URL variables (`https://{env}.x.com`) are filled from their declared default.
+
+A host that yields any spec/UI/discovery hit is recorded as an **API host**
+in `tech_confirmed.json`, so the NEXT scan's fuzzing hands it the API
+wordlist (see *API-aware wordlist* above) — apidocs runs after fuzzing this
+run, so the benefit lands next time, same model as `misconfig_probe`.
 
 **2. External OSINT.** Public Postman workspaces, plus GitHub code search
 when `apidocs.github_token` is set (GitHub rejects anonymous code search).

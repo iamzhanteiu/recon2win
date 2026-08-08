@@ -33,6 +33,7 @@ from modules import (
     doctor as doctor_mod,
     dnsx as dnsx_mod,
     ffuf as ffuf_mod,
+    fuzz_recurse as fuzz_recurse_mod,
     gitdump as gitdump_mod,
     graphgen as graphgen_mod,
     graphql_probe as graphql_probe_mod,
@@ -60,6 +61,7 @@ from modules.utils import (
     make_result,
     read_lines,
     validate_domain,
+    validate_project,
 )
 
 
@@ -72,6 +74,7 @@ _STAGE_NOUN: dict[str, str] = {
     "content_discovery": "urls",
     "dirsearch":         "urls",
     "ffuf":              "urls",
+    "fuzz_recurse":      "urls",
     "waymore":           "urls",
     "nuclei_default":    "findings",
     "url_merge":         "urls",
@@ -186,6 +189,13 @@ def main() -> int:
     p.add_argument("-d", "--domain",
                    help="Target domain (e.g. example.com). Optional when using "
                         "--h1-program (the target comes from the chosen H1 scope).")
+    p.add_argument("-p", "--project", metavar="NAME",
+                   help="Optional project name to group this target under: "
+                        "outputs/<project>/<domain>/ instead of the flat "
+                        "outputs/<domain>/. Independent of --h1-program — a "
+                        "project is a free-form grouping (client/campaign/...), "
+                        "not tied to a HackerOne program. Omit to keep scanning "
+                        "into the flat layout (existing behavior, unchanged).")
     p.add_argument("--config", default="config.yml", help="Path to YAML config")
     p.add_argument("--h1-list", action="store_true",
                    help="Browse your HackerOne programs, pick one, then pick an "
@@ -203,6 +213,8 @@ def main() -> int:
     p.add_argument("--skip-nuclei", action="store_true")
     p.add_argument("--skip-dirsearch", action="store_true")
     p.add_argument("--skip-ffuf", action="store_true")
+    p.add_argument("--skip-fuzz-recurse", action="store_true",
+                   help="skip fuzzing under discovered directories (post-merge)")
     p.add_argument("--skip-waymore", action="store_true")
     p.add_argument("--skip-arjun", action="store_true")
     p.add_argument("--skip-xnlinkfinder", action="store_true")
@@ -300,14 +312,24 @@ def main() -> int:
         print(f"[!] {e}", file=sys.stderr)
         return 2
 
+    project: str | None = None
+    if args.project:
+        try:
+            project = validate_project(args.project)
+        except ValueError as e:
+            print(f"[!] {e}", file=sys.stderr)
+            return 2
+
     output_dir = create_output_structure(
-        domain, root=cfg.get("output_root", "outputs"),
+        domain, root=cfg.get("output_root", "outputs"), project=project,
     )
+    if project:
+        print(console.banner(f"project: {project}", "bright_cyan"))
     print(console.banner(f"target: {domain}", "bright_cyan"))
     print(console.banner(f"output: {output_dir}", "bright_cyan"))
 
     if args.dry_run:
-        _print_plan(domain, output_dir, cfg, args)
+        _print_plan(domain, output_dir, cfg, args, project=project)
         return 0
 
     # Leveled, incrementally-flushed run log (logs/run.log) — additive to the
@@ -574,6 +596,29 @@ def main() -> int:
                             error="no xnlinkfinder/jsluice output to merge"),
                 num=7,
             )
+
+        # ---- 6.post.a1: fuzz UNDER discovered directories ----
+        # The corpus now holds every directory katana/gau/jsluice/dirsearch
+        # found. Fuzz a small wordlist beneath each (/api/FUZZ, /admin/FUZZ …)
+        # — root-only fuzzing in stage 4 never reached these. Runs here, after
+        # the merge, then merges its own hits straight back into all_urls.txt.
+        frr = _run_stage(
+            "fuzz_recurse", fuzz_recurse_mod.scan,
+            output_dir, cfg,
+            resume=args.resume, dry_run=args.dry_run,
+            skip=args.skip_fuzz_recurse,
+        )
+        results.append(frr)
+        # fuzz_recurse runs after url_merge_append (6.post) already merged the
+        # JS/apidocs URLs, so its own hits need a dedicated append into
+        # all_urls.txt here (same pattern as misconfig_probe below).
+        fr_out = layout.path(output_dir, "fuzz_recurse_urls.txt")
+        if frr.get("count") and fr_out.exists() and fr_out.stat().st_size > 0:
+            fr_merge = url_merge_mod.append_urls(output_dir, [fr_out], domain, cfg)
+            results.append(fr_merge)
+            if fr_merge["count"]:
+                print(console.phase_info_line(
+                    f"fuzz_recurse: +{fr_merge['count']} URL(s) → all_urls.txt"))
 
         # ---- 6.post.a2: verify the URLs jsluice mined out of JS ----
         # httpx_urls (stage 6) probed all_urls.txt *before* jsluice ran, so
@@ -1102,16 +1147,21 @@ def _h1_pick_root(cfg: dict, handle: str) -> str | None:
 # ----------------------------------------------------------------------
 # Helpers
 # ----------------------------------------------------------------------
-def _print_plan(domain: str, output_dir: Path, cfg: dict, args: argparse.Namespace) -> None:
+def _print_plan(
+    domain: str, output_dir: Path, cfg: dict, args: argparse.Namespace,
+    *, project: str | None = None,
+) -> None:
     print(console.phase_header("dry-run plan"))
     for k, v in [
         ("target        ", domain),
+        ("project       ", project or "(none — flat outputs/<domain>/)"),
         ("output        ", str(output_dir)),
         ("config        ", args.config),
         ("resume        ", args.resume),
         ("skip-nuclei   ", args.skip_nuclei),
         ("skip-dirsearch", args.skip_dirsearch),
         ("skip-ffuf     ", args.skip_ffuf),
+        ("skip-fuzz-recurse", args.skip_fuzz_recurse),
         ("skip-waymore  ", args.skip_waymore),
         ("skip-arjun    ", args.skip_arjun),
         ("skip-apidocs  ", args.skip_apidocs),
@@ -1133,6 +1183,7 @@ def _print_plan(domain: str, output_dir: Path, cfg: dict, args: argparse.Namespa
         "  4  PARALLEL: katana/urlfinder + dirsearch + ffuf + waymore",
         "  5  url_merge (crawler + dirsearch + ffuf + waymore -> all_urls / js_urls / dynamic_urls)",
         "  6  PARALLEL: httpx url check + xnLinkFinder + jsluice + api-docs -> re-merge",
+        "     + fuzz_recurse (fuzz under discovered dirs) -> re-merge",
         "     + graphql-probe + cors-probe + buckets (opt-in) + gitdump (opt-in)",
         "  7  arjun on dynamic_urls (+ seed already-param + jsluice params)",
         "  8  nuclei default on alive hosts (last scan, full rate to itself)",

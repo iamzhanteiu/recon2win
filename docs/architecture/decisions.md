@@ -227,6 +227,40 @@ còn sót từ test TRƯỚC ĐÓ, ghi nhầm vào `tmp_path` đã bị pytest d
 `tests/conftest.py::_isolated_runlog` (autouse) đóng + gỡ mọi handler sau
 mỗi test — cùng tinh thần với `_no_baseline_probe` đã có sẵn trong file đó.
 
+### Project grouping (`outputs/<project>/<domain>/`) — opt-in, không migrate data cũ
+
+**Yêu cầu:** gom nhiều target vào một "project" khi scan.
+
+**Quyết định layout:** lồng thư mục thật (`outputs/<project>/<domain>/`),
+không phải chỉ gắn nhãn logic — chọn vì `dashboard.html`/report tự nhiên
+nhóm theo cấu trúc đĩa, không cần một tầng ánh xạ riêng.
+
+**Quyết định migrate:** 12 target thật đang có tại `outputs/<domain>/` (phẳng)
+GIỮ NGUYÊN, không di chuyển. `layout.py` đã có tiền lệ y hệt cho việc này
+(fallback v2→v3 của `processed/`), nên áp dụng lại: một target không nằm
+trong project nào là hợp lệ, gọi là "ungrouped" (`project: None`), không
+phải lỗi hay trạng thái tạm.
+
+**Vì sao không cần sửa `layout.py`/`apidocs.py`/`jsluice.py`/
+`xnlinkfinder.py`/`responses.py`:** tất cả những chỗ đó dùng
+`output_dir.name` để suy ra domain — mà domain LUÔN LÀ thư mục lá
+(leaf), bất kể phía trên nó lồng thêm bao nhiêu tầng project. Thêm một
+tầng cha không đổi `output_dir.name`. Đây là lý do toàn bộ thay đổi chỉ
+gói gọn trong 3 file: `utils.py` (tạo path + `validate_project`), `main.py`
+(CLI flag `-p/--project`), `dashboard.py` (nhận diện 2 tầng khi liệt kê
+target — `_is_target_dir()` kiểm tra có skeleton `raw/logs/report/processed`
+hay không để phân biệt "đây là 1 target" với "đây là 1 project chứa
+target bên trong").
+
+**Quyết định khái niệm:** project độc lập với `--h1-program` (không tự
+động suy ra project từ HackerOne program) — theo yêu cầu, vì project ở đây
+là nhãn tự do (khách hàng/chiến dịch), không nhất thiết trùng 1-1 với một
+chương trình H1.
+
+**Phạm vi đã làm**: CLI (`-p/--project`) + layout + dashboard (cột Project,
+gom nhóm). CHƯA làm: web UI (`web/app.py`), REST API, gán project cho 12
+target cũ (còn "ungrouped" tới khi tự tay làm hoặc yêu cầu công cụ hỗ trợ).
+
 ## Nợ kỹ thuật đã biết (chưa xử lý, ghi lại để không phải phát hiện lại)
 
 | Nợ | Mô tả | Mức ảnh hưởng |

@@ -12,12 +12,43 @@ làm điểm mốc đầu tiên.
 
 ### Added
 
+* **API-docs discovery — recall redesign** (`modules/apidocs.py`, mục tiêu
+  tăng coverage):
+  * **Chain UI→spec** (`apidocs.spec_chase`): gặp swagger-ui/redoc/scalar thì
+    đọc tiếp `swagger-config`/`swagger-resources` + HTML để lấy URL spec THẬT
+    rồi probe vòng 2/3 — biến docs UI (trước là ngõ cụt) thành spec đã parse.
+    Spec tìm kiểu này gắn `source: ui-chase`.
+  * **Wildcard-dedup + tech-aware paths** (`apidocs.dedup_targets`,
+    `apidocs.tech_aware_paths`): gom host wildcard về đại diện qua
+    `fuzz_targets`, và cấp path riêng theo tech (Spring/DRF/FastAPI…).
+  * **Trích param giàu hơn**: thêm path-template + body/`requestBody` param
+    (resolve `$ref` nội bộ) + server-variable default; nhận thêm **AsyncAPI**.
+  * **Postman collection fetch** (`apidocs.postman_fetch_collections`): rút
+    request URL in-scope từ public collection.
+  * Đánh dấu host có API surface là `"api"` trong `tech_confirmed.json` để
+    fuzzing lần sau hưởng lợi.
+* **Fuzzing — coverage redesign**:
+  * **`modules/fuzz_recurse.py`** (stage 6.post, `--skip-fuzz-recurse`): fuzz
+    UNDER directory đã phát hiện trong corpus (`/api/FUZZ`, `/admin/FUZZ`…)
+    mà fuzz-từ-gốc ở stage 4 bỏ sót; tái dùng ffuf command builder/parser/
+    behavior screen; hit merge ngược `all_urls.txt`.
+  * **API-aware wordlist** (`fuzz_depth.api_aware_wordlists`): host API (tên
+    host / tech framework / confirmed `"api"`) được cấp wordlist route API.
+  * **Extension-aware `-e`** (`fuzz_depth.tech_aware_extensions`): host deep
+    nhận extension theo stack thật (PHP→`.php`, .NET→`.aspx`…), khớp
+    word-boundary.
 * **Structured logging** — `modules/runlog.py` ghi `logs/run.log` (leveled,
   UTC, `stdlib logging`), song song với terminal, không thay thế. Config
   mới: `logging.enabled` / `logging.level` trong `config.yml`.
 * **Typed stage-result contract** — `StageResult`/`StageStatus` (`TypedDict`)
   trong `modules/utils.py`, additive (không đổi runtime, không sửa từng
   module gọi `make_result()`).
+* **Project grouping** — `-p/--project NAME` (CLI) nhóm nhiều target vào
+  `outputs/<project>/<domain>/` thay vì `outputs/<domain>/` phẳng. Hai layout
+  cùng tồn tại (opt-in, không migrate 12 target cũ). `modules/utils.py`:
+  `create_output_structure(project=...)` + `validate_project()`.
+  `modules/dashboard.py`: `discover_targets()` nhận diện 2 tầng, cột Project
+  trong `outputs/dashboard.html`. Độc lập với `--h1-program`.
 * `CHANGELOG.md` (file này).
 
 ## [0.1.0] - 2026-08-07
