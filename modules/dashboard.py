@@ -168,7 +168,7 @@ def discover_targets(outputs_root: Path) -> list[dict]:
     return sorted(found, key=lambda t: (t["project"] or "", t["domain"]))
 
 
-def _load_target(
+def load_target(
     target_dir: Path, dashboard_path: Path, project: str | None = None,
 ) -> dict[str, Any]:
     """Build one dashboard row from a target directory's on-disk state."""
@@ -391,7 +391,7 @@ def build_dashboard(outputs_root: Path) -> dict:
     dashboard_path = outputs_root / "dashboard.html"
 
     refs = discover_targets(outputs_root)
-    targets = [_load_target(r["path"], dashboard_path, project=r["project"]) for r in refs]
+    targets = [load_target(r["path"], dashboard_path, project=r["project"]) for r in refs]
     targets.sort(key=lambda t: t["risk_score"], reverse=True)
 
     generated_at = now_iso()

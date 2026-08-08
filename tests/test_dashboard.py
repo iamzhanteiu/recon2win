@@ -124,7 +124,7 @@ def test_discover_targets_empty_project_dir_yields_nothing(tmp_path: Path):
 
 
 # ----------------------------------------------------------------------
-# _load_target — single target, hand-built summary.json + stages.json
+# load_target — single target, hand-built summary.json + stages.json
 # ----------------------------------------------------------------------
 def _seed_target(root: Path, domain: str, *, project=None, health_stages=None,
                   nuclei_sev=None, secrets_sev=None, secrets_findings=None,
@@ -163,7 +163,7 @@ def test_load_target_ok_run(tmp_path: Path):
                      "new": {"subdomains": 5, "alive": 0, "urls": 12, "findings": 1},
                      "totals": {"subdomains": 50, "alive": 10, "urls": 500, "findings": 3}},
     )
-    rec = dashboard._load_target(base, tmp_path / "dashboard.html")
+    rec = dashboard.load_target(base, tmp_path / "dashboard.html")
     assert rec["domain"] == "ok.com"
     assert rec["has_report"] is True
     assert rec["health"] == "ok"
@@ -177,7 +177,7 @@ def test_load_target_ok_run(tmp_path: Path):
 
 def test_load_target_no_summary_is_no_report(tmp_path: Path):
     base = _seed_target(tmp_path, "crashed.com", with_summary=False)
-    rec = dashboard._load_target(base, tmp_path / "dashboard.html")
+    rec = dashboard.load_target(base, tmp_path / "dashboard.html")
     assert rec["has_report"] is False
     assert rec["health"] == "no_report"
     assert rec["report_rel"] is None
@@ -193,7 +193,7 @@ def test_load_target_reports_failed_stages_and_missing_tools(tmp_path: Path):
              "error": "dirsearch binary not found (optional, skipped)"},
         ],
     )
-    rec = dashboard._load_target(base, tmp_path / "dashboard.html")
+    rec = dashboard.load_target(base, tmp_path / "dashboard.html")
     assert rec["health"] == "degraded"
     assert "apidocs" in rec["failed_stages"]
     assert "dirsearch" in rec["missing_tools"]
@@ -201,16 +201,16 @@ def test_load_target_reports_failed_stages_and_missing_tools(tmp_path: Path):
 
 def test_load_target_defaults_project_to_none(tmp_path: Path):
     """project= is optional and defaults to None — existing call sites that
-    don't pass it (e.g. direct _load_target(base, dashboard_path) calls)
+    don't pass it (e.g. direct load_target(base, dashboard_path) calls)
     keep working unchanged."""
     base = _seed_target(tmp_path, "ok.com")
-    rec = dashboard._load_target(base, tmp_path / "dashboard.html")
+    rec = dashboard.load_target(base, tmp_path / "dashboard.html")
     assert rec["project"] is None
 
 
 def test_load_target_records_project_and_nested_report_link(tmp_path: Path):
     base = _seed_target(tmp_path, "a.com", project="acme")
-    rec = dashboard._load_target(base, tmp_path / "dashboard.html", project="acme")
+    rec = dashboard.load_target(base, tmp_path / "dashboard.html", project="acme")
     assert rec["project"] == "acme"
     assert rec["report_rel"] == "acme/a.com/report/final_report.html"
 
