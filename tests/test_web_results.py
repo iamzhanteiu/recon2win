@@ -222,3 +222,70 @@ def test_results_report_file_404_for_missing_file(web_app):
     with wapp.app.test_client() as c:
         r = c.get("/results/a.com/report/does-not-exist.html")
         assert r.status_code == 404
+
+# ----------------------------------------------------------------------
+# /results/<target_ref>/files  and  /file/<rel>
+# ----------------------------------------------------------------------
+def test_results_files_lists_recon_output(web_app):
+    wapp, root = web_app
+    base = _seed(root, "a.com", findings=[])
+    (base / "raw" / "apidocs").mkdir(parents=True, exist_ok=True)
+    (base / "raw" / "apidocs" / "candidates.txt").write_text("https://a.com/api\n")
+    with wapp.app.test_client() as c:
+        r = c.get("/results/a.com/files")
+        assert r.status_code == 200
+        # Both a report file and a nested raw file are listed.
+        assert b"final_report.html" in r.data
+        assert b"candidates.txt" in r.data
+        assert b"raw/apidocs" in r.data
+
+
+def test_results_file_view_text_inline(web_app):
+    wapp, root = web_app
+    base = _seed(root, "a.com")
+    (base / "raw").mkdir(parents=True, exist_ok=True)
+    (base / "raw" / "note.txt").write_text("hello-recon-file")
+    with wapp.app.test_client() as c:
+        r = c.get("/results/a.com/file/raw/note.txt")
+        assert r.status_code == 200
+        assert b"file-content" in r.data      # rendered in the inline template
+        assert b"hello-recon-file" in r.data
+
+
+def test_results_file_view_raw_serves_plain(web_app):
+    wapp, root = web_app
+    base = _seed(root, "a.com")
+    (base / "raw").mkdir(parents=True, exist_ok=True)
+    (base / "raw" / "note.txt").write_text("hello-recon-file")
+    with wapp.app.test_client() as c:
+        r = c.get("/results/a.com/file/raw/note.txt?raw=1")
+        assert r.status_code == 200
+        assert r.data == b"hello-recon-file"
+
+
+def test_results_file_view_report_not_swallowed_by_report_route(web_app):
+    """`.../file/report/<name>` must resolve to the file viewer, not the
+    legacy report-serving route (greedy <path> collision)."""
+    wapp, root = web_app
+    _seed(root, "a.com")  # writes report/final_report.html
+    with wapp.app.test_client() as c:
+        r = c.get("/results/a.com/file/report/final_report.html?raw=1")
+        assert r.status_code == 200
+        assert b"full report" in r.data
+        # And the original report route still works unchanged.
+        assert c.get("/results/a.com/report/final_report.html").status_code == 200
+
+
+def test_results_file_view_blocks_traversal(web_app):
+    wapp, root = web_app
+    _seed(root, "a.com")
+    with wapp.app.test_client() as c:
+        assert c.get("/results/a.com/file/logs/../../../../etc/passwd").status_code == 404
+        assert c.get("/results/a.com/file/raw/nope.txt").status_code == 404
+
+
+def test_results_file_view_unknown_target_404(web_app):
+    wapp, root = web_app
+    with wapp.app.test_client() as c:
+        assert c.get("/results/nope.com/files").status_code == 404
+        assert c.get("/results/nope.com/file/raw/x.txt").status_code == 404

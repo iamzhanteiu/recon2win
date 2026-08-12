@@ -31,6 +31,7 @@
     <a href="{{ url_for('results_hosts', target_ref=target_ref) }}">Hosts →</a>
     <a href="{{ url_for('results_urls', target_ref=target_ref) }}">URLs →</a>
     <a href="{{ url_for('results_findings', target_ref=target_ref) }}">Findings →</a>
+    <a href="{{ url_for('results_files', target_ref=target_ref) }}">Files →</a>
     {% if has_final_report %}<a href="{{ url_for('results_report_file', target_ref=target_ref, filename='final_report.html') }}" target="_blank">Full report ↗</a>{% endif %}
     {% if has_asm_report %}<a href="{{ url_for('results_report_file', target_ref=target_ref, filename='asm_report.html') }}" target="_blank">ASM report ↗</a>{% endif %}
 </nav>

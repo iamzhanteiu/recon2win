@@ -1,0 +1,7 @@
+{
+  "target": "<target>",
+  "project": null,
+  "net": false,
+  "max_parse_bytes": 150000,
+  "notes": "Per-target overrides. `net:true` fetches JS not cached by recon2win."
+}

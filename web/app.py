@@ -14,6 +14,8 @@ Endpoints
 ``GET  /results/<target_ref>/hosts``                — paginated/filterable host table
 ``GET  /results/<target_ref>/urls``                 — paginated/filterable URL table
 ``GET  /results/<target_ref>/findings``             — paginated/filterable findings table
+``GET  /results/<target_ref>/files``                — full recon file tree, grouped by dir
+``GET  /results/<target_ref>/file/<rel>``           — view (text, inline) / download one file
 ``GET  /results/<target_ref>/report/<filename>``    — serves report/* files directly
   (``target_ref`` is ``domain`` or ``project/domain`` — see modules/webdata.py)
 
@@ -149,6 +151,34 @@ def _scan_or_404(scan_id: str) -> dict | tuple[dict, int]:
 # Flask app
 # ----------------------------------------------------------------------
 app = Flask(__name__, template_folder="templates", static_folder="static")
+
+
+# ``results_report_file`` and ``results_file_view`` are structurally identical
+# rules (``<path:target_ref>/<literal>/<path:...>``). Werkzeug's greedy path
+# matching would let the report route swallow a ``.../file/report/x`` URL by
+# absorbing ``/file`` into ``target_ref`` — so constrain a target_ref to 1-2
+# segments whose final segment is not a reserved sub-route name. Real targets
+# are ``domain`` or ``project/domain``; none is named ``file``/``report``/etc.
+from werkzeug.routing import PathConverter  # noqa: E402
+
+
+class TargetRefConverter(PathConverter):
+    regex = (
+        r"(?:[^/]+/)?"
+        r"(?!(?:file|files|hosts|urls|findings|report)(?:/|$))"
+        r"[^/]+"
+    )
+
+
+app.url_map.converters["tref"] = TargetRefConverter
+
+
+@app.template_filter("ts")
+def _fmt_ts(value: float | None) -> str:
+    """Epoch seconds → ``YYYY-MM-DD HH:MM`` for file-listing mtimes."""
+    if not value:
+        return ""
+    return time.strftime("%Y-%m-%d %H:%M", time.localtime(value))
 
 
 @app.context_processor
@@ -362,7 +392,58 @@ def results_findings(target_ref: str):
     )
 
 
-@app.route("/results/<path:target_ref>/report/<path:filename>")
+@app.route("/results/<path:target_ref>/files")
+def results_files(target_ref: str):
+    """Full file tree of a target's recon output — every artefact under
+    ``raw/`` ``processed/`` ``findings/`` ``report/`` ``responses/`` ``logs/``,
+    grouped by directory so you can browse what a scan actually produced."""
+    ref = _resolve_or_404(target_ref)
+    files = webdata.list_files(ref["path"])
+    # Group by parent directory (POSIX), preserving the sorted order from
+    # list_files() — dirs appear in BROWSABLE_DIRS order, files within a dir
+    # alphabetically. Each group is one collapsible section in the template.
+    dirs: dict[str, list[dict]] = {}
+    for f in files:
+        parent = f["rel"].rsplit("/", 1)[0] if "/" in f["rel"] else f["group"]
+        dirs.setdefault(parent, []).append(f)
+    return render_template(
+        "files.html", target_ref=target_ref, dirs=list(dirs.items()),
+        total=len(files),
+    )
+
+
+@app.route("/results/<path:target_ref>/file/<path:rel>")
+def results_file_view(target_ref: str, rel: str):
+    """View or download a single recon file.
+
+    Text files render inline (capped) unless ``?raw=1`` is passed; everything
+    else is served for download. Path-traversal is handled in
+    ``webdata.resolve_file`` — an escaping or non-browsable path 404s.
+    """
+    ref = _resolve_or_404(target_ref)
+    path = webdata.resolve_file(ref["path"], rel)
+    if path is None:
+        abort(404, description=f"no such file: {rel!r}")
+
+    raw = request.args.get("raw") == "1"
+    is_text = path.suffix.lower() in webdata._TEXT_EXTS
+    if raw or not is_text:
+        # send_from_directory re-validates the path against the directory,
+        # so this stays traversal-safe even though resolve_file already ran.
+        as_download = request.args.get("dl") == "1" or not is_text
+        return send_from_directory(
+            ref["path"], path.relative_to(ref["path"]).as_posix(),
+            as_attachment=as_download,
+        )
+
+    preview = webdata.read_text_preview(path)
+    return render_template(
+        "file_view.html", target_ref=target_ref, rel=rel, name=path.name,
+        **preview,
+    )
+
+
+@app.route("/results/<tref:target_ref>/report/<path:filename>")
 def results_report_file(target_ref: str, filename: str):
     """Serve report/* files (final_report.html, asm_report.html, ...)
     directly — the existing rich static reports stay one click away

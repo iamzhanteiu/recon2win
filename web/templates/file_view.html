@@ -1,0 +1,20 @@
+{% extends "_page.html" %}
+{% block title %}{{ name }} · {{ target_ref }}{% endblock %}
+{% block content %}
+<p class="breadcrumb"><a href="{{ url_for('results_index') }}">Results</a> ›
+    <a href="{{ url_for('results_target', target_ref=target_ref) }}">{{ target_ref }}</a> ›
+    <a href="{{ url_for('results_files', target_ref=target_ref) }}">Files</a> › {{ name }}</p>
+
+<h1><code>{{ rel }}</code></h1>
+<p class="muted">
+    {{ size|filesizeformat }}
+    {% if truncated %}<span class="stale"> · showing first {{ text|length|filesizeformat }} — file is larger, use Raw for the whole thing</span>{% endif %}
+</p>
+
+<nav class="section-links">
+    <a href="{{ url_for('results_file_view', target_ref=target_ref, rel=rel, raw=1) }}" target="_blank">Raw ↗</a>
+    <a href="{{ url_for('results_file_view', target_ref=target_ref, rel=rel, raw=1, dl=1) }}">Download ↓</a>
+</nav>
+
+<pre class="file-content">{{ text }}</pre>
+{% endblock %}

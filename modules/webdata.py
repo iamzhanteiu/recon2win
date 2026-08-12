@@ -125,6 +125,100 @@ def urls_table(target_dir: Path, **kw) -> dict:
 
 
 # ----------------------------------------------------------------------
+# File browser — raw / processed / findings / logs / responses / report
+# ----------------------------------------------------------------------
+# Top-level subdirs of a target we expose in the Files browser. Everything a
+# scan writes lives under one of these; anything else in the target dir
+# (``.scan_state.json``, ``INDEX.md``, stray dot-files) is not recon output
+# and stays hidden.
+BROWSABLE_DIRS: tuple[str, ...] = (
+    "findings", "report", "processed", "raw", "responses", "logs",
+)
+
+# Suffixes we render inline as text. Everything else is download-only.
+_TEXT_EXTS: frozenset[str] = frozenset({
+    ".txt", ".json", ".jsonl", ".ndjson", ".md", ".log", ".csv", ".tsv",
+    ".html", ".htm", ".js", ".css", ".yaml", ".yml", ".xml", ".conf",
+    ".ini", ".cfg", ".env", ".sh", ".py", ".har", ".mmd", ".text",
+})
+
+# Inline text-view cap. Larger files are still served whole via ?raw=1.
+TEXT_PREVIEW_LIMIT = 2 * 1024 * 1024  # 2 MiB
+
+
+def list_files(target_dir: Path) -> list[dict]:
+    """Every recon file under a target's browsable subdirs, as flat records.
+
+    Returns ``[{"rel","group","name","size","mtime","is_text"}, ...]`` sorted
+    by group (in ``BROWSABLE_DIRS`` order) then relative path. ``rel`` is a
+    POSIX path relative to *target_dir* — the same key the tree view renders
+    and the file-serving route resolves. A missing subdir is simply skipped,
+    so a partial (or in-progress) scan lists whatever exists.
+    """
+    target_dir = Path(target_dir)
+    order = {g: i for i, g in enumerate(BROWSABLE_DIRS)}
+    out: list[dict] = []
+    for group in BROWSABLE_DIRS:
+        base = target_dir / group
+        if not base.is_dir():
+            continue
+        for p in base.rglob("*"):
+            if not p.is_file():
+                continue
+            try:
+                st = p.stat()
+            except OSError:
+                continue
+            out.append({
+                "rel": p.relative_to(target_dir).as_posix(),
+                "group": group,
+                "name": p.name,
+                "size": st.st_size,
+                "mtime": st.st_mtime,
+                "is_text": p.suffix.lower() in _TEXT_EXTS,
+            })
+    out.sort(key=lambda f: (order.get(f["group"], 99), f["rel"]))
+    return out
+
+
+def resolve_file(target_dir: Path, rel: str) -> Optional[Path]:
+    """Resolve a browser-supplied relative path to a real file under a
+    browsable subdir of *target_dir*, or ``None``.
+
+    Path-traversal safe: ``..``/empty segments are stripped, the first
+    segment must be a ``BROWSABLE_DIRS`` entry, and the fully resolved path
+    must still live inside *target_dir* (guards symlinks that point outward).
+    """
+    target_dir = Path(target_dir).resolve()
+    parts = [p for p in rel.split("/") if p not in ("", ".", "..")]
+    if not parts or parts[0] not in BROWSABLE_DIRS:
+        return None
+    candidate = target_dir.joinpath(*parts).resolve()
+    try:
+        candidate.relative_to(target_dir)
+    except ValueError:
+        return None
+    return candidate if candidate.is_file() else None
+
+
+def read_text_preview(path: Path, limit: int = TEXT_PREVIEW_LIMIT) -> dict:
+    """Read up to *limit* bytes of *path* as text for inline display.
+
+    Returns ``{"text", "truncated", "size"}``. Decoding is UTF-8 with
+    ``errors="replace"`` so a binary-ish file never raises — it just renders
+    with replacement chars, and the caller already decides what is "text".
+    """
+    size = path.stat().st_size
+    with path.open("rb") as fh:
+        data = fh.read(limit)
+    return {
+        "text": data.decode("utf-8", errors="replace"),
+        "truncated": size > len(data),
+        "size": size,
+    }
+
+
+# ----------------------------------------------------------------------
 # Findings — findings/default/nuclei.json
 # ----------------------------------------------------------------------
 def list_findings(

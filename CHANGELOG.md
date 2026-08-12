@@ -12,6 +12,18 @@ làm điểm mốc đầu tiên.
 
 ### Added
 
+* **Bulk HackerOne recon** (`tools/h1_batch.py`) — quét lần lượt toàn bộ program
+  qua H1 Hacker API. `catalog` (chỉ gọi API) dựng `outputs/_h1/catalog.json` +
+  `queue.txt` từ các program `open` có root `eligible_for_bounty`, phân loại
+  WILDCARD (enumerate) vs URL host (quét đúng host), gộp host đã nằm dưới
+  wildcard, làm sạch glob, tách identifier nối bằng dấu phẩy, cache raw scope
+  theo handle (rerun rẻ + retry 429). `run` gọi `main.py` tuần tự với stage nhẹ
+  (`--skip-dirsearch/ffuf/waymore`), host mode thêm `--no-subdomain`; resume,
+  `--programs N` / `--limit N` / `--timeout` / `--dry-run` / `--force`, log
+  `outputs/_h1/progress.log`.
+* **`main.py --no-subdomain`** — bỏ qua subdomain enumeration, seed thẳng host
+  vào `subdomains.txt`. Cho asset scope-limited (host cụ thể, không wildcard) để
+  recon không chạm host ngoài scope.
 * **Web results browser** (`web/app.py` `/results/*`, `modules/webdata.py`) —
   duyệt kết quả scan qua trình duyệt: danh sách target theo project, bảng
   hosts/urls/findings lọc + phân trang, link thẳng tới `final_report.html`/

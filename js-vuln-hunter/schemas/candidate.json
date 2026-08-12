@@ -1,0 +1,48 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Candidate",
+  "type": "object",
+  "required": ["id", "type", "priority", "severity", "confidence", "asset_id", "url"],
+  "properties": {
+    "id": {"type": "string"},
+    "type": {"type": "string"},
+    "priority": {"type": "string", "enum": ["P1", "P2", "P3"]},
+    "severity": {"type": "string", "enum": ["info", "low", "medium", "high", "critical"]},
+    "confidence": {"type": "number", "minimum": 0, "maximum": 1},
+    "asset_id": {"type": "string"},
+    "url": {"type": "string"},
+    "title": {"type": "string"},
+    "source": {"type": ["string", "null"]},
+    "sink": {"type": ["string", "null"]},
+    "attacker_controlled": {"type": "string"},
+    "sanitization": {"type": "string"},
+    "evidence": {"type": ["string", "null"]},
+    "location": {"type": ["object", "null"]},
+    "flow_id": {"type": ["string", "null"]},
+    "endpoint": {"type": ["string", "null"]},
+    "method": {"type": ["string", "null"]},
+    "object_id": {"type": ["string", "null"]},
+    "verification_status": {"type": "string",
+      "enum": ["NEW","TRIAGED","INVESTIGATING","VERIFICATION_REQUIRED","VERIFIED","FALSE_POSITIVE"]},
+    "rank_score": {"type": "number"},
+    "exploitability": {
+      "type": ["object", "null"],
+      "description": "Structured exploitability reasoning (mission §15).",
+      "properties": {
+        "who_controls": {"type": "string"},
+        "auth_required": {"type": "string"},
+        "boundary": {"type": "string"},
+        "impact": {"type": "string"},
+        "exploitability": {"type": "string"},
+        "user_interaction": {"type": "string"},
+        "cross_origin": {"type": "string"},
+        "reachability": {"type": "string"},
+        "why_interesting": {"type": "string"},
+        "why_not_fp": {"type": "string"},
+        "missing_evidence": {"type": "array", "items": {"type": "string"}}
+      }
+    },
+    "chain_ids": {"type": "array", "items": {"type": "string"}},
+    "notes": {"type": "array", "items": {"type": "string"}}
+  }
+}

@@ -1,0 +1,20 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "DataFlow",
+  "type": "object",
+  "required": ["flow_id", "asset_id", "source", "sink"],
+  "properties": {
+    "flow_id": {"type": "string"},
+    "asset_id": {"type": "string"},
+    "source": {"type": "string"},
+    "source_kind": {"type": "string"},
+    "sink": {"type": "string"},
+    "sink_kind": {"type": "string"},
+    "transforms": {"type": "array", "items": {"type": "string"}},
+    "attacker_controlled": {"type": "string", "enum": ["yes", "no", "unknown"]},
+    "sanitization": {"type": "string", "enum": ["none", "weak", "known-safe", "unknown"]},
+    "source_location": {"type": ["object", "null"]},
+    "sink_location": {"type": ["object", "null"]},
+    "evidence": {"type": ["string", "null"]}
+  }
+}

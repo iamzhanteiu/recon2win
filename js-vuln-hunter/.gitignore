@@ -1,0 +1,8 @@
+# Acquired JS bodies and generated artifacts are derived data, not source.
+targets/*/raw/
+output/
+candidates/*/*/
+!candidates/*/.gitkeep
+__pycache__/
+*.pyc
+.pytest_cache/

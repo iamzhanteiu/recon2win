@@ -1,0 +1,22 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Finding",
+  "type": "object",
+  "required": ["finding_id", "title", "severity", "asset", "candidate_id"],
+  "properties": {
+    "finding_id": {"type": "string"},
+    "candidate_id": {"type": "string"},
+    "title": {"type": "string"},
+    "severity": {"type": "string", "enum": ["info","low","medium","high","critical"]},
+    "asset": {"type": "string"},
+    "summary": {"type": "string"},
+    "root_cause": {"type": "string"},
+    "attack_scenario": {"type": "string"},
+    "steps": {"type": "array", "items": {"type": "string"}},
+    "poc": {"type": "string"},
+    "impact": {"type": "string"},
+    "remediation": {"type": "string"},
+    "references": {"type": "array", "items": {"type": "string"}},
+    "verified_at": {"type": "string"}
+  }
+}

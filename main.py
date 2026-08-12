@@ -205,6 +205,11 @@ def main() -> int:
                         "handle, pick one, and recon it")
     p.add_argument("--resume", action="store_true",
                    help="Skip stages whose expected outputs already exist")
+    p.add_argument("--no-subdomain", action="store_true",
+                   help="Skip subdomain enumeration; seed subdomains.txt with "
+                        "the target host only. For scope-limited assets (a "
+                        "specific in-scope host, not a wildcard) so recon never "
+                        "touches out-of-scope siblings.")
     p.add_argument("--dry-run", action="store_true",
                    help="Print the plan and exit; never invoke external tools")
     p.add_argument("--doctor", action="store_true",
@@ -367,9 +372,18 @@ def main() -> int:
     with prog:
         # ---- 1. subdomain collection ----
         prog.start_phase("subdomain", num=1)
-        r = _run_stage("subdomain", sub_mod.collect,
-                       domain, output_dir, cfg,
-                       resume=args.resume, dry_run=False)
+        if args.no_subdomain:
+            # Scope-limited single host: no enumeration — seed the pipeline
+            # with just the target so dnsx→httpx→… only ever see that host.
+            layout.ensure_tree(output_dir)
+            sub_path = layout.path(output_dir, "subdomains.txt")
+            sub_path.write_text(domain + "\n", encoding="utf-8")
+            r = make_result("subdomain", "success", input_path=domain,
+                            outputs=[sub_path], count=1)
+        else:
+            r = _run_stage("subdomain", sub_mod.collect,
+                           domain, output_dir, cfg,
+                           resume=args.resume, dry_run=False)
         results.append(r)
         prog.finish_phase(r, num=1)
 

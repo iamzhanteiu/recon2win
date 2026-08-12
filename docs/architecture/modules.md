@@ -90,7 +90,7 @@ mỗi module (không suy đoán). Nhóm theo vai trò trong pipeline (xem
 | File | Trách nhiệm | Phụ thuộc |
 |---|---|---|
 | `web/app.py` | Flask — chạy scan qua subprocess (`/`, `/api/*`) + browse kết quả (`/results/*`) | `modules.webdata` |
-| `modules/webdata.py` | Đọc `alive_table.txt`/`alive_urls_table.txt`/`nuclei.json` cho `/results/*` — phân trang/lọc bằng Python, không index | `dashboard`, `layout` |
+| `modules/webdata.py` | Đọc `alive_table.txt`/`alive_urls_table.txt`/`nuclei.json` cho `/results/*` + duyệt cây file recon (`list_files`/`resolve_file`/`read_text_preview`, traversal-safe) cho `/results/<t>/files` | `dashboard`, `layout` |
 
 ## Tích hợp phụ
 

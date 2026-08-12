@@ -1,0 +1,64 @@
+{% extends "_page.html" %}
+{% block title %}Files · {{ target_ref }}{% endblock %}
+{% block content %}
+<p class="breadcrumb"><a href="{{ url_for('results_index') }}">Results</a> ›
+    <a href="{{ url_for('results_target', target_ref=target_ref) }}">{{ target_ref }}</a> › Files</p>
+
+<h1>Files <span class="muted">— {{ "{:,}".format(total) }} recon file(s)</span></h1>
+
+{% if dirs %}
+<p class="muted">Every artefact a scan wrote, grouped by directory. Click a file to
+    view it inline (text) or download it.</p>
+
+<form class="filter-bar" onsubmit="return false;">
+    <input type="text" id="file-filter" placeholder="filter files by name / path…"
+           oninput="filterFiles(this.value)">
+</form>
+
+{% for dirpath, files in dirs %}
+<details class="file-group" {% if not dirpath.startswith('raw') and not dirpath.startswith('responses') %}open{% endif %}>
+    <summary><code>{{ dirpath }}/</code> <span class="muted">— {{ files|length }} file(s)</span></summary>
+    <table class="data-table file-table">
+        <thead><tr><th>name</th><th>size</th><th>modified</th><th>actions</th></tr></thead>
+        <tbody>
+        {% for f in files %}
+        <tr class="file-row" data-rel="{{ f.rel|lower }}">
+            <td>
+                <a href="{{ url_for('results_file_view', target_ref=target_ref, rel=f.rel) }}"
+                   class="file-name">{{ f.name }}</a>
+                {% if not f.is_text %}<span class="badge badge-info">bin</span>{% endif %}
+            </td>
+            <td class="num">{{ f.size|filesizeformat }}</td>
+            <td class="muted">{{ f.mtime|ts }}</td>
+            <td class="file-actions">
+                {% if f.is_text %}<a href="{{ url_for('results_file_view', target_ref=target_ref, rel=f.rel) }}">view</a>{% endif %}
+                <a href="{{ url_for('results_file_view', target_ref=target_ref, rel=f.rel, raw=1) }}" target="_blank">raw</a>
+                <a href="{{ url_for('results_file_view', target_ref=target_ref, rel=f.rel, raw=1, dl=1) }}">download</a>
+            </td>
+        </tr>
+        {% endfor %}
+        </tbody>
+    </table>
+</details>
+{% endfor %}
+{% else %}
+<p class="empty-state">No files yet — this target has no recon output on disk.</p>
+{% endif %}
+
+<script>
+// Client-side filter across every group; auto-opens a group that has a match.
+function filterFiles(term) {
+    term = term.trim().toLowerCase();
+    document.querySelectorAll('.file-group').forEach(function (group) {
+        var anyVisible = false;
+        group.querySelectorAll('.file-row').forEach(function (row) {
+            var hit = !term || row.dataset.rel.indexOf(term) !== -1;
+            row.style.display = hit ? '' : 'none';
+            if (hit) anyVisible = true;
+        });
+        group.style.display = anyVisible ? '' : 'none';
+        if (term && anyVisible) group.open = true;
+    });
+}
+</script>
+{% endblock %}

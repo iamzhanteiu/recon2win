@@ -1,0 +1,3 @@
+# js-vuln-hunter — JavaScript vulnerability analysis layer over recon2win.
+# Pure-Python only; no Node.js required.
+esprima==4.0.1        # JavaScript AST parser (primary analysis method)

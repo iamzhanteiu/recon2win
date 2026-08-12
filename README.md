@@ -119,6 +119,7 @@ python3 bootstrap.py --no-color            # disable ANSI colors
 | `-p, --project NAME`   | Optional grouping: `outputs/<project>/<domain>/` instead of the flat `outputs/<domain>/`. Independent of `--h1-program`. Omit to keep the flat layout. |
 | `--config PATH`        | YAML config (default: `config.yml`)                       |
 | `--resume`             | Skip stages whose expected outputs already exist          |
+| `--no-subdomain`       | Skip subdomain enumeration; seed `subdomains.txt` with the target host only. For scope-limited assets (a specific in-scope host, not a wildcard) so recon never touches out-of-scope siblings. |
 | `--dry-run`            | Print the plan and exit — never invokes external tools    |
 | `--skip-nuclei`        | Skip the nuclei default scan                              |
 | `--skip-dirsearch`     | Skip the dirsearch sensitive-extension scan               |
@@ -208,9 +209,10 @@ recon-agent/
 │   ├── progress.py        # Progress bar (sequential + parallel phases)
 │   ├── console.py         # Terminal formatting (colors, status icons)
 │   └── sensitive_ext.py   # Shared extension lists
+├── tools/                 # Helper scripts (h1_batch.py — bulk HackerOne recon)
 ├── tests/                 # Pytest unit tests (see `pytest tests/`)
 ├── web/                   # Optional Flask UI (live xterm.js terminal)
-└── outputs/               # Created per-run (see below)
+└── outputs/               # Created per-run (see below); outputs/_h1/ = batch state
 ```
 
 ## Output directory layout (v2)
@@ -380,6 +382,53 @@ tools land in `logs/subdomain.log` with section headers).
 | `processed/js_urls_from_crawler.txt` | Just a subset of `js_urls.txt` |
 | `processed/alive_detail.csv` | JSON is canonical; CSV was a convenience export |
 | `logs/<stage>.stdout` / `.stderr` | One `<stage>.log` per stage (sub-stages merged) |
+
+## HackerOne integration
+
+Credentials come from `H1_API_USERNAME` / `H1_API_TOKEN` (env) or
+`hackerone.api_username` / `api_token` in the config. Only assets flagged
+`eligible_for_submission` are ever returned, so out-of-scope hosts never enter
+the pipeline (`modules/hackerone.py`).
+
+**Single target (interactive).**
+
+```bash
+python3 main.py --h1-list                 # browse programs → pick one → pick a root → recon
+python3 main.py --h1-program <handle>     # skip the program picker
+```
+
+**Bulk recon — one program after another (`tools/h1_batch.py`).**
+
+Drives the whole program list through `main.py` sequentially. Two phases:
+
+```bash
+# Phase 0 — API only: build the catalog + work queue (no scanning).
+python3 tools/h1_batch.py catalog
+#   → outputs/_h1/catalog.json   full per-program scope
+#   → outputs/_h1/queue.txt      handle<TAB>target<TAB>mode, one per line
+#   → outputs/_h1/scopes_cache/  raw scope per handle (rerun is cheap, fills 429 gaps)
+
+# Phase 1 — scan the queue sequentially (resumable, logs to outputs/_h1/progress.log).
+python3 tools/h1_batch.py run --dry-run           # preview the exact main.py commands
+python3 tools/h1_batch.py run --programs 5        # only the first 5 programs (pilot)
+python3 tools/h1_batch.py run                     # the whole queue
+```
+
+Scope handling per asset type (this is what keeps recon inside authorization):
+
+| Asset type | Queue `mode` | How it runs |
+|---|---|---|
+| `WILDCARD` (`*.example.com`) | `wildcard` | recon the apex **with** subdomain enumeration — you are authorized to enumerate |
+| `URL` host (`app.example.com`) | `host`     | `main.py … --no-subdomain` — scans **only that host**, never brutes siblings |
+
+Catalog filters to `submission_state == open` **and** `eligible_for_bounty`,
+collapses hosts already covered by a wildcard, cleans glob patterns
+(`topaz*.actblue.com` → `actblue.com`, `edited.*` → dropped), splits
+comma-joined identifiers, and skips targets already present under
+`outputs/`. `run` flags: `--programs N`, `--limit N`, `--timeout SECS`
+(default 7200), `--dry-run`, `--force`. The sweep uses light stages
+(`--skip-dirsearch --skip-ffuf --skip-waymore`); deepen the targets that
+show signal in a second pass.
 
 ## Required vs optional stages
 
@@ -1270,6 +1319,8 @@ up grouped, ungrouped targets show up ungrouped, exactly like
 | `/results/<domain>` or `/results/<project>/<domain>` | Target overview — KPIs, stage health, links |
 | `.../hosts`, `.../urls` | Paginated, filterable (`q=`, `status=`) tables — reads `alive_table.txt` / `alive_urls_table.txt` directly, no database |
 | `.../findings` | Paginated, filterable (`q=`, `severity=`) nuclei findings |
+| `.../files` | Full recon file tree — every artefact under `raw/` `processed/` `findings/` `report/` `responses/` `logs/`, grouped by directory với client-side filter |
+| `.../file/<rel>` | View one file — text renders inline (capped, `?raw=1` for the whole thing / `&dl=1` to download); binaries download |
 | `.../report/<filename>` | Serves `report/final_report.html` / `asm_report.html` / etc. directly |
 
 No index/database yet — each request reads and filters the relevant file

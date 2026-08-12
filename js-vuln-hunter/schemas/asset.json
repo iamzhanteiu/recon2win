@@ -1,0 +1,28 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "JSAsset",
+  "type": "object",
+  "required": ["asset_id", "target", "host", "url"],
+  "properties": {
+    "asset_id": {"type": "string", "pattern": "^js_[0-9]{6}$"},
+    "target": {"type": "string"},
+    "host": {"type": "string"},
+    "url": {"type": "string", "format": "uri"},
+    "source": {"type": "string"},
+    "provenance": {"type": "array", "items": {"type": "string"}},
+    "status_code": {"type": ["integer", "null"]},
+    "content_type": {"type": ["string", "null"]},
+    "content_length": {"type": ["integer", "null"]},
+    "sha256": {"type": ["string", "null"]},
+    "size": {"type": ["integer", "null"]},
+    "local_path": {"type": ["string", "null"]},
+    "framework": {"type": ["string", "null"]},
+    "bundler": {"type": ["string", "null"]},
+    "source_map": {"type": ["boolean", "null"]},
+    "source_map_url": {"type": ["string", "null"]},
+    "minified": {"type": ["boolean", "null"]},
+    "analysis_status": {"type": "string",
+      "enum": ["pending","acquired","analyzed","regex_scan","parse_error","error"]},
+    "parse_error": {"type": ["string", "null"]}
+  }
+}
